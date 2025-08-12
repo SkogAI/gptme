@@ -55,9 +55,11 @@ def init(provider: Provider, config: Config):
             azure_endpoint=azure_endpoint,
         )
     elif provider == "openrouter":
-        api_key = config.get_env_required("OPENROUTER_API_KEY")
+        proxy_key = config.get_env("LLM_PROXY_API_KEY")
+        proxy_url = config.get_env("LLM_PROXY_URL")
+        api_key = proxy_key or config.get_env_required("OPENROUTER_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://openrouter.ai/api/v1"
+            api_key=api_key, base_url=proxy_url or "https://openrouter.ai/api/v1"
         )
     elif provider == "gemini":
         api_key = config.get_env_required("GEMINI_API_KEY")
@@ -155,7 +157,15 @@ def _prep_deepseek_reasoner(msgs: list[Message]) -> Generator[Message, None, Non
 def _is_reasoner(base_model: str) -> bool:
     is_o1 = any(base_model.startswith(om) for om in ["o1", "o3", "o4"])
     is_deepseek_reasoner = base_model == "deepseek-reasoner"
-    return is_o1 or is_deepseek_reasoner
+    is_gpt5 = base_model.startswith("gpt-5")
+    return is_o1 or is_deepseek_reasoner or is_gpt5
+
+
+@lru_cache(maxsize=2)
+def _is_proxy(client: "OpenAI") -> bool:
+    proxy_url = get_config().get_env("LLM_PROXY_URL")
+    # If client has the proxy URL set, it is using the proxy
+    return bool(proxy_url) and client.base_url == proxy_url
 
 
 def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> str:
@@ -166,15 +176,21 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
     provider = get_provider_from_model(model)
     client = get_client(provider)
+    is_proxy = _is_proxy(client)
+
     base_model = _get_base_model(model)
     is_reasoner = _is_reasoner(base_model)
 
+    # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
+    api_model = model if is_proxy else base_model
+
     from openai import NOT_GIVEN  # fmt: skip
+    from openai.types.chat import ChatCompletionMessageToolCall  # fmt: skip
 
     messages_dicts, tools_dict = _prepare_messages_for_api(messages, model, tools)
 
     response = client.chat.completions.create(
-        model=base_model,
+        model=api_model,
         messages=messages_dicts,  # type: ignore
         temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
@@ -186,6 +202,7 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
     result = []
     if choice.finish_reason == "tool_calls":
         for tool_call in choice.message.tool_calls or []:
+            assert isinstance(tool_call, ChatCompletionMessageToolCall)
             result.append(
                 f"@{tool_call.function.name}({tool_call.id}): {tool_call.function.arguments}"
             )
@@ -233,8 +250,13 @@ def stream(
 
     provider = get_provider_from_model(model)
     client = get_client(provider)
+    is_proxy = _is_proxy(client)
+
     base_model = _get_base_model(model)
     is_reasoner = _is_reasoner(base_model)
+
+    # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
+    api_model = model if is_proxy else base_model
 
     from openai import NOT_GIVEN  # fmt: skip
 
@@ -243,7 +265,7 @@ def stream(
     stop_reason = None
 
     for chunk_raw in client.chat.completions.create(
-        model=base_model,
+        model=api_model,
         messages=messages_dicts,  # type: ignore
         temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
@@ -324,7 +346,7 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
             modified_message = dict(message)
 
             content, tool_uses = extract_tool_uses_from_assistant_message(
-                message["content"]
+                message["content"], tool_format_override="tool"
             )
 
             # Format tool uses for OpenAI API

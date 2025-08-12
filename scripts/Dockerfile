@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     pandoc \
     gpg \
     pipx \
+    tree \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
@@ -54,6 +55,15 @@ RUN useradd -m appuser && \
 
 USER appuser
 RUN pipx ensurepath
+
+# pipx ensurepath is not working for the entrypoint which bypasses bash
+# so if we want to extend Dockerfile with pipx-installed entrypoints,
+# we need to manually add the pipx bin directory to PATH.
+# Priority to the system PATH to avoid overriding of system commands/entrypoint.
+ENV PATH="${PATH}:/home/appuser/.local/bin"
+
+RUN git config --global user.name "gptme.ai"
+RUN git config --global user.email "noreply@gptme.ai"
 
 WORKDIR /workspace
 

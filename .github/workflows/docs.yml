@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install poetry
         run: |
@@ -32,6 +32,11 @@ jobs:
           # pandoc in ubuntu repos is from 2018...
           wget https://github.com/jgm/pandoc/releases/download/3.3/pandoc-3.3-1-amd64.deb
           sudo dpkg -i pandoc-3.3-1-amd64.deb
+
+      - name: Write dummy gptme config
+        run: |
+          mkdir -p ~/.config/gptme
+          echo -e '[prompt]\nabout_user = "testing"\nresponse_preference = "just testing"\n\n[env]\nOPENAI_API_KEY="sk-dummy-key"' > ~/.config/gptme/config.toml
 
       - name: Install dependencies
         run: |
@@ -59,10 +64,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: site-dist
           path: ./site/dist

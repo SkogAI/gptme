@@ -142,8 +142,10 @@ def cmd_rename(ctx: CommandContext) -> None:
 @command("fork")
 def cmd_fork(ctx: CommandContext) -> None:
     """Fork the conversation."""
+    ctx.manager.undo(1, quiet=True)
     new_name = ctx.args[0] if ctx.args else input("New name: ")
     ctx.manager.fork(new_name)
+    print(f"✅ Forked conversation to: {ctx.manager.logdir}")
 
 
 @command("summarize")
@@ -186,11 +188,52 @@ def cmd_replay(ctx: CommandContext) -> None:
     """Replay the conversation."""
     ctx.manager.undo(1, quiet=True)
     ctx.manager.write()
-    print("Replaying conversation...")
-    for msg in ctx.manager.log:
-        if msg.role == "assistant":
-            for reply_msg in execute_msg(msg, ctx.confirm):
-                print_msg(reply_msg, oneline=False)
+
+    # Determine replay scope
+    if ctx.args:
+        scope = ctx.args[0].lower()
+        if scope not in ["last", "all"]:
+            print(f"Invalid option '{scope}'. Use 'last' or 'all'.")
+            return
+    else:
+        print("Replay options:")
+        print("  last - Replay only the last assistant message")
+        print("  all  - Replay all assistant messages")
+        scope = input("Choose (last/all): ").strip().lower()
+        if scope not in ["last", "all"]:
+            print("Invalid choice. Aborting.")
+            return
+
+    assistant_messages = [msg for msg in ctx.manager.log if msg.role == "assistant"]
+
+    if not assistant_messages:
+        print("No assistant messages found to replay.")
+        return
+
+    if scope == "last":
+        # Find the last assistant message that contains tool uses
+        last_with_tools = None
+        for msg in reversed(assistant_messages):
+            # Check if message has any tool uses by trying to execute it
+            from .tools import ToolUse
+
+            if any(ToolUse.iter_from_content(msg.content)):
+                last_with_tools = msg
+                break
+
+        if not last_with_tools:
+            print("No assistant messages with tool uses found to replay.")
+            return
+
+        messages_to_replay = [last_with_tools]
+        print("Replaying last assistant message with tool uses...")
+    else:  # scope == "all"
+        messages_to_replay = assistant_messages
+        print(f"Replaying all {len(assistant_messages)} assistant messages...")
+
+    for msg in messages_to_replay:
+        for reply_msg in execute_msg(msg, ctx.confirm):
+            print_msg(reply_msg, oneline=False)
 
 
 @command("impersonate")

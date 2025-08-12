@@ -1,3 +1,4 @@
+import functools
 import importlib
 import json
 import logging
@@ -291,35 +292,62 @@ class ToolUse:
     def execute(self, confirm: ConfirmFunc) -> Generator[Message, None, None]:
         """Executes a tool-use tag and returns the output."""
         # noreorder
+        from ..telemetry import record_tool_call, trace_function  # fmt: skip
         from . import get_tool  # fmt: skip
 
-        tool = get_tool(self.tool)
-        if tool and tool.execute:
-            try:
-                # Play tool sound if enabled
-                from ..util.sound import get_tool_sound_for_tool, play_tool_sound
+        # wrap confirm in trace_function
+        @functools.wraps(confirm)
+        def _confirm(content: str) -> bool:
+            return trace_function(
+                name=f"tool.{self.tool}.confirm",
+                attributes={"tool_name": self.tool},
+            )(confirm)(content)
 
-                if sound_type := get_tool_sound_for_tool(self.tool):
-                    play_tool_sound(sound_type)
+        @trace_function(name=f"tool.{self.tool}", attributes={"tool_name": self.tool})
+        def _execute_tool():
+            tool = get_tool(self.tool)
+            if tool and tool.execute:
+                try:
+                    # Play tool sound if enabled
+                    from ..util.sound import get_tool_sound_for_tool, play_tool_sound
 
-                ex = tool.execute(
-                    self.content,
-                    self.args,
-                    self.kwargs,
-                    confirm,
-                )
-                if isinstance(ex, Generator):
-                    yield from ex
-                else:
-                    yield ex
-            except Exception as e:
-                # if we are testing, raise the exception
-                logger.exception(e)
-                if "pytest" in globals():
-                    raise e
-                yield Message("system", f"Error executing tool '{self.tool}': {e}")
-        else:
-            logger.warning(f"Tool '{self.tool}' is not available for execution.")
+                    if sound_type := get_tool_sound_for_tool(self.tool):
+                        play_tool_sound(sound_type)
+
+                    ex = tool.execute(
+                        self.content,
+                        self.args,
+                        self.kwargs,
+                        _confirm,
+                    )
+                    if isinstance(ex, Generator):
+                        # Convert generator to list to measure execution time properly
+                        results = list(ex)
+                        yield from results
+                    else:
+                        yield ex
+
+                    # Record successful tool call
+                    record_tool_call(self.tool, success=True)
+
+                except Exception as e:
+                    # Record failed tool call with error details
+                    record_tool_call(
+                        self.tool,
+                        success=False,
+                        error_type=type(e).__name__,
+                        error_message=str(e),
+                    )
+
+                    # if we are testing, raise the exception
+                    logger.exception(e)
+                    if "pytest" in globals():
+                        raise e
+                    yield Message("system", f"Error executing tool '{self.tool}': {e}")
+            else:
+                logger.warning(f"Tool '{self.tool}' is not available for execution.")
+
+        yield from _execute_tool()
 
     @property
     def is_runnable(self) -> bool:
@@ -358,14 +386,19 @@ class ToolUse:
             return None
 
     @classmethod
-    def iter_from_content(cls, content: str) -> Generator["ToolUse", None, None]:
+    def iter_from_content(
+        cls, content: str, tool_format_override: ToolFormat | None = None
+    ) -> Generator["ToolUse", None, None]:
         """Returns all ToolUse in a message, markdown or XML, in order."""
+        # Use override if provided, otherwise use global tool_format
+        active_format = tool_format_override or tool_format
+
         # collect all tool uses
         tool_uses = []
-        if tool_format == "xml":
+        if active_format == "xml":
             for tool_use in cls._iter_from_xml(content):
                 tool_uses.append(tool_use)
-        if tool_format == "markdown":
+        if active_format == "markdown":
             for tool_use in cls._iter_from_markdown(content):
                 tool_uses.append(tool_use)
 
@@ -374,6 +407,10 @@ class ToolUse:
         tool_uses.sort(key=lambda x: x.start or 0)
         for tool_use in tool_uses:
             yield tool_use
+
+        # don't continue unless tool format (or override allows it)
+        if active_format != "tool":
+            return
 
         # check if its a toolcall and extract valid JSON
         if match := toolcall_re.search(content):
