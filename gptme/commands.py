@@ -8,6 +8,7 @@ from time import sleep
 from typing import Literal
 
 from . import llm
+from .util.auto_naming import generate_llm_name
 from .constants import INTERRUPT_CONTENT
 from .llm.models import get_default_model, set_default_model
 from .logmanager import LogManager, prepare_messages
@@ -64,15 +65,12 @@ action_descriptions: dict[Actions, str] = {
     "impersonate": "Impersonate the assistant",
     "tokens": "Show the number of tokens used",
     "export": "Export conversation as HTML",
-    "commit": "Commit staged changes to git",
+    "commit": "Ask assistant to git commit",
     "setup": "Setup gptme with completions and configuration",
     "help": "Show this help message",
     "exit": "Exit the program",
 }
 COMMANDS = list(action_descriptions.keys())
-
-
-# Command registry
 
 
 @dataclass
@@ -94,6 +92,7 @@ OriginalCommandHandler = (
 # Wrapped handler type (after decoration - always returns generator)
 CommandHandler = Callable[[CommandContext], Generator[Message, None, None]]
 
+# Command registry
 _command_registry: dict[str, CommandHandler] = {}
 
 
@@ -394,7 +393,7 @@ def rename(manager: LogManager, new_name: str, confirm: ConfirmFunc) -> None:
 
     if new_name in ["", "auto"]:
         msgs = prepare_messages(manager.log.messages)[1:]  # skip system message
-        new_name = llm.generate_name(msgs)
+        new_name = generate_llm_name(msgs)
         assert " " not in new_name, f"Invalid name: {new_name}"
         print(f"Generated name: {new_name}")
         if not confirm("Confirm?"):

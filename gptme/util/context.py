@@ -18,6 +18,12 @@ from ..config import get_config
 from ..message import Message
 from ..tools import has_tool
 from ..tools.browser import read_url
+from .gh import (
+    get_github_issue_content,
+    get_github_pr_content,
+    parse_github_url,
+    transform_github_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -372,13 +378,22 @@ def autocommit() -> Message:
     Returns a message asking the LLM to review changes and create a commit.
     """
     try:
-        # Get current git status
-        status_result = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
+        # See if there are any changes to commit by checking for
+        # changes, excluding untracked files.
+        status_result_porcelain = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
         )
 
-        if not status_result.stdout.strip():
+        if not status_result_porcelain.stdout.strip():
             return Message("system", "No changes to commit.")
+
+        # Get current git status
+        status_result = subprocess.run(
+            ["git", "status"], capture_output=True, text=True, check=True
+        )
 
         # Get git diff to show what changed
         diff_result = subprocess.run(
@@ -388,7 +403,7 @@ def autocommit() -> Message:
         # Create a message for the LLM to handle the commit
         commit_prompt = f"""Pre-commit checks have passed and the following changes have been made:
 
-```git status --porcelain
+```git status
 {status_result.stdout}
 ```
 
@@ -399,7 +414,7 @@ def autocommit() -> Message:
 This is a good time to review these changes and consider creating an appropriate commit:
 
 1. Review the changes, decide which changes to include in the commit
-2. Stage the relevant files using `git add`, never use `git add .` or `git add -A` to avoid adding unintended files
+2. Stage only the relevant files using `git add` (never use `git add .` or `git add -A` to avoid adding unintended files)
 3. Create the commit using the HEREDOC format to avoid escaping issues. Both stage and commit in one go.
 
 ```shell
@@ -530,7 +545,16 @@ def _find_potential_paths(content: str) -> list[str]:
         List of potential paths/URLs found in the message
     """
     # Remove code blocks to avoid matching paths inside them
-    content_no_codeblocks = re.sub(r"```[\s\S]*?```", "", content)
+    # TODO: also remove paths inside XML tags
+    re_codeblock = r"````?[\s\S]*?\n````?"
+    assert re.match(
+        re_codeblock, md_codeblock("test", "test")
+    ), "Code block regex should match the md_codeblock format with quadruple backticks"
+    assert re.match(
+        re_codeblock, md_codeblock("test", "test").replace("````", "```")
+    ), "Code block regex should match the md_codeblock format with triple backticks"
+
+    content_no_codeblocks = re.sub(re_codeblock, "", content)
 
     # List current directory contents for relative path matching
     cwd_files = [f.name for f in Path.cwd().iterdir()]
@@ -582,7 +606,7 @@ def _resource_to_codeblock(prompt: str) -> str | None:
         # check if prompt is a path, if so, replace it with the contents of that file
         f = Path(prompt).expanduser()
         if f.exists() and f.is_file():
-            return f"```{prompt}\n{f.read_text()}\n```"
+            return md_codeblock(prompt, f.read_text())
     except OSError as oserr:
         # some prompts are too long to be a path, so we can't read them
         if oserr.errno == errno.ENAMETOOLONG:
@@ -621,15 +645,34 @@ def _resource_to_codeblock(prompt: str) -> str | None:
     for path in paths:
         result += _resource_to_codeblock(path) or ""
 
-    if not has_tool("browser"):
-        logger.warning("Browser tool not available, skipping URL read")
-    else:
-        for url in urls:
+    for url in urls:
+        content = None
+
+        # First try to handle GitHub issues/PRs with specialized tools
+        github_info = parse_github_url(url)
+        if github_info:
+            if github_info["type"] == "issues":
+                content = get_github_issue_content(
+                    github_info["owner"], github_info["repo"], github_info["number"]
+                )
+            elif github_info["type"] == "pull":
+                content = get_github_pr_content(url)
+
+        # If GitHub handling failed or not a GitHub issue/PR, fall back to browser
+        if not content and has_tool("browser"):
             try:
-                content = read_url(url)
-                result += f"```{url}\n{content}\n```"
+                # Transform GitHub blob URLs to raw URLs
+                transformed_url = transform_github_url(url)
+                if transformed_url != url:
+                    logger.debug(f"Transformed GitHub URL: {url} -> {transformed_url}")
+                content = read_url(transformed_url)
             except Exception as e:
                 logger.warning(f"Failed to read URL {url}: {e}")
+        elif not content and not has_tool("browser"):
+            logger.warning("Browser tool not available, skipping URL read")
+
+        if content:
+            result += md_codeblock(url, content)
 
     return result
 

@@ -7,7 +7,6 @@ When prompting, it is important to provide clear instructions and avoid any ambi
 
 import logging
 import platform
-import shutil
 import subprocess
 import time
 from collections.abc import Generator
@@ -23,6 +22,7 @@ from .message import Message
 from .tools import ToolFormat, ToolSpec, get_available_tools
 from .util import document_prompt_function
 from .util.context import md_codeblock
+from .util.tree import get_tree_output
 
 # Default files to include in context when no gptme.toml is present or files list is empty
 DEFAULT_CONTEXT_FILES = [
@@ -83,7 +83,9 @@ def get_prompt(
     )
 
     # Generate workspace context from agent if provided
-    agent_msgs = list(prompt_workspace(agent_path, title="Agent Workspace Files"))
+    agent_msgs = list(
+        prompt_workspace(agent_path, title="Agent Workspace", include_path=True)
+    )
 
     # Combine core messages into one system prompt
     result = []
@@ -319,7 +321,14 @@ def prompt_systeminfo() -> Generator[Message, None, None]:
         os_info = "unknown"
         os_version = ""
 
-    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}".strip()
+    # Get current working directory
+
+    pwd = Path.cwd()
+
+    prompt = f"""## System Information
+
+**OS:** {os_info} {os_version}
+**Working Directory:** {pwd}""".strip()
 
     yield Message(
         "system",
@@ -336,62 +345,10 @@ def prompt_timeinfo() -> Generator[Message, None, None]:
     yield Message("system", prompt)
 
 
-def get_tree_output(workspace: Path) -> str | None:
-    """Get the output of `tree --gitignore .` if available."""
-    # TODO: don't depend on `tree` command being installed
-    # TODO: default to True (get_config().get_env_bool("GPTME_CONTEXT_TREE") is False)
-    if not get_config().get_env_bool("GPTME_CONTEXT_TREE"):
-        return None
-
-    # Check if tree command is available
-    if shutil.which("tree") is None:
-        logger.warning(
-            "GPTME_CONTEXT_TREE is enabled, but 'tree' command is not available. Install it to use this feature."
-        )
-        return None
-
-    # Check if in a git repository
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=1,
-        )
-        if result.returncode != 0:
-            logger.debug("Not in a git repository, skipping tree output")
-            return None
-    except Exception as e:
-        logger.warning(f"Error checking git repository: {e}")
-        return None
-
-    # TODO: use `git ls-files` instead? (respects .gitignore better)
-    try:
-        # Run tree command with --gitignore option
-        result = subprocess.run(
-            ["tree", "--gitignore", "."],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=5,  # Add timeout to prevent hangs
-        )
-        if result.returncode != 0:
-            logger.warning(f"Failed to run tree command: {result.stderr}")
-            return None
-        # we allocate roughly a ~5000 token budget (~20000 characters)
-        if len(result.stdout) > 20000:
-            logger.warning("Tree output listing files is too long, skipping.")
-            return None
-
-        return result.stdout.strip()
-    except Exception as e:
-        logger.warning(f"Error running tree command: {e}")
-        return None
-
-
 def prompt_workspace(
-    workspace: Path | None = None, title="Project Workspace Files"
+    workspace: Path | None = None,
+    title="Project Workspace",
+    include_path: bool = False,
 ) -> Generator[Message, None, None]:
     # TODO: update this prompt if the files change
     # TODO: include `git status -vv`, and keep it up-to-date
@@ -399,6 +356,10 @@ def prompt_workspace(
 
     if workspace is None:
         return
+
+    # Add workspace path if requested
+    if include_path:
+        sections.append(f"**Path:** {workspace.resolve()}")
 
     project = get_project_config(workspace)
 
@@ -435,10 +396,14 @@ def prompt_workspace(
                     f"File glob '{fileglob}' specified in project config does not match any files."
                 )
 
+    # Get tree output if enabled
+    if tree_output := get_tree_output(workspace):
+        sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
+
     files_str = []
     for file in files:
         if file.exists():
-            files_str.append(md_codeblock(file, file.read_text()))
+            files_str.append(md_codeblock(file.resolve(), file.read_text()))
     if files_str:
         sections.append(
             "## Selected files\n\nRead more with `cat`.\n\n" + "\n\n".join(files_str)
@@ -453,10 +418,6 @@ def prompt_workspace(
         )
     ):
         sections.append("## Computed context\n\n" + cmd_output)
-
-    # Get tree output if enabled
-    if tree_output := get_tree_output(workspace):
-        sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
 
     if sections:
         yield Message("system", f"# {title}\n\n" + "\n\n".join(sections))

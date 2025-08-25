@@ -358,7 +358,7 @@ def get_model(model: str) -> ModelMeta:
 
 def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
     if provider == "openai":
-        return "gpt-4o"
+        return "gpt-5"
     elif provider == "openrouter":
         return "meta-llama/llama-3.1-405b-instruct"
     elif provider == "gemini":
@@ -371,13 +371,13 @@ def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
 
 def get_summary_model(provider: Provider) -> str:  # pragma: no cover
     if provider == "openai":
-        return "gpt-4o-mini"
+        return "gpt-5-mini"
     elif provider == "openrouter":
         return "meta-llama/llama-3.1-8b-instruct"
     elif provider == "gemini":
         return "gemini-2.5-flash"
     elif provider == "anthropic":
-        return "claude-3-haiku-20240307"
+        return "claude-3-5-haiku-20241022"
     elif provider == "deepseek":
         return "deepseek-chat"
     else:

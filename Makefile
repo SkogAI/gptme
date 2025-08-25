@@ -139,8 +139,15 @@ version:
 .PHONY: dist/CHANGELOG.md
 dist/CHANGELOG.md: ./scripts/build_changelog.py
 	VERSION=$$(git describe --tags) && \
+	make docs/release/$${VERSION}.md
+	cp docs/release/$${VERSION}.md $@
+
+docs/releases/%.md: ./scripts/build_changelog.py
+	@mkdir -p docs/changelog
+	# version is the % in the target
+	VERSION=$* && \
 	PREV_VERSION=$$(./scripts/get-last-version.sh $${VERSION}) && \
-		./scripts/build_changelog.py --range $${PREV_VERSION}...$${VERSION} --project-title gptme --org ErikBjare --repo gptme --output $@
+		./scripts/build_changelog.py --range $${PREV_VERSION}...$${VERSION} --project-title gptme --org gptme --repo gptme --output $@
 
 release: version dist/CHANGELOG.md
 	@VERSION=$$(git describe --tags --abbrev=0) && \
