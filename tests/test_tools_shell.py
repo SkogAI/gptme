@@ -9,21 +9,10 @@ from gptme.tools.shell import ShellSession, split_commands
 
 @pytest.fixture
 def shell() -> Generator[ShellSession, None, None]:
-<<<<<<< HEAD
-    orig_cwd = os.getcwd()
-
-    shell = ShellSession()
-    yield shell
-    shell.close()
-
-    # change back to the original directory
-    os.chdir(orig_cwd)
-=======
     shell = ShellSession()
     yield shell
     shell.close()
     # Don't change directories - let each test manage its own directory state
->>>>>>> upstream/master
 
 
 def test_echo(shell):

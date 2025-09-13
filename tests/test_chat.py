@@ -10,13 +10,8 @@ def test_find_potential_paths(tmp_path, monkeypatch):
     # Change to temp directory for testing
     monkeypatch.chdir(tmp_path)
 
-<<<<<<< HEAD
-        # Test various path formats
-        content = """
-=======
     # Test various path formats
     content = """
->>>>>>> upstream/master
 Here are some paths:
 /absolute/path
 ~/home/path

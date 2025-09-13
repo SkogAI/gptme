@@ -108,11 +108,7 @@ def test_use_checks_explicit(monkeypatch, tmp_path):
     from gptme.util.context import use_checks
 
     # Change to test directory
-<<<<<<< HEAD
-    os.chdir(tmp_path)
-=======
     monkeypatch.chdir(tmp_path)
->>>>>>> upstream/master
 
     # Test explicit enabled
     monkeypatch.setenv("GPTME_CHECK", "true")
@@ -134,11 +130,7 @@ def test_use_checks_config_file(monkeypatch, tmp_path):
     from gptme.util.context import use_checks
 
     # Change to test directory
-<<<<<<< HEAD
-    os.chdir(tmp_path)
-=======
     monkeypatch.chdir(tmp_path)
->>>>>>> upstream/master
 
     # Mock pre-commit being available
     monkeypatch.setattr(
@@ -158,11 +150,7 @@ def test_use_checks_config_file(monkeypatch, tmp_path):
     config_file.unlink()
     subdir = tmp_path / "subdir"
     subdir.mkdir()
-<<<<<<< HEAD
-    os.chdir(subdir)
-=======
     monkeypatch.chdir(subdir)
->>>>>>> upstream/master
     config_file = tmp_path / ".pre-commit-config.yaml"
     config_file.touch()
     assert use_checks()
@@ -172,11 +160,7 @@ def test_use_checks_no_precommit(monkeypatch, tmp_path):
     """Test use_checks when pre-commit is not available."""
     from gptme.util.context import use_checks
 
-<<<<<<< HEAD
-    os.chdir(tmp_path)
-=======
     monkeypatch.chdir(tmp_path)
->>>>>>> upstream/master
 
     # Enable checks but no pre-commit available
     monkeypatch.setenv("GPTME_CHECK", "true")
@@ -220,19 +204,11 @@ def test_git_branch(monkeypatch):
     assert result is None
 
 
-<<<<<<< HEAD
-def test_parse_prompt_files(tmp_path):
-    """Test _parse_prompt_files function."""
-    from gptme.util.context import _parse_prompt_files
-
-    os.chdir(tmp_path)
-=======
 def test_parse_prompt_files(tmp_path, monkeypatch):
     """Test _parse_prompt_files function."""
     from gptme.util.context import _parse_prompt_files
 
     monkeypatch.chdir(tmp_path)
->>>>>>> upstream/master
 
     # Create test files
     text_file = tmp_path / "test.txt"

@@ -6639,11 +6639,7 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy"]
 
 [extras]
-<<<<<<< HEAD
-all = ["flask", "flask-cors", "matplotlib", "numpy", "numpy", "opentelemetry-api", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus", "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-openai-v2", "opentelemetry-instrumentation-requests", "opentelemetry-sdk", "pandas", "playwright", "pydantic", "scipy", "scipy", "sounddevice", "youtube_transcript_api"]
-=======
 all = ["dspy", "flask", "flask-cors", "matplotlib", "numpy", "numpy", "opentelemetry-api", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus", "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-openai-v2", "opentelemetry-instrumentation-requests", "opentelemetry-sdk", "pandas", "playwright", "pydantic", "scipy", "scipy", "sounddevice", "youtube_transcript_api"]
->>>>>>> upstream/master
 browser = ["playwright"]
 computer = []
 datascience = ["matplotlib", "numpy", "pandas"]
@@ -6657,8 +6653,4 @@ youtube = ["youtube_transcript_api"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-<<<<<<< HEAD
-content-hash = "f918ffab9e975a21e8bcdb055f0c022e6ea353e9b1261f5d8b6fe95fd8dcbe9c"
-=======
 content-hash = "7de8eb7210e9785f3638265cfa525643f1e0b6dd8ec7d6fa2f6c1f8370d0e137"
->>>>>>> upstream/master

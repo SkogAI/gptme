@@ -401,8 +401,6 @@ def prompt_workspace(
                     f"File glob '{fileglob}' specified in project config does not match any files."
                 )
 
-<<<<<<< HEAD
-=======
     # Also include user-level files from ~/.config/gptme/config.toml
     # Resolution rules:
     # - Absolute paths: used as-is
@@ -436,7 +434,6 @@ def prompt_workspace(
             else:
                 logger.debug(f"User-configured file not found: {p}")
 
->>>>>>> upstream/master
     # Get tree output if enabled
     if tree_output := get_tree_output(workspace):
         sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
