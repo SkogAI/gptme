@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from gptme.util.context import (
 )
 
 
-def test_file_to_display_path(tmp_path):
+def test_file_to_display_path(tmp_path, monkeypatch):
     # Test relative path in workspace
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -19,11 +18,11 @@ def test_file_to_display_path(tmp_path):
     file.touch()
 
     # Should show relative path when in workspace
-    os.chdir(workspace)
+    monkeypatch.chdir(workspace)
     assert file_to_display_path(file, workspace) == Path("test.txt")
 
     # Should show absolute path when outside workspace
-    os.chdir(tmp_path)
+    monkeypatch.chdir(tmp_path)
     assert file_to_display_path(file, workspace) == file.absolute()
 
 
@@ -109,7 +108,11 @@ def test_use_checks_explicit(monkeypatch, tmp_path):
     from gptme.util.context import use_checks
 
     # Change to test directory
+<<<<<<< HEAD
     os.chdir(tmp_path)
+=======
+    monkeypatch.chdir(tmp_path)
+>>>>>>> upstream/master
 
     # Test explicit enabled
     monkeypatch.setenv("GPTME_CHECK", "true")
@@ -131,7 +134,11 @@ def test_use_checks_config_file(monkeypatch, tmp_path):
     from gptme.util.context import use_checks
 
     # Change to test directory
+<<<<<<< HEAD
     os.chdir(tmp_path)
+=======
+    monkeypatch.chdir(tmp_path)
+>>>>>>> upstream/master
 
     # Mock pre-commit being available
     monkeypatch.setattr(
@@ -151,7 +158,11 @@ def test_use_checks_config_file(monkeypatch, tmp_path):
     config_file.unlink()
     subdir = tmp_path / "subdir"
     subdir.mkdir()
+<<<<<<< HEAD
     os.chdir(subdir)
+=======
+    monkeypatch.chdir(subdir)
+>>>>>>> upstream/master
     config_file = tmp_path / ".pre-commit-config.yaml"
     config_file.touch()
     assert use_checks()
@@ -161,7 +172,11 @@ def test_use_checks_no_precommit(monkeypatch, tmp_path):
     """Test use_checks when pre-commit is not available."""
     from gptme.util.context import use_checks
 
+<<<<<<< HEAD
     os.chdir(tmp_path)
+=======
+    monkeypatch.chdir(tmp_path)
+>>>>>>> upstream/master
 
     # Enable checks but no pre-commit available
     monkeypatch.setenv("GPTME_CHECK", "true")
@@ -205,11 +220,19 @@ def test_git_branch(monkeypatch):
     assert result is None
 
 
+<<<<<<< HEAD
 def test_parse_prompt_files(tmp_path):
     """Test _parse_prompt_files function."""
     from gptme.util.context import _parse_prompt_files
 
     os.chdir(tmp_path)
+=======
+def test_parse_prompt_files(tmp_path, monkeypatch):
+    """Test _parse_prompt_files function."""
+    from gptme.util.context import _parse_prompt_files
+
+    monkeypatch.chdir(tmp_path)
+>>>>>>> upstream/master
 
     # Create test files
     text_file = tmp_path / "test.txt"

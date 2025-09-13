@@ -151,12 +151,12 @@ def get_output_device() -> tuple[int, int]:
         raise RuntimeError("Audio imports not available")
 
     devices = sd.query_devices()
-    log.debug("Available audio devices:")
-    for i, dev in enumerate(devices):
-        log.debug(
-            f"  [{i}] {dev['name']} (in: {dev['max_input_channels']}, "
-            f"out: {dev['max_output_channels']}, hostapi: {dev['hostapi']})"
-        )
+    # log.debug("Available audio devices:")
+    # for i, dev in enumerate(devices):
+    #     log.debug(
+    #         f"  [{i}] {dev['name']} (in: {dev['max_input_channels']}, "
+    #         f"out: {dev['max_output_channels']}, hostapi: {dev['hostapi']})"
+    #     )
 
     # Check for environment variable override first
     if override_result := _check_device_override(devices):
@@ -268,7 +268,7 @@ def play_with_sounddevice(data: Any, sample_rate: int, volume: float = 1.0):
 
         # Wait with timeout
         start_time = time.time()
-        timeout = 10.0  # 10 second timeout
+        timeout = 30.0
         while sd.get_stream().active:
             if time.time() - start_time > timeout:
                 log.warning("Audio playback timed out, stopping")
