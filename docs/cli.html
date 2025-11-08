@@ -182,7 +182,17 @@
 <li class="toctree-l1"><a class="reference internal" href="alternatives.html">Alternatives</a></li>
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
-<li class="toctree-l1"><a class="reference external" href="https://github.com/gptme/gptme/releases">Changelog</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.28.0.html">v0.28.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.27.0.html">v0.27.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.26.0.html">v0.26.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.25.0.html">v0.25.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.24.1.html">v0.24.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.24.0.html">v0.24.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.23.0.html">v0.23.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.22.0.html">v0.22.0</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">External</span></p>
 <ul class="nav bd-sidenav">
@@ -466,7 +476,7 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <div class="line">/impersonate  Impersonate the assistant</div>
 <div class="line">/tokens       Show the number of tokens used</div>
 <div class="line">/export       Export conversation as HTML</div>
-<div class="line">/commit       Commit staged changes to git</div>
+<div class="line">/commit       Ask assistant to git commit</div>
 <div class="line">/setup        Setup gptme with completions and configuration</div>
 <div class="line">/help         Show this help message</div>
 <div class="line">/exit         Exit the program</div>
@@ -490,7 +500,7 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-m">
 <span id="cmdoption-gptme-model"></span><span class="sig-name descname"><span class="pre">-m</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--model</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;model&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-m" title="Link to this definition">#</a></dt>
-<dd><p>Model to use, e.g. openai/gpt-4o, anthropic/claude-sonnet-4-20250514. If only provider given then a default is used.</p>
+<dd><p>Model to use, e.g. openai/gpt-5, anthropic/claude-sonnet-4-20250514. If only provider given then a default is used.</p>
 </dd></dl>
 
 <dl class="std option">
@@ -508,13 +518,13 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-r">
 <span id="cmdoption-gptme-resume"></span><span class="sig-name descname"><span class="pre">-r</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--resume</span></span><span class="sig-prename descclassname"></span><a class="headerlink" href="#cmdoption-gptme-r" title="Link to this definition">#</a></dt>
-<dd><p>Load last conversation</p>
+<dd><p>Load most recent conversation.</p>
 </dd></dl>
 
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-y">
 <span id="cmdoption-gptme-no-confirm"></span><span class="sig-name descname"><span class="pre">-y</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--no-confirm</span></span><span class="sig-prename descclassname"></span><a class="headerlink" href="#cmdoption-gptme-y" title="Link to this definition">#</a></dt>
-<dd><p>Skips all confirmation prompts.</p>
+<dd><p>Skip all confirmation prompts.</p>
 </dd></dl>
 
 <dl class="std option">
@@ -526,19 +536,19 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-system">
 <span class="sig-name descname"><span class="pre">--system</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;prompt_system&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-system" title="Link to this definition">#</a></dt>
-<dd><p>System prompt. Can be ‘full’, ‘short’, or something custom.</p>
+<dd><p>System prompt. Options: ‘full’, ‘short’, or something custom.</p>
 </dd></dl>
 
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-t">
 <span id="cmdoption-gptme-tools"></span><span class="sig-name descname"><span class="pre">-t</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--tools</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;tool_allowlist&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-t" title="Link to this definition">#</a></dt>
-<dd><p>Comma-separated list of tools to allow. Available: append, browser, chats, choice, computer, gh, ipython, patch, read, save, screenshot, shell, subagent, tmux, vision.</p>
+<dd><p>Tools to allow as comma-separated list. Available: append, browser, chats, choice, computer, gh, ipython, patch, read, save, screenshot, shell, subagent, tmux, todoread, todowrite, vision.</p>
 </dd></dl>
 
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-tool-format">
 <span class="sig-name descname"><span class="pre">--tool-format</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;tool_format&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-tool-format" title="Link to this definition">#</a></dt>
-<dd><p>Tool parsing method. Can be ‘markdown’, ‘xml’, ‘tool’. (experimental)</p>
+<dd><p>Tool format to use. Options: markdown, xml, tool</p>
 </dd></dl>
 
 <dl class="std option">
