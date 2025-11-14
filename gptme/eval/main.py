@@ -35,6 +35,87 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+
+def in_docker() -> bool:
+    """Check if currently running inside a Docker container."""
+    try:
+        with open("/proc/1/cgroup") as f:
+            content = f.read()
+            return "docker" in content or "containerd" in content
+    except FileNotFoundError:
+        return False
+
+
+def docker_reexec(argv: list[str]) -> None:
+    """
+    Re-execute current command inside Docker container.
+
+    This function:
+    1. Checks/builds the gptme-eval Docker image
+    2. Mounts config, results, and source code
+    3. Re-executes the current command inside Docker
+    4. Exits with the same return code
+    """
+    # Remove argv[0] (provided by Dockerfile entrypoint)
+    argv = argv[1:]
+
+    # Remove --use-docker from args
+    argv = [arg for arg in argv if arg != "--use-docker"]
+
+    # Get git root
+    try:
+        git_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+            cwd=Path(__file__).parent,
+        ).strip()
+    except subprocess.CalledProcessError:
+        print("Error: Not in a git repository", file=sys.stderr)
+        sys.exit(1)
+
+    # Check/build Docker image
+    image = "gptme-eval:latest"
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image], check=True, capture_output=True
+        )
+        logger.info(f"Using existing Docker image: {image}")
+    except subprocess.CalledProcessError:
+        logger.info(f"Building Docker image: {image}")
+        dockerfile = Path(git_root) / "scripts" / "Dockerfile.eval"
+        if not dockerfile.exists():
+            print(f"Error: Dockerfile not found at {dockerfile}", file=sys.stderr)
+            sys.exit(1)
+        subprocess.run(
+            ["make", "build-docker"],
+            cwd=Path(git_root),
+            check=True,
+        )
+
+    # Construct docker run command
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        # use separate config dir for gptme-eval (only stores API keys)
+        f"{Path.home()}/.config/gptme-eval:/home/appuser/.config/gptme",
+        "-v",
+        f"{git_root}/eval_results:/app/eval_results",
+        "-v",
+        f"{git_root}:/app",
+        "-w",
+        "/app",
+        image,
+    ] + argv
+
+    logger.info(f"Re-executing inside Docker: {' '.join(docker_cmd)}")
+
+    # Run and exit with same code
+    result = subprocess.run(docker_cmd)
+    sys.exit(result.returncode)
+
+
 project_dir = Path(__file__).parent.parent.parent
 
 
@@ -196,12 +277,18 @@ def aggregate_and_display_results(result_files: list[str]):
     type=click.Choice(get_args(ToolFormat)),
     help="Tool format to use. Can also be specified per model with @format.",
 )
+@click.option(
+    "--use-docker",
+    is_flag=True,
+    help="Run evals in Docker container for isolation (prevents host environment pollution)",
+)
 def main(
     eval_names_or_result_files: list[str],
     _model: list[str],
     timeout: int,
     parallel: int,
     tool_format: ToolFormat | None = None,
+    use_docker: bool = False,
 ):
     """
     Run evals for gptme.
@@ -209,6 +296,12 @@ def main(
 
     Output from evals will be captured, unless a single eval is run, and saved to the results directory.
     """
+    # Check if we should re-execute inside Docker
+    if use_docker and not in_docker():
+        logger.info("Re-executing inside Docker container...")
+        docker_reexec(sys.argv)
+        # docker_reexec will exit, so this line is never reached
+
     # init
     multiprocessing_logging.install_mp_handler()
 
@@ -231,8 +324,8 @@ def main(
                 "anthropic/claude-3-5-sonnet-20241022@tool",
                 "anthropic/claude-3-5-sonnet-20241022@markdown",
                 "anthropic/claude-3-5-sonnet-20241022@xml",
-                "anthropic/claude-3-5-haiku-20241022@tool",
-                "anthropic/claude-3-5-haiku-20241022@xml",
+                "anthropic/claude-haiku-4-5@tool",
+                "anthropic/claude-haiku-4-5@xml",
             ]
         )
     if config.get_env("OPENROUTER_API_KEY"):
@@ -296,7 +389,9 @@ def main(
         evals_to_run = tests_default
 
     print("=== Running evals ===")
-    model_results = run_evals(evals_to_run, model_configs, timeout, parallel)
+    model_results = run_evals(
+        evals_to_run, model_configs, timeout, parallel, use_docker
+    )
     print("=== Finished ===")
 
     print("\n=== Model Results ===")
@@ -366,6 +461,8 @@ def read_results_from_csv(filename: str) -> dict[str, list[EvalResult]]:
                 gen_stderr=read_log_file(test_dir / "gen_stderr.txt"),
                 run_stdout=read_log_file(test_dir / "run_stdout.txt"),
                 run_stderr=read_log_file(test_dir / "run_stderr.txt"),
+                log_dir=Path(row.get("Log Dir", test_dir)),
+                workspace_dir=Path(row.get("Workspace Dir", test_dir)),
             )
             model_results[model].append(result)
     return dict(model_results)
@@ -398,6 +495,8 @@ def write_results(model_results: dict[str, list[EvalResult]]):
             "Run Time",
             "Eval Time",
             "Commit Hash",
+            "Log Dir",
+            "Workspace Dir",
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, lineterminator="\n")
 
@@ -428,6 +527,8 @@ def write_results(model_results: dict[str, list[EvalResult]]):
                     "Run Time": round(result.timings["run"], 2),
                     "Eval Time": round(result.timings["eval"], 2),
                     "Commit Hash": commit_hash,
+                    "Log Dir": str(result.log_dir),
+                    "Workspace Dir": str(result.workspace_dir),
                 }
                 writer.writerow(row)
                 _write_case_results(test_dir / "cases.csv", result.results)

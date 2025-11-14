@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import functools
 import importlib
 import json
@@ -10,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import indent
 from typing import (
+    TYPE_CHECKING,
     Any,
     Literal,
     Protocol,
@@ -22,8 +25,12 @@ import json_repair
 from lxml import etree
 
 from ..codeblock import Codeblock
+from ..hooks import HookFunc
 from ..message import Message
 from ..util import clean_example, transform_examples_to_chat_directives
+
+if TYPE_CHECKING:
+    from ..logmanager import Log
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +42,7 @@ ToolFormat: TypeAlias = Literal["markdown", "xml", "tool"]
 tool_format: ToolFormat = "markdown"
 
 # Match tool name and start of JSON
-toolcall_re = re.compile(r"^@(\w+)\(([\w_\-]+)\):\s*({.*)", re.M | re.S)
+toolcall_re = re.compile(r"^@(\w+)\(([\w\-:]+)\):\s*({.*)", re.M | re.S)
 
 
 def find_json_end(s: str, start: int) -> int | None:
@@ -152,7 +159,7 @@ class ToolSpec:
     Args:
         name: The name of the tool.
         desc: A description of the tool.
-        instructions: Instructions on how to use the tool.
+        instructions: Instructions for the agent on how to use the tool. This will be included in the prompt.
         instructions_format: Per tool format instructions when needed.
         examples: Example usage of the tool.
         functions: Functions registered in the IPython REPL.
@@ -163,6 +170,8 @@ class ToolSpec:
         parameters: Descriptor of parameters use by this tool.
         load_priority: Influence the loading order of this tool. The higher the later.
         disabled_by_default: Whether this tool should be disabled by default.
+        hooks: Hooks to register when this tool is loaded.
+        commands: User slash-commands (/example) to register when this tool is loaded.
     """
 
     name: str
@@ -179,9 +188,39 @@ class ToolSpec:
     load_priority: int = 0
     disabled_by_default: bool = False
     is_mcp: bool = False
+    hooks: dict[str, tuple[str, HookFunc, int]] = field(default_factory=dict)
+    commands: dict[str, Callable] = field(default_factory=dict)
 
     def __repr__(self):
         return f"ToolSpec({self.name})"
+
+    def register_hooks(self) -> None:
+        """Register all hooks defined in this tool with the global hook registry."""
+        # Avoid circular import
+        from ..hooks import HookType, register_hook
+
+        for hook_name, (hook_type_str, func, priority) in self.hooks.items():
+            try:
+                hook_type = HookType(hook_type_str)
+                full_hook_name = f"{self.name}.{hook_name}"
+                register_hook(full_hook_name, hook_type, func, priority)
+            except (ValueError, KeyError) as e:
+                logger.warning(
+                    f"Failed to register hook '{hook_name}' for tool '{self.name}': {e}"
+                )
+
+    def register_commands(self) -> None:
+        """Register all commands defined in this tool with the global command registry."""
+        # Avoid circular import
+        from ..commands import register_command
+
+        for cmd_name, handler in self.commands.items():
+            try:
+                register_command(cmd_name, handler)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to register command '{cmd_name}' for tool '{self.name}': {e}"
+                )
 
     def get_doc(self, doc: str | None = None) -> str:
         """Returns an updated docstring with examples."""
@@ -288,10 +327,17 @@ class ToolUse:
     kwargs: dict[str, str] | None = None
     call_id: str | None = None
     start: int | None = None
+    _format: ToolFormat | None = "markdown"
 
-    def execute(self, confirm: ConfirmFunc) -> Generator[Message, None, None]:
+    def execute(
+        self,
+        confirm: ConfirmFunc,
+        log: Log | None = None,
+        workspace: Path | None = None,
+    ) -> Generator[Message, None, None]:
         """Executes a tool-use tag and returns the output."""
         # noreorder
+        from ..hooks import HookType, trigger_hook  # fmt: skip
         from ..telemetry import record_tool_call, trace_function  # fmt: skip
         from . import get_tool  # fmt: skip
 
@@ -308,11 +354,25 @@ class ToolUse:
             tool = get_tool(self.tool)
             if tool and tool.execute:
                 try:
+                    # Trigger pre-execution hooks
+                    if pre_hook_msgs := trigger_hook(
+                        HookType.TOOL_PRE_EXECUTE,
+                        log=log,
+                        workspace=workspace,
+                        tool_use=self,
+                    ):
+                        yield from pre_hook_msgs
+
                     # Play tool sound if enabled
                     from ..util.sound import get_tool_sound_for_tool, play_tool_sound
 
                     if sound_type := get_tool_sound_for_tool(self.tool):
                         play_tool_sound(sound_type)
+
+                    # Measure tool execution time
+                    import time
+
+                    start_time = time.time()
 
                     ex = tool.execute(
                         self.content,
@@ -327,16 +387,38 @@ class ToolUse:
                     else:
                         yield ex
 
-                    # Record successful tool call
-                    record_tool_call(self.tool, success=True)
+                    # Calculate duration
+                    duration = time.time() - start_time
 
-                except Exception as e:
-                    # Record failed tool call with error details
+                    # Record successful tool call with duration
                     record_tool_call(
                         self.tool,
+                        duration=duration,
+                        success=True,
+                        tool_format=self._format,
+                    )
+
+                    # Trigger post-execution hooks
+                    if post_hook_msgs := trigger_hook(
+                        HookType.TOOL_POST_EXECUTE,
+                        log=log,
+                        workspace=workspace,
+                        tool_use=self,
+                    ):
+                        yield from post_hook_msgs
+
+                except Exception as e:
+                    # Calculate duration even for failed calls
+                    duration = time.time() - start_time
+
+                    # Record failed tool call with error details and duration
+                    record_tool_call(
+                        self.tool,
+                        duration=duration,
                         success=False,
                         error_type=type(e).__name__,
                         error_message=str(e),
+                        tool_format=self._format,
                     )
 
                     # if we are testing, raise the exception
@@ -358,7 +440,7 @@ class ToolUse:
         return bool(tool.execute) if tool else False
 
     @classmethod
-    def _from_codeblock(cls, codeblock: Codeblock) -> "ToolUse | None":
+    def _from_codeblock(cls, codeblock: Codeblock) -> ToolUse | None:
         """Parses a codeblock into a ToolUse. Codeblock must be a supported type.
 
         Example:
@@ -376,7 +458,13 @@ class ToolUse:
                 if tool.name not in ["save", "append", "patch"]
                 else [codeblock.lang]
             )
-            return ToolUse(tool.name, args, codeblock.content, start=codeblock.start)
+            return ToolUse(
+                tool.name,
+                args,
+                codeblock.content,
+                start=codeblock.start,
+                _format="markdown",
+            )
         else:
             # no_op_langs = ["csv", "json", "html", "xml", "stdout", "stderr", "result"]
             # if codeblock.lang and codeblock.lang not in no_op_langs:
@@ -387,9 +475,18 @@ class ToolUse:
 
     @classmethod
     def iter_from_content(
-        cls, content: str, tool_format_override: ToolFormat | None = None
-    ) -> Generator["ToolUse", None, None]:
-        """Returns all ToolUse in a message, markdown or XML, in order."""
+        cls,
+        content: str,
+        tool_format_override: ToolFormat | None = None,
+        streaming: bool = False,
+    ) -> Generator[ToolUse, None, None]:
+        """Returns all ToolUse in a message, markdown or XML, in order.
+
+        Args:
+            content: The message content to parse
+            tool_format_override: Optional tool format override
+            streaming: If True, requires blank line after code blocks for completion
+        """
         # Use override if provided, otherwise use global tool_format
         active_format = tool_format_override or tool_format
 
@@ -399,7 +496,7 @@ class ToolUse:
             for tool_use in cls._iter_from_xml(content):
                 tool_uses.append(tool_use)
         if active_format == "markdown":
-            for tool_use in cls._iter_from_markdown(content):
+            for tool_use in cls._iter_from_markdown(content, streaming=streaming):
                 tool_uses.append(tool_use)
 
         # return them in the order they appear
@@ -430,37 +527,56 @@ class ToolUse:
                         kwargs=cast(dict[str, str], kwargs),
                         call_id=call_id,
                         start=start_pos,
+                        _format="tool",
                     )
                 except json.JSONDecodeError:
                     logger.debug(f"Failed to parse JSON: {json_str}")
 
     @classmethod
-    def _iter_from_markdown(cls, content: str) -> Generator["ToolUse", None, None]:
+    def _iter_from_markdown(
+        cls, content: str, streaming: bool = False
+    ) -> Generator[ToolUse, None, None]:
         """Returns all markdown-style ToolUse in a message.
+
+        Args:
+            content: The message content to parse
+            streaming: If True, requires blank line after code blocks for completion
 
         Example:
           ```ipython
           print("Hello, world!")
           ```
         """
-        for codeblock in Codeblock.iter_from_markdown(content):
+        for codeblock in Codeblock.iter_from_markdown(content, streaming=streaming):
             if tool_use := cls._from_codeblock(codeblock):
                 yield tool_use
 
     @classmethod
-    def _iter_from_xml(cls, content: str) -> Generator["ToolUse", None, None]:
+    def _iter_from_xml(cls, content: str) -> Generator[ToolUse, None, None]:
         """Returns all XML-style ToolUse in a message.
 
-        Example:
+        Supports two formats:
+        1. gptme format:
           <tool-use>
           <ipython>
           print("Hello, world!")
           </ipython>
           </tool-use>
+
+        2. Haiku format:
+          <function_calls>
+          <invoke name="ipython">
+          print("Hello, world!")
+          </invoke>
+          </function_calls>
         """
-        if "<tool-use>" not in content:
-            return
-        if "</tool-use>" not in content:
+        # Check for either format
+        has_tool_use = "<tool-use>" in content and "</tool-use>" in content
+        has_function_calls = (
+            "<function_calls>" in content and "</function_calls>" in content
+        )
+
+        if not (has_tool_use or has_function_calls):
             return
 
         try:
@@ -468,6 +584,7 @@ class ToolUse:
             parser = etree.HTMLParser()
             tree = etree.fromstring(content, parser)
 
+            # Handle gptme format: <tool-use><toolname>...</toolname></tool-use>
             for tooluse in tree.xpath("//tool-use"):
                 for child in tooluse.getchildren():
                     tool_name = child.tag
@@ -482,6 +599,30 @@ class ToolUse:
                         args,
                         tool_content,
                         start=start_pos,
+                        _format="xml",
+                    )
+
+            # Handle Haiku format: <function_calls><invoke name="toolname">...</invoke></function_calls>
+            for function_calls in tree.xpath("//function_calls"):
+                for invoke in function_calls.xpath(".//invoke"):
+                    # Get tool name from 'name' attribute
+                    tool_name = invoke.get("name")
+                    if not tool_name:
+                        continue
+
+                    # Get any other attributes as args (excluding 'name')
+                    args = [v for k, v in invoke.attrib.items() if k != "name"]
+                    tool_content = (invoke.text or "").strip()
+
+                    # Find the start position of the invoke in the original content
+                    start_pos = content.find(f'<invoke name="{tool_name}"')
+
+                    yield ToolUse(
+                        tool_name,
+                        args,
+                        tool_content,
+                        start=start_pos,
+                        _format="xml",
                     )
         except etree.ParseError as e:
             logger.warning(f"Failed to parse XML content: {e}")
@@ -502,9 +643,18 @@ class ToolUse:
 
     def _to_xml(self) -> str:
         assert self.args is not None
+        wrapper_tag = "tool-use"
         args = " ".join(self.args)
         args_str = "" if not args else f" args='{args}'"
-        return f"<tool-use>\n<{self.tool}{args_str}>\n{self.content}\n</{self.tool}>\n</tool-use>"
+        # Special case for Haiku format (testing purposes)
+        haiku_adapted = False
+        if haiku_adapted:
+            wrapper_tag = "function_calls"
+            args_str = f' name="{self.tool}"' + args_str
+            call = f'<invoke name="{self.tool}"{args_str}>\n{self.content}\n</invoke>'
+        else:
+            call = f"<{self.tool}{args_str}>\n{self.content}\n</{self.tool}>"
+        return f"<{wrapper_tag}>\n{call}\n</{wrapper_tag}>"
 
     def _to_params(self) -> dict:
         # noreorder

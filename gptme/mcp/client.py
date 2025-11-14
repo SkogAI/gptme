@@ -1,15 +1,36 @@
 import asyncio
 import logging
-from contextlib import AsyncExitStack
 import os
-
-from gptme.config import Config, get_config
+from contextlib import AsyncExitStack
 
 import mcp.types as types  # Import all types
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamablehttp_client
+
+from gptme.config import Config, get_config
 
 logger = logging.getLogger(__name__)
+
+
+def _is_connection_error(error: Exception) -> bool:
+    """Check if error indicates MCP connection failure"""
+    error_msg = str(error).lower()
+    return any(
+        phrase in error_msg
+        for phrase in [
+            "connection closed",
+            "connection refused",
+            "connection reset",
+            "broken pipe",
+            "pipe closed",
+            "transport closed",
+            "session closed",
+            "server closed",
+            "process terminated",
+            "no such process",
+        ]
+    )
 
 
 class MCPClient:
@@ -33,7 +54,10 @@ class MCPClient:
             logger.debug(f"_run_async end - Loop ID: {id(self.loop)}")
             return result
         except Exception as e:
-            logger.debug(f"_run_async failed with error: {e}")
+            if _is_connection_error(e):
+                logger.info(f"MCP connection error (will retry): {e}")
+            else:
+                logger.error(f"Unexpected MCP error: {e}")
             raise
 
     async def _read_stderr(self, stderr):
@@ -47,10 +71,10 @@ class MCPClient:
         except Exception as e:
             logger.debug(f"Stderr reader stopped: {e}")
 
-    async def _setup_connection(
+    async def _setup_stdio_connection(
         self, server_params
     ) -> tuple[types.ListToolsResult, ClientSession]:
-        """Set up the connection and maintain it"""
+        """Set up stdio connection and maintain it"""
         self.stack = AsyncExitStack()
         await self.stack.__aenter__()
 
@@ -81,6 +105,40 @@ class MCPClient:
                 self.stack = None
             raise
 
+    async def _setup_http_connection(
+        self, url: str, headers: dict
+    ) -> tuple[types.ListToolsResult, ClientSession]:
+        """Set up HTTP connection and maintain it"""
+        self.stack = AsyncExitStack()
+        await self.stack.__aenter__()
+
+        try:
+            transport = await self.stack.enter_async_context(
+                streamablehttp_client(url, headers=headers)
+            )
+            read, write, _ = transport
+
+            csession = ClientSession(read, write)
+            session = await self.stack.enter_async_context(csession)
+            self.session = session
+
+            if not self.session:
+                raise RuntimeError("Failed to initialize session")
+
+            await asyncio.wait_for(self.session.initialize(), timeout=5.0)
+            tools = await asyncio.wait_for(self.session.list_tools(), timeout=10.0)
+            self.tools = tools
+
+            if not self.tools:
+                raise RuntimeError("Failed to get tools list")
+
+            return (self.tools, self.session)
+        except Exception:
+            if self.stack:
+                await self.stack.__aexit__(None, None, None)
+                self.stack = None
+            raise
+
     def connect(self, server_name: str) -> tuple[types.ListToolsResult, ClientSession]:
         """Connect to an MCP server by name"""
         if not self.config.mcp.enabled:
@@ -92,16 +150,21 @@ class MCPClient:
         if not server:
             raise ValueError(f"No MCP server config found for '{server_name}'")
 
-        env = server.env or {}
+        if server.is_http:
+            # HTTP MCP server
+            tools, session = self._run_async(
+                self._setup_http_connection(server.url, server.headers)
+            )
+        else:
+            # Stdio MCP server
+            env = server.env or {}
+            env.update(os.environ)
 
-        # Add env vars to the environment
-        env.update(os.environ)
+            params = StdioServerParameters(
+                command=server.command, args=server.args, env=env
+            )
+            tools, session = self._run_async(self._setup_stdio_connection(params))
 
-        params = StdioServerParameters(
-            command=server.command, args=server.args, env=env
-        )
-
-        tools, session = self._run_async(self._setup_connection(params))
         logger.info(f"Tools: {tools}")
         return tools, session
 

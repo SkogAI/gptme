@@ -87,6 +87,7 @@ extensions = [
     "myst_parser",
     "sphinx.ext.napoleon",
     "sphinx.ext.autodoc",
+    "sphinx.ext.intersphinx",
     "sphinx.ext.extlinks",
     "sphinx.ext.autosectionlabel",
     "sphinxcontrib.mermaid",
@@ -97,6 +98,11 @@ extensions = [
     "sphinx_llms_txt",
 ]
 
+# Intersphinx mapping for cross-references to Python standard library
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+}
+
 html_baseurl = "https://gptme.org/docs/"  # used to build sitemap
 sitemap_url_scheme = "{link}"
 sitemap_excludes = [
@@ -105,7 +111,7 @@ sitemap_excludes = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "lessons/**"]
 
 extlinks = {
     "issue": ("https://github.com/gptme/gptme/issues/%s", "issue #"),
@@ -135,6 +141,9 @@ nitpick_ignore = [
     ("py:class", "gptme.tools.computer.ScalingSource"),
     ("py:class", "gptme.config.RagConfig"),
     ("py:class", "ToolFormat"),
+    ("py:class", "ConfirmFunc"),
+    ("py:class", "Path"),
+    ("py:class", "gptme.tools.subagent.SubtaskDef"),
 ]
 
 # -- Options for HTML output -------------------------------------------------

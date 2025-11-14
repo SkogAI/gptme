@@ -9,6 +9,7 @@ import requests
 from ..config import Config, get_config
 from ..constants import TEMPERATURE, TOP_P
 from ..message import Message, msgs2dicts
+from ..telemetry import record_llm_request
 from ..tools import ToolSpec
 from .models import ModelMeta, Provider
 from .utils import (
@@ -26,6 +27,34 @@ if TYPE_CHECKING:
 clients: dict[Provider, "OpenAI"] = {}
 logger = logging.getLogger(__name__)
 
+
+def _record_usage(usage, model: str) -> None:
+    """Record usage metrics as telemetry."""
+    if not usage:
+        return
+
+    # Extract token counts (OpenAI uses different field names than Anthropic)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    output_tokens = getattr(usage, "completion_tokens", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read_tokens = getattr(details, "cached_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+
+    # subtract cache_read_tokens from prompt_tokens to avoid double counting
+    input_tokens = (prompt_tokens - (cache_read_tokens or 0)) if prompt_tokens else None
+
+    # Record the LLM request with token usage
+    record_llm_request(
+        provider="openai",
+        model=model,
+        success=True,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        total_tokens=total_tokens,
+    )
+
+
 # TODO: improve provider routing for openrouter: https://openrouter.ai/docs/provider-routing
 # TODO: set required-parameters: https://openrouter.ai/docs/provider-routing#required-parameters-_beta_
 # TODO: set quantization: https://openrouter.ai/docs/provider-routing#quantization
@@ -38,13 +67,27 @@ def init(provider: Provider, config: Config):
     """Initialize OpenAI client for a given provider."""
     from openai import AzureOpenAI, OpenAI  # fmt: skip
 
+    proxy_key = config.get_env("LLM_PROXY_API_KEY")
+    proxy_url = config.get_env("LLM_PROXY_URL")
+
+    # Set the proxy URL to the unified messages endpoint if not already set
+    if proxy_url and not proxy_url.endswith("/messages"):
+        proxy_url = proxy_url + "/messages" if proxy_url else None
+
+    # Get configurable API timeout (default: client's own default of 10 minutes)
+    # If not set explicitly via LLM_API_TIMEOUT, we use NOT_GIVEN to let the
+    # client use its own default behavior, which may evolve with future versions.
+    from openai import NOT_GIVEN  # fmt: skip
+
+    timeout_str = config.get_env("LLM_API_TIMEOUT")
+    timeout = float(timeout_str) if timeout_str else NOT_GIVEN
+
     if provider == "openai":
-        proxy_key = config.get_env("LLM_PROXY_API_KEY")
-        proxy_url = config.get_env("LLM_PROXY_URL")
         api_key = proxy_key or config.get_env_required("OPENAI_API_KEY")
         clients[provider] = OpenAI(
             api_key=api_key,
             base_url=proxy_url or None,
+            timeout=timeout,
         )
     elif provider == "azure":
         api_key = config.get_env_required("AZURE_OPENAI_API_KEY")
@@ -53,36 +96,43 @@ def init(provider: Provider, config: Config):
             api_key=api_key,
             api_version="2023-07-01-preview",
             azure_endpoint=azure_endpoint,
+            timeout=timeout,
         )
     elif provider == "openrouter":
-        proxy_key = config.get_env("LLM_PROXY_API_KEY")
-        proxy_url = config.get_env("LLM_PROXY_URL")
         api_key = proxy_key or config.get_env_required("OPENROUTER_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url=proxy_url or "https://openrouter.ai/api/v1"
+            api_key=api_key,
+            base_url=proxy_url or "https://openrouter.ai/api/v1",
+            timeout=timeout,
         )
     elif provider == "gemini":
         api_key = config.get_env_required("GEMINI_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://generativelanguage.googleapis.com/v1beta"
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            timeout=timeout,
         )
     elif provider == "xai":
         api_key = config.get_env_required("XAI_API_KEY")
-        clients[provider] = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        clients[provider] = OpenAI(
+            api_key=api_key, base_url="https://api.x.ai/v1", timeout=timeout
+        )
     elif provider == "groq":
         api_key = config.get_env_required("GROQ_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://api.groq.com/openai/v1"
+            api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=timeout
         )
     elif provider == "deepseek":
         api_key = config.get_env_required("DEEPSEEK_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://api.deepseek.com/v1"
+            api_key=api_key, base_url="https://api.deepseek.com/v1", timeout=timeout
         )
     elif provider == "nvidia":
         api_key = config.get_env_required("NVIDIA_API_KEY")
         clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://integrate.api.nvidia.com/v1"
+            api_key=api_key,
+            base_url="https://integrate.api.nvidia.com/v1",
+            timeout=timeout,
         )
     elif provider == "local":
         # OPENAI_API_BASE renamed to OPENAI_BASE_URL: https://github.com/openai/openai-python/issues/745
@@ -91,9 +141,21 @@ def init(provider: Provider, config: Config):
         if not api_base:
             raise KeyError("Missing environment variable OPENAI_BASE_URL")
         api_key = config.get_env("OPENAI_API_KEY") or "ollama"
-        clients[provider] = OpenAI(api_key=api_key, base_url=api_base)
+        clients[provider] = OpenAI(api_key=api_key, base_url=api_base, timeout=timeout)
     else:
-        raise ValueError(f"Unknown provider: {provider}")
+        # Check if this is a custom provider
+        custom_provider = next(
+            (p for p in config.user.providers if p.name == provider), None
+        )
+        if custom_provider:
+            api_key = custom_provider.get_api_key(config)
+            clients[provider] = OpenAI(
+                api_key=api_key,
+                base_url=custom_provider.base_url,
+                timeout=timeout,
+            )
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
 
     assert clients[provider], f"Provider {provider} not initialized"
 
@@ -109,7 +171,9 @@ def _prep_o1(msgs: Iterable[Message]) -> Generator[Message, None, None]:
     # prepare messages for OpenAI O1, which doesn't support the system role
     # and requires the first message to be from the user
     for msg in msgs:
-        if msg.role == "system":
+        # Don't convert system messages that have call_id (tool results)
+        # as they need to be converted to tool messages by _handle_tools
+        if msg.role == "system" and msg.call_id is None:
             msg = msg.replace(
                 role="user", content=f"<system>\n{msg.content}\n</system>"
             )
@@ -126,7 +190,7 @@ def _merge_consecutive(msgs: Iterable[Message]) -> Generator[Message, None, None
 
         if last_message.role == msg.role:
             last_message = last_message.replace(
-                content=f"{last_message.content}\n{msg.content}"
+                content=f"{last_message.content}\n\n{msg.content}"
             )
             continue
         else:
@@ -137,35 +201,19 @@ def _merge_consecutive(msgs: Iterable[Message]) -> Generator[Message, None, None
         yield last_message
 
 
-assert (
-    len(
-        list(
-            _merge_consecutive(
-                [Message(role="user", content="a"), Message(role="user", content="b")]
-            )
-        )
-    )
-    == 1
-)
-
-
 def _prep_deepseek_reasoner(msgs: list[Message]) -> Generator[Message, None, None]:
     yield msgs[0]
     yield from _merge_consecutive(_prep_o1(msgs[1:]))
-
-
-def _is_reasoner(base_model: str) -> bool:
-    is_o1 = any(base_model.startswith(om) for om in ["o1", "o3", "o4"])
-    is_deepseek_reasoner = base_model == "deepseek-reasoner"
-    is_gpt5 = base_model.startswith("gpt-5")
-    return is_o1 or is_deepseek_reasoner or is_gpt5
 
 
 @lru_cache(maxsize=2)
 def _is_proxy(client: "OpenAI") -> bool:
     proxy_url = get_config().get_env("LLM_PROXY_URL")
     # If client has the proxy URL set, it is using the proxy
-    return bool(proxy_url) and client.base_url == proxy_url
+    if not proxy_url:
+        return False
+    # Normalize URLs for comparison (remove trailing slashes)
+    return str(client.base_url).rstrip("/") == proxy_url.rstrip("/")
 
 
 def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> str:
@@ -173,13 +221,15 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
     # top_p controls diversity, temperature controls randomness
 
     from . import _get_base_model, get_provider_from_model  # fmt: skip
+    from .models import get_model  # fmt: skip
 
     provider = get_provider_from_model(model)
     client = get_client(provider)
     is_proxy = _is_proxy(client)
 
     base_model = _get_base_model(model)
-    is_reasoner = _is_reasoner(base_model)
+    model_meta = get_model(model)
+    is_reasoner = model_meta.supports_reasoning
 
     # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
     api_model = model if is_proxy else base_model
@@ -196,15 +246,16 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
         tools=tools_dict if tools_dict else NOT_GIVEN,
         extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider),
+        extra_body=extra_body(provider, model_meta),
     )
+    _record_usage(response.usage, model)
     choice = response.choices[0]
     result = []
     if choice.finish_reason == "tool_calls":
         for tool_call in choice.message.tool_calls or []:
             assert isinstance(tool_call, ChatCompletionMessageToolCall)
             result.append(
-                f"@{tool_call.function.name}({tool_call.id}): {tool_call.function.arguments}"
+                f"@{tool_call.function.name.strip()}({tool_call.id.strip()}): {tool_call.function.arguments}"
             )
     else:
         if reasoning_content := (
@@ -221,39 +272,44 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
 def extra_headers(provider: Provider) -> dict[str, str]:
     """Return extra headers for the OpenAI API based on the model."""
+    headers: dict[str, str] = {}
     if provider == "openrouter":
         # Shows in rankings on openrouter.ai
-        return {
+        headers |= {
             "HTTP-Referer": "https://github.com/gptme/gptme",
             "X-Title": "gptme",
         }
-    return {}
+    return headers
 
 
-def extra_body(provider: Provider) -> dict[str, Any]:
+def extra_body(provider: Provider, model_meta: ModelMeta) -> dict[str, Any]:
     """Return extra body for the OpenAI API based on the model."""
+    body: dict[str, Any] = {}
     if provider == "openrouter":
-        return {
-            # "provider": {
-            #     "order": ["groq"],
-            #     "sort": "throughput",
-            #     "allow_fallbacks": False,
-            # }
-        }
-    return {}
+        if model_meta.supports_reasoning:
+            body["reasoning"] = {"enabled": True, "max_tokens": 20000}
+        if "@" in model_meta.model:
+            provider_override = model_meta.model.split("@")[1]
+            body["provider"] = {
+                "order": [provider_override],
+                "allow_fallbacks": False,
+            }
+    return body
 
 
 def stream(
     messages: list[Message], model: str, tools: list[ToolSpec] | None
 ) -> Generator[str, None, None]:
     from . import _get_base_model, get_provider_from_model  # fmt: skip
+    from .models import get_model  # fmt: skip
 
     provider = get_provider_from_model(model)
     client = get_client(provider)
     is_proxy = _is_proxy(client)
 
     base_model = _get_base_model(model)
-    is_reasoner = _is_reasoner(base_model)
+    model_meta = get_model(model)
+    is_reasoner = model_meta.supports_reasoning
 
     # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
     api_model = model if is_proxy else base_model
@@ -272,7 +328,8 @@ def stream(
         stream=True,
         tools=tools_dict if tools_dict else NOT_GIVEN,
         extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider),
+        extra_body=extra_body(provider, model_meta),
+        stream_options={"include_usage": True},
     ):
         from openai.types.chat import ChatCompletionChunk  # fmt: skip
         from openai.types.chat.chat_completion_chunk import (  # fmt: skip
@@ -282,6 +339,10 @@ def stream(
 
         # Cast the chunk to the correct type
         chunk = cast(ChatCompletionChunk, chunk_raw)
+
+        # Record usage if available (typically in final chunk)
+        if hasattr(chunk, "usage") and chunk.usage:
+            _record_usage(chunk.usage, model)
 
         if not chunk.choices:
             continue
@@ -379,31 +440,34 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
 
 def _merge_tool_results_with_same_call_id(
     messages_dicts: Iterable[dict],
-) -> list[dict]:  # Generator[dict, None, None]:
+) -> list[dict]:
     """
     When we call a tool, this tool can potentially yield multiple messages. However
     the API expect to have only one tool result per tool call. This function tries
     to merge subsequent tool results with the same call ID as expected by
     the API.
     """
-
-    messages_dicts = iter(messages_dicts)
-
     messages_new: list[dict] = []
-    while message := next(messages_dicts, None):
+
+    for message in messages_dicts:
         if messages_new and (
             message["role"] == "tool"
             and messages_new[-1]["role"] == "tool"
             and message["tool_call_id"] == messages_new[-1]["tool_call_id"]
         ):
             prev_msg = messages_new[-1]
-            content = message["content"]
-            if not isinstance(content, list):
-                content = {"type": "text", "text": content}
+            prev_content = prev_msg["content"]
+            current_content = message["content"]
+
+            # Ensure both contents are lists of content parts
+            if not isinstance(prev_content, list):
+                prev_content = [{"type": "text", "text": prev_content}]
+            if not isinstance(current_content, list):
+                current_content = [{"type": "text", "text": current_content}]
 
             messages_new[-1] = {
                 "role": "tool",
-                "content": prev_msg["content"] + content,
+                "content": prev_content + current_content,
                 "tool_call_id": prev_msg["tool_call_id"],
             }
         else:
@@ -414,9 +478,6 @@ def _merge_tool_results_with_same_call_id(
 
 def _process_file(msg: dict, model: ModelMeta) -> dict:
     message_content = msg["content"]
-    if model.provider == "deepseek":
-        # deepseek does not support files
-        return msg
 
     # combines a content message with a list of files
     content: list[dict[str, Any]] = (
@@ -427,7 +488,8 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
 
     has_images = False
 
-    for f in msg.get("files", []):
+    files = msg.pop("files", [])
+    for f in files:
 
         def check_vision():
             return model.supports_vision
@@ -440,6 +502,12 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
             check_vision_support=check_vision,
         )
         if result is None:
+            content.append(
+                {
+                    "type": "text",
+                    "text": f"[WARNING: Model doesn't support viewing file: {f}]",
+                }
+            )
             continue
 
         data, media_type = result
@@ -453,8 +521,8 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
 
     msg["content"] = content
 
+    # Images must come from user with openai
     if msg["role"] == "system" and has_images:
-        # Images must come from user with openai
         msg["role"] = "user"
 
     return msg
@@ -463,9 +531,18 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
 def _transform_msgs_for_special_provider(
     messages_dicts: Iterable[dict], model: ModelMeta
 ):
-    if model.provider == "groq":
-        # groq needs message.content to be a string
-        return [{**msg, "content": msg["content"][0]["text"]} for msg in messages_dicts]
+    # groq and deepseek needs message.content to be a string
+    if model.provider == "groq" or model.provider == "deepseek":
+        return [
+            {
+                **msg,
+                "content": "\n\n".join(part["text"] for part in msg["content"])
+                if isinstance(msg["content"], list)
+                else msg["content"],
+            }
+            for msg in messages_dicts
+        ]
+
     return messages_dicts
 
 
@@ -504,16 +581,30 @@ def get_available_models(provider: Provider) -> list[ModelMeta]:
         raise ValueError(f"Provider {provider} does not support listing models")
 
     config = get_config()
-    api_key = config.get_env_required("OPENROUTER_API_KEY")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-    }
+    # Check if we should use the proxy
+    proxy_key = config.get_env("LLM_PROXY_API_KEY")
+    proxy_url = config.get_env("LLM_PROXY_URL")
+
+    if proxy_key and proxy_url:
+        # Use proxy for models endpoint
+        # Strip /messages from proxy URL and replace with /models
+        api_key = proxy_key
+        if proxy_url.endswith("/messages"):
+            base_url = proxy_url.rsplit("/messages", 1)[0]
+            url = f"{base_url}/models"
+        else:
+            # Fallback if URL structure is different
+            url = f"{proxy_url.rstrip('/')}/models"
+        headers = {"x-api-key": api_key}
+    else:
+        # Direct OpenRouter API call (fallback)
+        api_key = config.get_env_required("OPENROUTER_API_KEY")
+        url = "https://openrouter.ai/api/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = requests.get(
-            "https://openrouter.ai/api/v1/models", headers=headers, timeout=30
-        )
+        response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
 
@@ -531,6 +622,13 @@ def get_available_models(provider: Provider) -> list[ModelMeta]:
 def openrouter_model_to_modelmeta(model_data: dict) -> ModelMeta:
     """Convert OpenRouter model data to ModelMeta object."""
     pricing = model_data.get("pricing", {})
+    price_input = float(pricing.get("prompt", 0)) * 1_000_000
+    price_output = float(pricing.get("completion", 0)) * 1_000_000
+    vision = "vision" in model_data.get("architecture", {}).get("modality", "")
+    reasoning = "reasoning" in model_data.get("supported_parameters", [])
+    include_reasoning = "include_reasoning" in model_data.get(
+        "supported_parameters", []
+    )
 
     return ModelMeta(
         provider="openrouter",
@@ -538,28 +636,38 @@ def openrouter_model_to_modelmeta(model_data: dict) -> ModelMeta:
         context=model_data.get("context_length", 128_000),
         max_output=model_data.get("max_completion_tokens"),
         supports_streaming=True,  # Most OpenRouter models support streaming
-        supports_vision="vision"
-        in model_data.get("architecture", {}).get("modality", ""),
-        supports_reasoning=False,  # Would need to check model-specific capabilities
-        price_input=float(pricing.get("prompt", 0))
-        * 1_000_000,  # Convert to per-1M tokens
-        price_output=float(pricing.get("completion", 0))
-        * 1_000_000,  # Convert to per-1M tokens
+        supports_vision=vision,
+        supports_reasoning=reasoning and include_reasoning,
+        price_input=price_input,
+        price_output=price_output,
     )
 
 
 def _prepare_messages_for_api(
     messages: list[Message], model: str, tools: list[ToolSpec] | None
 ) -> tuple[Iterable[dict], Iterable["ChatCompletionToolParam"] | None]:
-    from . import _get_base_model  # fmt: skip
     from .models import get_model  # fmt: skip
 
     model_meta = get_model(model)
 
-    is_o1 = _get_base_model(model).startswith("o1")
-    if is_o1:
+    # o1 models need _prep_o1 applied to ALL messages (including first), but no merging
+    if any(
+        model_meta.model.startswith(om) for om in ["o1", "o3", "o4"]
+    ) or model_meta.model.startswith("gpt-5"):
         messages = list(_prep_o1(messages))
-    if model_meta.model == "deepseek-reasoner":
+    # other reasoning models use deepseek reasoner prep (first message unchanged, then _prep_o1 on rest)
+    elif (
+        any(
+            m in model_meta.model
+            for m in [
+                "deepseek-reasoner",
+                "deepseek-chat",
+                "kimi-k2",
+                "magistral",
+            ]
+        )
+        or model_meta.supports_reasoning
+    ):
         messages = list(_prep_deepseek_reasoner(messages))
 
     messages_dicts: Iterable[dict] = (

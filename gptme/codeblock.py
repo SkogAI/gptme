@@ -53,8 +53,10 @@ class Codeblock:
     @trace_function(
         name="codeblock.iter_from_markdown", attributes={"component": "parser"}
     )
-    def iter_from_markdown(cls, markdown: str) -> list["Codeblock"]:
-        return list(_extract_codeblocks(markdown))
+    def iter_from_markdown(
+        cls, markdown: str, streaming: bool = False
+    ) -> list["Codeblock"]:
+        return list(_extract_codeblocks(markdown, streaming=streaming))
 
 
 import re
@@ -65,9 +67,16 @@ re_triple_tick_end = re.compile(r"^```$")
 
 
 @trace_function(name="codeblock.extract_codeblocks", attributes={"component": "parser"})
-def _extract_codeblocks(markdown: str) -> Generator[Codeblock, None, None]:
+def _extract_codeblocks(
+    markdown: str, streaming: bool = False
+) -> Generator[Codeblock, None, None]:
     """
     Extracts code blocks from a markdown string using context-aware pattern matching.
+
+    Args:
+        markdown: The markdown string to extract code blocks from
+        streaming: If True, requires blank line after ``` to confirm block closure.
+                   This prevents extracting incomplete blocks during streaming.
 
     Tricks used:
     - Opening ``` must be at start of line, optionally preceded by blank lines
@@ -114,17 +123,104 @@ def _extract_codeblocks(markdown: str) -> Generator[Codeblock, None, None]:
                 # Check if this line starts with ``` (potential opening or closing)
                 if line.startswith("```"):
                     if line.strip() == "```":
-                        # Bare ``` - check if it's opening or closing based on next line
-                        if (
-                            i + 1 < len(lines)
-                            and lines[i + 1].strip() != ""
-                            and not lines[i + 1].startswith("```")
-                        ):
-                            # Next line has content, this is an opening tag
-                            nesting_depth += 1
-                            content_lines.append(line)
+                        # Bare ``` - determine if opening or closing based on context
+
+                        # Check next line
+                        has_next_line = i + 1 < len(lines)
+                        next_has_content = has_next_line and lines[i + 1].strip() != ""
+                        next_is_blank = has_next_line and lines[i + 1].strip() == ""
+                        next_is_fence = has_next_line and lines[i + 1].startswith("```")
+
+                        # Decision logic:
+                        # 1. If we have nested blocks open (depth > 1), prefer closing
+                        #    This fixes the case where ``` appears after a nested block
+                        #    like ```text, where it should close that block.
+                        # 2. If next line has content and isn't a fence -> opening
+                        # 3. If streaming mode:
+                        #    - Require blank line after ``` to confirm closure
+                        #    - Otherwise treat as incomplete (don't extract)
+                        # 4. If not streaming:
+                        #    - Blank line or EOF -> closing
+
+                        if nesting_depth > 1:
+                            # We have nested blocks open, this should close the innermost one
+                            nesting_depth -= 1
+                            if nesting_depth == 0:
+                                # Check streaming condition before yielding
+                                if streaming and not next_is_blank:
+                                    # Streaming mode requires blank line to confirm closure
+                                    # Incomplete block - don't extract
+                                    break
+                                # Either not streaming, or streaming with blank line - extract
+                                yield Codeblock(
+                                    lang, "\n".join(content_lines), start=start_line
+                                )
+                                i += 1
+                                break
+                            else:
+                                content_lines.append(line)
+                        elif next_has_content and not next_is_fence:
+                            # Next line has content - check if this is a real nested block
+                            if nesting_depth > 1:
+                                # We're already nested, this opens another level
+                                nesting_depth += 1
+                                content_lines.append(line)
+                            elif nesting_depth == 1:
+                                # At depth 1, look ahead to see if there's a matching closing fence
+                                # This distinguishes real nested blocks from bare backticks in content
+                                has_closing_fence = False
+                                for j in range(i + 1, min(i + 20, len(lines))):
+                                    if lines[j].strip() == "```":
+                                        # Found another bare fence
+                                        # Check if there's content after it (allowing blank lines)
+                                        # Look ahead a few more lines to see if outer block continues
+                                        has_more_content = False
+                                        for k in range(j + 1, min(j + 5, len(lines))):
+                                            if lines[k].strip() != "":
+                                                # Found non-blank content after closing fence
+                                                has_more_content = True
+                                                break
+
+                                        if has_more_content:
+                                            # This looks like a nested block: opening, content, closing, more content
+                                            has_closing_fence = True
+                                        break
+                                    elif (
+                                        lines[j].startswith("```")
+                                        and len(lines[j].strip()) > 3
+                                    ):
+                                        # Hit a language-tagged fence, stop looking
+                                        break
+
+                                if has_closing_fence:
+                                    # Looks like a real nested block
+                                    nesting_depth += 1
+                                    content_lines.append(line)
+                                else:
+                                    # No matching fence found, treat as literal content
+                                    content_lines.append(line)
+                            else:
+                                content_lines.append(line)
+                        elif streaming:
+                            # Streaming mode: require blank line to confirm closure
+                            if next_is_blank:
+                                # Blank line confirms this is a closing tag
+                                nesting_depth -= 1
+                                if nesting_depth == 0:
+                                    yield Codeblock(
+                                        lang, "\n".join(content_lines), start=start_line
+                                    )
+                                    i += 1
+                                    break
+                                else:
+                                    content_lines.append(line)
+                            else:
+                                # No blank line in streaming mode - incomplete block
+                                # Don't extract, treat as opening to keep block open
+                                nesting_depth += 1
+                                content_lines.append(line)
                         else:
-                            # Next line is empty/EOF or starts with ```, this is closing tag
+                            # Not streaming: blank line, EOF, or other -> closing
                             nesting_depth -= 1
                             if nesting_depth == 0:
                                 # This closes our top-level block

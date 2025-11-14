@@ -99,21 +99,40 @@ def execute_save_impl(
     content: str, path: Path | None, confirm: ConfirmFunc
 ) -> Generator[Message, None, None]:
     """Actual save implementation."""
+    from ..hooks import HookType, trigger_hook
+
     assert path
     path_display = path
-    path = path.expanduser()
+
+    # Print full path to give agent feedback about where exactly the file is saved
+    path = path.expanduser().resolve()
+
+    # Trigger pre-save hooks
+    if pre_save_msgs := trigger_hook(
+        HookType.FILE_PRE_SAVE,
+        log=None,
+        workspace=None,
+        path=path,
+        content=content,
+    ):
+        yield from pre_save_msgs
 
     # Ensure content ends with newline
     if not content.endswith("\n"):
         content += "\n"
 
-    # Check if file exists
+    # Check if file exists and store original content for comparison
+    overwrite = False
+    original_content = None
     if path.exists():
+        original_content = path.read_text()
         if not confirm(f"File {path_display} exists, overwrite?"):
             yield Message("system", "Save aborted: user refused to overwrite the file.")
             return
+        overwrite = True
 
     # Check if folder exists
+    missing_parent_created = False
     if not path.parent.exists():
         if not confirm(f"Folder {path_display.parent} doesn't exist, create it?"):
             yield Message(
@@ -121,11 +140,54 @@ def execute_save_impl(
             )
             return
         path.parent.mkdir(parents=True)
+        missing_parent_created = True
 
     # Save the file
     with open(path, "w") as f:
         f.write(content)
-    yield Message("system", f"Saved to {path_display}")
+
+    # Trigger post-save hooks
+    if post_save_msgs := trigger_hook(
+        HookType.FILE_POST_SAVE,
+        log=None,
+        workspace=None,
+        path=path,
+        content=content,
+        created=not overwrite,
+    ):
+        yield from post_save_msgs
+
+    # Check if this was an inefficient overwrite (minimal changes)
+    hint = ""
+    if overwrite and original_content:
+        try:
+            # Calculate how much actually changed
+            p = Patch(original_content, content)
+            diff = p.diff_minimal(strip_context=True)
+
+            # Count changed lines vs total lines
+            changed_lines = len(
+                [line for line in diff.split("\n") if line.startswith(("+", "-"))]
+            )
+            total_lines = len(content.split("\n"))
+
+            # Emit hint if changes are minimal relative to file size
+            # Show hint if: (< 30% changed AND > 10 lines) OR (< 5 lines changed AND > 10 lines)
+            if total_lines > 10 and (
+                changed_lines < total_lines * 0.3 or changed_lines < 5
+            ):
+                hint = "\n💡 Hint: This save barely changed the file. Consider using the patch tool for small modifications to be more efficient."
+        except Exception:
+            # If diff calculation fails, don't emit hint
+            pass
+
+    yield Message(
+        "system",
+        f"Saved to {path_display}"
+        + (" (overwritten)" if overwrite else "")
+        + (" (created missing folder)" if missing_parent_created else "")
+        + hint,
+    )
 
 
 def execute_append_impl(

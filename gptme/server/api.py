@@ -16,6 +16,7 @@ from itertools import islice
 from pathlib import Path
 
 import flask
+from dateutil.parser import isoparse
 from flask import current_app, request
 from flask_cors import CORS
 
@@ -27,6 +28,7 @@ from ..llm.models import get_default_model
 from ..logmanager import LogManager, get_user_conversations, prepare_messages
 from ..message import Message
 from ..tools import ToolUse, execute_msg, init_tools
+from .auth import require_auth
 from .openapi_docs import (
     ConversationCreateRequest,
     ConversationListResponse,
@@ -68,6 +70,7 @@ def api_root():
     ],
     tags=["conversation"],
 )
+@require_auth
 def api_conversations():
     """List conversations.
 
@@ -90,6 +93,7 @@ def _abs_to_rel_workspace(path: str | Path, workspace: Path) -> str:
 @api_doc_simple(
     responses={200: ConversationResponse, 404: ErrorResponse, 403: ErrorResponse}
 )
+@require_auth
 def api_conversation(logfile: str):
     """Get conversation.
 
@@ -111,6 +115,7 @@ def api_conversation(logfile: str):
 @api_doc_simple(
     responses={200: None, 403: ErrorResponse, 404: ErrorResponse},
 )
+@require_auth
 def api_conversation_file(logfile: str, filename: str):
     """Get conversation file.
 
@@ -143,6 +148,7 @@ def api_conversation_file(logfile: str, filename: str):
     responses={200: StatusResponse, 400: ErrorResponse, 409: ErrorResponse},
     request_body=ConversationCreateRequest,
 )
+@require_auth
 def api_conversation_put(logfile: str):
     """Create conversation.
 
@@ -160,7 +166,9 @@ def api_conversation_put(logfile: str):
     req_json = flask.request.json or {}
 
     # Load or create chat config
-    request_config = ChatConfig.from_dict(req_json.get("config", {}))
+    config_dict = req_json.get("config", {})
+    config_dict["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
+    request_config = ChatConfig.from_dict(config_dict)
     chat_config = ChatConfig.load_or_create(logdir, request_config)
     prompt = req_json.get("prompt", "full")
 
@@ -178,9 +186,7 @@ def api_conversation_put(logfile: str):
     # Add any additional messages from request
     for msg in req_json.get("messages", []):
         timestamp: datetime = (
-            datetime.fromisoformat(msg["timestamp"])
-            if "timestamp" in msg
-            else datetime.now()
+            isoparse(msg["timestamp"]) if "timestamp" in msg else datetime.now()
         )
         msgs.append(Message(msg["role"], msg["content"], timestamp=timestamp))
 
@@ -213,6 +219,7 @@ def api_conversation_put(logfile: str):
     request_body=MessageCreateRequest,
     responses={200: StatusResponse, 400: ErrorResponse, 404: ErrorResponse},
 )
+@require_auth
 def api_conversation_post(logfile: str):
     """Add message to conversation.
 
@@ -245,6 +252,7 @@ def confirm_func(msg: str) -> bool:
     request_body=GenerateRequest,
     responses={200: GenerateResponse, 400: ErrorResponse, 500: ErrorResponse},
 )
+@require_auth
 def api_conversation_generate(logfile: str):
     """Generate response.
 
@@ -460,7 +468,7 @@ def favicon():
     return flask.send_from_directory(media_path, "logo.png")
 
 
-def create_app(cors_origin: str | None = None) -> flask.Flask:
+def create_app(cors_origin: str | None = None, host: str = "127.0.0.1") -> flask.Flask:
     """Create the Flask app.
 
     Args:
@@ -497,5 +505,10 @@ def create_app(cors_origin: str | None = None) -> flask.Flask:
                 }
             },
         )
+
+    # Initialize auth (defaults to local-only, no auth required)
+    from .auth import init_auth  # fmt: skip
+
+    init_auth(host=host, display=False)
 
     return app

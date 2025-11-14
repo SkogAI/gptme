@@ -9,13 +9,14 @@ import time
 from collections import defaultdict
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from multiprocessing import Manager, Process
+from pathlib import Path
 from typing import TypedDict
 
 from tqdm import tqdm
 
 from ..tools import ToolFormat
 from .agents import Agent, GPTMe
-from .execenv import SimpleExecutionEnv
+from .execenv import DockerExecutionEnv, SimpleExecutionEnv
 from .types import (
     CaseResult,
     EvalResult,
@@ -33,6 +34,8 @@ class ProcessSuccess(TypedDict):
     stdout: str
     stderr: str
     duration: float
+    log_dir: Path
+    workspace_dir: Path
 
 
 class ProcessError(TypedDict):
@@ -55,6 +58,7 @@ def run_evals(
     model_configs: list[tuple[str, ToolFormat]],  # (model, tool_format)
     timeout: int,
     parallel: int,
+    use_docker: bool = False,
 ) -> dict[str, list[EvalResult]]:
     """
     Run evals for a list of tests.
@@ -64,6 +68,7 @@ def run_evals(
         model_configs: List of (model, tool_format) tuples
         timeout: Timeout in seconds for each eval
         parallel: Number of parallel evaluations to run
+        use_docker: Run tests in Docker containers for isolation
     """
     # For coverage to work with multiprocessing
     # https://pytest-cov.readthedocs.io/en/latest/subprocess-support.html
@@ -87,18 +92,20 @@ def run_evals(
                 tools = test.get(
                     "tools"
                 )  # Get tools from test spec, None if not specified
+                agent = GPTMe(model=model, tool_format=tool_format, tools=tools)
                 future = executor.submit(
                     execute,
                     test,
-                    GPTMe(model=model, tool_format=tool_format, tools=tools),
+                    agent,
                     timeout,
                     parallel > 1,
+                    use_docker,
                 )
                 futures.append(future)
-                future_to_model_test[future] = (model_id, test)
+                future_to_model_test[future] = (model_id, test, agent)
 
         def _handle_future(future: Future):
-            model, test = future_to_model_test[future]
+            model, test, agent = future_to_model_test[future]
             test_name = test["name"]
             try:
                 result = future.result(timeout=0.1)
@@ -124,6 +131,8 @@ def run_evals(
                     gen_stderr="",
                     run_stdout="",
                     run_stderr="",
+                    log_dir=agent.log_dir,
+                    workspace_dir=agent.workspace_dir,
                 )
             model_results[model][test_name] = result
 
@@ -171,7 +180,9 @@ def run_evals(
 
 
 # TODO: rewrite to run in Docker? Would help with capturing output + process management.
-def execute(test: EvalSpec, agent: Agent, timeout: int, parallel: bool) -> EvalResult:
+def execute(
+    test: EvalSpec, agent: Agent, timeout: int, parallel: bool, use_docker: bool = False
+) -> EvalResult:
     """
     Executes the code for a specific model with a timeout.
     """
@@ -216,6 +227,8 @@ def execute(test: EvalSpec, agent: Agent, timeout: int, parallel: bool) -> EvalR
             files = result.get("files", {})
             gen_stdout = result.get("stdout", "")
             gen_stderr = result.get("stderr", "")
+            log_dir = result.get("log_dir") or agent.log_dir
+            workspace_dir = result.get("workspace_dir") or agent.workspace_dir
         else:
             logger.error("No result in shared dictionary")
             return EvalResult(
@@ -227,6 +240,8 @@ def execute(test: EvalSpec, agent: Agent, timeout: int, parallel: bool) -> EvalR
                 gen_stderr="",
                 run_stdout="",
                 run_stderr="",
+                log_dir=agent.log_dir,
+                workspace_dir=agent.workspace_dir,
             )
 
         logger.debug("Got result")
@@ -234,12 +249,16 @@ def execute(test: EvalSpec, agent: Agent, timeout: int, parallel: bool) -> EvalR
         if status != "timeout" and status != "error":
             # check and collect results
             run_start = time.time()
-            env = SimpleExecutionEnv()
-            env.upload(files)
-            logger.debug(f"Running check: {test['run']}")
-            stdout_run, stderr_run, exit_code = env.run(test["run"])
-            time_run = time.time() - run_start
-            files = env.download()
+            env = DockerExecutionEnv() if use_docker else SimpleExecutionEnv()
+            try:
+                env.upload(files)
+                logger.debug(f"Running check: {test['run']}")
+                stdout_run, stderr_run, exit_code = env.run(test["run"])
+                time_run = time.time() - run_start
+                files = env.download()
+            finally:
+                if use_docker and hasattr(env, "cleanup"):
+                    env.cleanup()
 
             ctx = ResultContext(files, stdout_run, stderr_run, exit_code)
             results: list[CaseResult] = []
@@ -273,6 +292,8 @@ def execute(test: EvalSpec, agent: Agent, timeout: int, parallel: bool) -> EvalR
             gen_stderr=gen_stderr,
             run_stdout=stdout_run,
             run_stderr=stderr_run,
+            log_dir=log_dir,
+            workspace_dir=workspace_dir,
         )
 
 
@@ -311,9 +332,24 @@ def act_process(
     os.setpgrp()
     pgrp = os.getpgrp()
 
-    # redirect stdout and stderr to streams
-    stdout = StreamTee(sys.stdout, keep=not parallel)
-    stderr = StreamTee(sys.stderr, keep=not parallel)
+    # Fix #130: Suppress verbose gptme output during optimization
+    # Only keep output if not in parallel mode (i.e., interactive testing)
+    # During GEPA optimization, suppress full trajectories
+    suppress_output = (
+        os.environ.get("GPTME_EVAL_SUPPRESS_OUTPUT", "false").lower() == "true"
+    )
+    if suppress_output:
+        # Redirect to null during optimization
+        import io
+
+        stdout = StreamTee(io.StringIO(), keep=False)
+        stderr = StreamTee(io.StringIO(), keep=False)
+        subprocess_logger.info("Output suppression enabled for GEPA optimization")
+    else:
+        # Normal behavior for interactive testing
+        stdout = StreamTee(sys.stdout, keep=not parallel)
+        stderr = StreamTee(sys.stderr, keep=not parallel)
+
     sys.stdout, sys.stderr = stdout, stderr  # type: ignore
 
     start = time.time()
@@ -354,6 +390,8 @@ def act_process(
         "stdout": stdout.getvalue(),
         "stderr": stderr.getvalue(),
         "duration": duration,
+        "log_dir": agent.log_dir,
+        "workspace_dir": agent.workspace_dir,
     }
     sync_dict["result"] = result_success
     subprocess_logger.info("Success")

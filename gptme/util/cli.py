@@ -2,16 +2,23 @@
 CLI for gptme utility commands.
 """
 
+import io
 import logging
 import sys
+from contextlib import redirect_stderr
+from pathlib import Path
 
 import click
 
+from ..config import get_config
 from ..dirs import get_logs_dir
+from ..llm.models import list_models
 from ..logmanager import LogManager
+from ..mcp.client import MCPClient
 from ..message import Message
 from ..tools import get_tools, init_tools
 from ..tools.chats import list_chats, search_chats
+from .context import include_paths
 
 
 @click.group()
@@ -21,6 +28,241 @@ def main(verbose: bool = False):
 
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+
+@main.group()
+def providers():
+    """Commands for managing custom providers."""
+    pass
+
+
+@providers.command("list")
+def providers_list():
+    """List configured custom OpenAI-compatible providers."""
+
+    config = get_config()
+
+    if not config.user.providers:
+        click.echo("📭 No custom providers configured")
+        click.echo()
+        click.echo("To add a custom provider, add to your gptme.toml:")
+        click.echo()
+        click.echo("[[providers]]")
+        click.echo('name = "my-provider"')
+        click.echo('base_url = "http://localhost:8000/v1"')
+        click.echo('api_key_env = "MY_PROVIDER_API_KEY"')
+        click.echo('default_model = "my-model"')
+        return
+
+    click.echo(f"🔌 Found {len(config.user.providers)} custom provider(s):")
+    click.echo()
+
+    for provider in config.user.providers:
+        click.echo(f"📡 {provider.name}")
+        click.echo(f"   Base URL: {provider.base_url}")
+
+        # Show API key source (but not the actual key)
+        if provider.api_key:
+            click.echo("   API Key: (configured directly)")
+        elif provider.api_key_env:
+            click.echo(f"   API Key: ${provider.api_key_env}")
+        else:
+            click.echo(f"   API Key: ${provider.name.upper()}_API_KEY (default)")
+
+        if provider.default_model:
+            click.echo(f"   Default Model: {provider.default_model}")
+
+        click.echo()
+
+
+@main.group()
+def mcp():
+    """Commands for managing MCP servers."""
+    pass
+
+
+@mcp.command("list")
+def mcp_list():
+    """List MCP servers and check their connection health."""
+
+    config = get_config()
+
+    if not config.mcp.enabled:
+        click.echo("❌ MCP is disabled in config")
+        return
+
+    if not config.mcp.servers:
+        click.echo("📭 No MCP servers configured")
+        return
+
+    click.echo(f"🔌 Found {len(config.mcp.servers)} MCP server(s):")
+    click.echo()
+
+    for server in config.mcp.servers:
+        status_icon = "🟢" if server.enabled else "🔴"
+        server_type = "HTTP" if server.is_http else "stdio"
+
+        click.echo(f"{status_icon} {server.name} ({server_type})")
+
+        if not server.enabled:
+            click.echo("   Status: Disabled")
+            click.echo()
+            continue
+
+        # Test connection
+        try:
+            client = MCPClient(config)
+            tools, session = client.connect(server.name)
+            click.echo(f"   Status: ✅ Connected ({len(tools.tools)} tools available)")
+
+            # Show first few tools
+            if tools.tools:
+                tool_names = [tool.name for tool in tools.tools[:3]]
+                more = (
+                    f" (+{len(tools.tools) - 3} more)" if len(tools.tools) > 3 else ""
+                )
+                click.echo(f"   Tools: {', '.join(tool_names)}{more}")
+        except Exception as e:
+            click.echo(f"   Status: ❌ Connection failed: {str(e)}")
+
+        click.echo()
+
+
+@mcp.command("test")
+@click.argument("server_name")
+def mcp_test(server_name: str):
+    """Test connection to a specific MCP server."""
+
+    config = get_config()
+
+    if not config.mcp.enabled:
+        click.echo("❌ MCP is disabled in config")
+        return
+
+    server = next((s for s in config.mcp.servers if s.name == server_name), None)
+    if not server:
+        click.echo(f"❌ Server '{server_name}' not found in config")
+        return
+
+    if not server.enabled:
+        click.echo(f"❌ Server '{server_name}' is disabled")
+        return
+
+    server_type = "HTTP" if server.is_http else "stdio"
+    click.echo(f"🔌 Testing {server_name} ({server_type})...")
+
+    try:
+        client = MCPClient(config)
+        tools, session = client.connect(server_name)
+        click.echo("✅ Connected successfully!")
+        click.echo(f"📋 Available tools ({len(tools.tools)}):")
+
+        for tool in tools.tools:
+            click.echo(f"   • {tool.name}: {tool.description or 'No description'}")
+
+    except Exception as e:
+        click.echo(f"❌ Connection failed: {str(e)}")
+
+
+@mcp.command("info")
+@click.argument("server_name")
+def mcp_info(server_name: str):
+    """Show detailed information about an MCP server.
+
+    Checks configured servers first, then searches registries if not found locally.
+    """
+    from ..mcp.registry import MCPRegistry, format_server_details
+
+    config = get_config()
+
+    # First check if server is configured locally
+    server = next((s for s in config.mcp.servers if s.name == server_name), None)
+
+    if server:
+        # Show local configuration
+        click.echo(f"📋 MCP Server: {server.name}")
+        click.echo(f"   Type: {'HTTP' if server.is_http else 'stdio'}")
+        click.echo(f"   Enabled: {'✅' if server.enabled else '❌'}")
+        click.echo()
+
+        if server.is_http:
+            click.echo(f"   URL: {server.url}")
+            if server.headers:
+                click.echo(f"   Headers: {len(server.headers)} configured")
+        else:
+            click.echo(f"   Command: {server.command}")
+            if server.args:
+                click.echo(f"   Args: {' '.join(server.args)}")
+            if server.env:
+                click.echo(f"   Environment: {len(server.env)} variables")
+
+        # Try to test connection if enabled
+        if server.enabled:
+            click.echo()
+            click.echo("Testing connection...")
+            try:
+                client = MCPClient(config)
+                tools, session = client.connect(server_name)
+                click.echo(f"✅ Connected ({len(tools.tools)} tools available)")
+            except Exception as e:
+                click.echo(f"❌ Connection failed: {e}")
+    else:
+        # Not found locally, search registries
+        click.echo(f"Server '{server_name}' not configured locally.")
+        click.echo("🔍 Searching registries...")
+        click.echo()
+
+        reg = MCPRegistry()
+        try:
+            registry_server = reg.get_server_details(server_name)
+            if registry_server:
+                click.echo(format_server_details(registry_server))
+            else:
+                click.echo(f"❌ Server '{server_name}' not found in registries either.")
+                click.echo("\nTry searching: gptme-util mcp search <query>")
+        except Exception as e:
+            click.echo(f"❌ Registry search failed: {e}")
+
+
+@mcp.command("search")
+@click.argument("query", required=False, default="")
+@click.option(
+    "-r",
+    "--registry",
+    default="all",
+    type=click.Choice(["all", "official", "mcp.so"]),
+    help="Registry to search",
+)
+@click.option("-n", "--limit", default=10, help="Maximum number of results")
+def mcp_search(query: str, registry: str, limit: int):
+    """Search for MCP servers in registries."""
+    from ..mcp.registry import MCPRegistry, format_server_list
+
+    if registry == "all":
+        click.echo(f"🔍 Searching all registries for '{query}'...")
+    else:
+        click.echo(f"🔍 Searching {registry} registry for '{query}'...")
+    click.echo()
+
+    reg = MCPRegistry()
+
+    try:
+        if registry == "all":
+            results = reg.search_all(query, limit)
+        elif registry == "official":
+            results = reg.search_official_registry(query, limit)
+        elif registry == "mcp.so":
+            results = reg.search_mcp_so(query, limit)
+        else:
+            click.echo(f"❌ Unknown registry: {registry}")
+            return
+
+        if results:
+            click.echo(format_server_list(results))
+        else:
+            click.echo("No servers found.")
+    except Exception as e:
+        click.echo(f"❌ Search failed: {e}")
 
 
 @main.group()
@@ -42,7 +284,12 @@ def chats_list(limit: int, summarize: bool):
         from gptme.init import init  # fmt: skip
 
         # This isn't the best way to initialize the model for summarization, but it works for now
-        init("openai/gpt-4o", interactive=False, tool_allowlist=[])
+        init(
+            "openai/gpt-4o",
+            interactive=False,
+            tool_allowlist=[],
+            tool_format="markdown",
+        )
     list_chats(max_results=limit, include_summary=summarize)
 
 
@@ -58,7 +305,12 @@ def chats_search(query: str, limit: int, summarize: bool):
         from gptme.init import init  # fmt: skip
 
         # This isn't the best way to initialize the model for summarization, but it works for now
-        init("openai/gpt-4o", interactive=False, tool_allowlist=[])
+        init(
+            "openai/gpt-4o",
+            interactive=False,
+            tool_allowlist=[],
+            tool_format="markdown",
+        )
     search_chats(query, max_results=limit)
 
 
@@ -127,7 +379,13 @@ def context():
 @click.argument("path", type=click.Path(exists=True))
 def context_index(path: str):
     """Index a file or directory for context retrieval."""
-    from ..tools.rag import init, rag_index  # fmt: skip
+    from ..tools.rag import _has_gptme_rag, init, rag_index  # fmt: skip
+
+    if not _has_gptme_rag():
+        print(
+            "Error: gptme-rag is not installed. Please install it to use this feature."
+        )
+        sys.exit(1)
 
     # Initialize RAG
     init()
@@ -142,7 +400,13 @@ def context_index(path: str):
 @click.option("--full", is_flag=True, help="Show full context of search results")
 def context_retrieve(query: str, full: bool):
     """Search indexed documents for relevant context."""
-    from ..tools.rag import init, rag_search  # fmt: skip
+    from ..tools.rag import _has_gptme_rag, init, rag_search  # fmt: skip
+
+    if not _has_gptme_rag():
+        print(
+            "Error: gptme-rag is not installed. Please install it to use this feature."
+        )
+        sys.exit(1)
 
     # Initialize RAG
     init()
@@ -168,8 +432,6 @@ def llm():
 @click.option("--stream/--no-stream", default=False, help="Stream the response")
 def llm_generate(prompt: str | None, model: str | None, stream: bool):
     """Generate a response from an LLM without any formatting."""
-    import io
-    from contextlib import redirect_stderr
 
     # Suppress all logging output to get clean response
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -207,7 +469,7 @@ def llm_generate(prompt: str | None, model: str | None, stream: bool):
         console.quiet = True
 
         # Initialize with minimal setup - no tools needed for simple generation
-        init(model, interactive=False, tool_allowlist=[])
+        init(model, interactive=False, tool_allowlist=[], tool_format="markdown")
 
         # Get model or use default
         if not model:
@@ -360,6 +622,32 @@ def tools_call(tool_name: str, function_name: str, arg: list[str]):
 
 
 @main.group()
+def prompts():
+    """Commands for prompt utilities."""
+    pass
+
+
+@prompts.command("expand")
+@click.argument("prompt", nargs=-1, required=True)
+def prompts_expand(prompt: tuple[str, ...]):
+    """Expand a prompt to show what will be sent to the LLM.
+
+    Shows exactly how file paths in prompts are expanded into message content,
+    using the same logic as the main gptme tool.
+    """
+
+    # Join all prompt arguments
+    full_prompt = "\n\n".join(prompt)
+
+    # Use the existing include_paths function to expand the prompt
+    original_msg = Message("user", full_prompt)
+    expanded_msg = include_paths(original_msg, workspace=Path.cwd())
+
+    # Print the expanded content exactly as it would be sent to the LLM
+    print(expanded_msg.content)
+
+
+@main.group()
 def models():
     """Model-related utilities."""
     pass
@@ -379,7 +667,6 @@ def models_list(
     provider: str | None, pricing: bool, vision: bool, reasoning: bool, simple: bool
 ):
     """List available models."""
-    from ..llm.models import list_models
 
     list_models(
         provider_filter=provider,

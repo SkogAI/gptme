@@ -2,12 +2,14 @@ import logging
 import os
 import sys
 import termios
+import threading
 from collections.abc import Generator
 from pathlib import Path
 
 from .commands import execute_cmd
-from .config import get_config
+from .config import ChatConfig, get_config
 from .constants import INTERRUPT_CONTENT, PROMPT_USER
+from .hooks import HookType, trigger_hook
 from .init import init
 from .llm import reply
 from .llm.models import get_default_model, get_model
@@ -20,17 +22,16 @@ from .tools import (
     ToolUse,
     execute_msg,
     get_tools,
-    has_tool,
-    set_tool_format,
 )
-from .tools.tts import speak, stop, tts_request_queue
+from .tools.complete import SessionCompleteException
 from .util import console, path_with_tilde
 from .util.ask_execute import ask_execute
-from .util.context import autocommit, include_paths, run_precommit_checks
+from .util.auto_naming import auto_generate_display_name
+from .util.context import include_paths
 from .util.cost import log_costs
 from .util.interrupt import clear_interruptible, set_interruptible
 from .util.prompt import add_history, get_input
-from .util.sound import print_bell, wait_for_audio
+from .util.sound import print_bell
 from .util.terminal import set_current_conv_name, terminal_state_title
 
 logger = logging.getLogger(__name__)
@@ -69,8 +70,24 @@ def chat(
     conv_name = logdir.name
     set_current_conv_name(conv_name)
 
+    # tool_format should already be resolved by this point
+    assert (
+        tool_format is not None
+    ), "tool_format should be resolved before calling chat()"
+
     # init
-    init(model, interactive, tool_allowlist)
+    init(model, interactive, tool_allowlist, tool_format)
+
+    # Trigger session start hooks
+    if session_start_msgs := trigger_hook(
+        HookType.SESSION_START,
+        logdir=logdir,
+        workspace=workspace,
+        initial_msgs=initial_msgs,
+    ):
+        # Process any messages from session start hooks
+        for hook_msg in session_start_msgs:
+            initial_msgs = initial_msgs + [hook_msg]
 
     default_model = get_default_model()
     assert default_model is not None, "No model loaded and no model specified"
@@ -86,14 +103,7 @@ def chat(
     console.log(f"Using logdir: {path_with_tilde(logdir)}")
     manager = LogManager.load(logdir, initial_msgs=initial_msgs, create=True)
 
-    # tool_format should already be resolved by this point
-    assert (
-        tool_format is not None
-    ), "tool_format should be resolved before calling chat()"
-
-    # By defining the tool_format at the last moment we ensure we can use the
-    # configuration for subagent
-    set_tool_format(tool_format)
+    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
 
     # Initialize workspace
     console.log(f"Using workspace: {path_with_tilde(workspace)}")
@@ -103,6 +113,8 @@ def chat(
     manager.log.print(show_hidden=show_hidden)
     console.print("--- ^^^ past messages ^^^ ---")
 
+    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
+
     def confirm_func(msg) -> bool:
         if no_confirm:
             return True
@@ -111,14 +123,52 @@ def chat(
     # Convert prompt_msgs to a queue for unified handling
     prompt_queue = list(prompt_msgs)
 
+    # Import SessionCompleteException for clean exit handling
+
     # main loop
+    try:
+        _run_chat_loop(
+            manager,
+            prompt_queue,
+            stream,
+            confirm_func,
+            tool_format,
+            model,
+            interactive,
+            logdir,
+        )
+    except SessionCompleteException as e:
+        console.log(f"Autonomous mode: {e}. Exiting.")
+
+        # Trigger session end hooks
+        if session_end_msgs := trigger_hook(
+            HookType.SESSION_END, logdir=logdir, manager=manager
+        ):
+            for msg in session_end_msgs:
+                manager.append(msg)
+        return
+
+
+def _run_chat_loop(
+    manager,
+    prompt_queue,
+    stream,
+    confirm_func,
+    tool_format,
+    model,
+    interactive,
+    logdir,
+):
+    """Main chat loop - extracted to allow clean exception handling."""
+
     while True:
         msg: Message | None = None
         try:
             # Process next message (either from prompt queue or user input)
             if prompt_queue:
                 msg = prompt_queue.pop(0)
-                msg = include_paths(msg, workspace)
+                assert msg is not None, "prompt_queue contained None"
+                msg = include_paths(msg, manager.workspace)
                 manager.append(msg)
 
                 # Handle user commands
@@ -127,17 +177,16 @@ def chat(
 
                 # Process the message and get response
                 _process_message_conversation(
-                    manager, stream, confirm_func, tool_format, workspace, model
+                    manager, stream, confirm_func, tool_format, model
                 )
             else:
                 # Get user input or exit if non-interactive
                 if not interactive:
                     logger.debug("Non-interactive and exhausted prompts")
-                    _wait_for_tts_if_enabled()
                     break
 
-                msg = _get_user_input(manager.log, workspace)
-                if msg is None:
+                user_input = _get_user_input(manager.log, manager.workspace)
+                if user_input is None:
                     # Either user wants to exit OR we should generate response directly
                     if _should_prompt_for_input(manager.log):
                         # User wants to exit
@@ -150,15 +199,14 @@ def chat(
                             stream,
                             confirm_func,
                             tool_format,
-                            workspace,
                             model,
                         )
                 else:
                     # Normal case: user provided input
+                    msg = user_input
                     manager.append(msg)
 
                     # Reset interrupt flag since user provided new input
-                    _recently_interrupted = False
 
                     # Handle user commands
                     if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
@@ -170,17 +218,36 @@ def chat(
                         stream,
                         confirm_func,
                         tool_format,
-                        workspace,
                         model,
                     )
 
+            # Trigger LOOP_CONTINUE hooks to check if we should continue/exit
+            # This handles auto-reply mechanism and other loop control logic
+            if loop_msgs := trigger_hook(
+                HookType.LOOP_CONTINUE,
+                manager=manager,
+                interactive=interactive,
+                prompt_queue=prompt_queue,
+            ):
+                for msg in loop_msgs:
+                    # Add hook-generated messages to prompt queue
+                    prompt_queue.append(msg)
+                    console.log(f"[Loop control] {msg.content[:100]}...")
+                continue  # Process the queued messages
+
         except KeyboardInterrupt:
             console.log("Interrupted.")
-            _recently_interrupted = True
             manager.append(Message("system", INTERRUPT_CONTENT))
             # Clear any remaining prompts to avoid confusion
             prompt_queue.clear()
             continue
+
+    # Trigger session end hooks when exiting normally
+    if session_end_msgs := trigger_hook(
+        HookType.SESSION_END, logdir=logdir, manager=manager
+    ):
+        for msg in session_end_msgs:
+            manager.append(msg)
 
 
 def _process_message_conversation(
@@ -188,20 +255,29 @@ def _process_message_conversation(
     stream: bool,
     confirm_func: ConfirmFunc,
     tool_format: ToolFormat,
-    workspace: Path,
     model: str | None,
 ) -> None:
     """Process a message and generate responses until no more tools to run."""
+
     while True:
         try:
             set_interruptible()
+
+            # Trigger pre-process hooks
+            if pre_msgs := trigger_hook(
+                HookType.MESSAGE_PRE_PROCESS,
+                manager=manager,
+            ):
+                for msg in pre_msgs:
+                    manager.append(msg)
+
             response_msgs = list(
                 step(
                     manager.log,
                     stream,
                     confirm_func,
                     tool_format=tool_format,
-                    workspace=workspace,
+                    workspace=manager.workspace,
                     model=model,
                 )
             )
@@ -222,6 +298,42 @@ def _process_message_conversation(
             ):
                 return
 
+        # Auto-generate display name after first assistant response if not already set
+        # Runs in background thread to avoid blocking the chat loop
+        # TODO: Consider implementing via hook system to streamline with server implementation
+        # See: gptme/server/api_v2_sessions.py for server's implementation
+        assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
+        if len(assistant_messages) == 1:
+            chat_config = ChatConfig.from_logdir(manager.logdir)
+            if not chat_config.name and model:
+
+                def _auto_name_thread(
+                    config: ChatConfig,
+                    messages: list[Message],
+                    model_name: str,
+                ):
+                    """Background thread for auto-naming to avoid blocking chat loop."""
+                    try:
+                        display_name = auto_generate_display_name(messages, model_name)
+                        if display_name:
+                            config.name = display_name
+                            config.save()
+                            logger.info(
+                                f"Auto-generated conversation name: {display_name}"
+                            )
+                        else:
+                            logger.warning("Auto-naming failed")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-generate name: {e}")
+
+                # Start naming in background thread (daemon so it doesn't block exit)
+                thread = threading.Thread(
+                    target=_auto_name_thread,
+                    args=(chat_config, manager.log.messages.copy(), model),
+                    daemon=True,
+                )
+                thread.start()
+
         # Check if there are any runnable tools left
         last_content = next(
             (m.content for m in reversed(manager.log) if m.role == "assistant"),
@@ -233,37 +345,14 @@ def _process_message_conversation(
         if not has_runnable:
             break
 
-    # After all tools are executed, check for modifications and run autocommit/pre-commit
-    _check_and_handle_modifications(manager)
-
-
-def _check_and_handle_modifications(manager: LogManager) -> None:
-    """Check for modifications and handle autocommit/pre-commit after conversation is done."""
-    global _recently_interrupted
-
-    # Skip automatic actions if we were recently interrupted
-    if _recently_interrupted:
-        return
-
-    if check_for_modifications(manager.log):
-        try:
-            set_interruptible()
-
-            success, failed_check_message = check_changes()
-            if success:
-                if get_config().get_env_bool("GPTME_AUTOCOMMIT"):
-                    autocommit_msg = autocommit()
-                    manager.append(autocommit_msg)
-                    return
-            elif failed_check_message:
-                manager.append(Message("system", failed_check_message, quiet=False))
-                return
-
-        except KeyboardInterrupt:
-            console.log("Interrupted during pre-commit/autocommit.")
-            _recently_interrupted = True
-        finally:
-            clear_interruptible()
+    # Trigger post-process hooks after message processing completes
+    # Note: pre-commit checks and autocommit are now handled by hooks
+    if post_msgs := trigger_hook(
+        HookType.MESSAGE_POST_PROCESS,
+        manager=manager,
+    ):
+        for msg in post_msgs:
+            manager.append(msg)
 
 
 def _should_prompt_for_input(log: Log) -> bool:
@@ -316,26 +405,6 @@ def _get_user_input(log: Log, workspace: Path | None) -> Message | None:
         return None
 
 
-def _wait_for_tts_if_enabled() -> None:
-    """Wait for TTS to finish if enabled."""
-    if has_tool("tts") and os.environ.get("GPTME_VOICE_FINISH", "").lower() in [
-        "1",
-        "true",
-    ]:
-        logger.info("Waiting for TTS to finish...")
-        set_interruptible()
-        try:
-            # Wait for all TTS processing to complete
-            tts_request_queue.join()
-            logger.info("tts request queue joined")
-            # Then wait for all audio to finish playing
-            wait_for_audio()
-            logger.info("audio playback finished")
-        except KeyboardInterrupt:
-            logger.info("Interrupted while waiting for TTS")
-            stop()
-
-
 @trace_function(name="chat.step", attributes={"component": "chat"})
 def step(
     log: Log | list[Message],
@@ -371,14 +440,19 @@ def step(
             if get_config().get_env_bool("GPTME_COSTS"):
                 log_costs(msgs + [msg_response])
 
-        # speak if TTS tool is available
-        if has_tool("tts"):
-            speak(msg_response.content)
+        # Trigger generation post hooks (e.g., TTS)
+        if generation_post_msgs := trigger_hook(
+            HookType.GENERATION_POST,
+            message=msg_response,
+            workspace=workspace,
+        ):
+            for msg in generation_post_msgs:
+                logger.debug(f"Generation post hook yielded: {msg}")
 
         # log response and run tools
         if msg_response:
             yield msg_response.replace(quiet=True)
-            yield from execute_msg(msg_response, confirm)
+            yield from execute_msg(msg_response, confirm, log, workspace)
 
         # Reset interrupt flag after successful completion
         _recently_interrupted = False
@@ -417,35 +491,3 @@ def prompt_input(prompt: str, value=None) -> str:  # pragma: no cover
         return value
 
     return get_input(prompt)
-
-
-def check_for_modifications(log: Log) -> bool:
-    """Check if there are any file modifications in last 3 messages or since last user message."""
-    messages_since_user = []
-    found_user_message = False
-
-    for m in reversed(log):
-        if m.role == "user":
-            found_user_message = True
-            break
-        messages_since_user.append(m)
-
-    # If no user message found, skip the check (only system messages so far)
-    if not found_user_message:
-        return False
-
-    # FIXME: this is hacky and unreliable
-    has_modifications = any(
-        tu.tool in ["save", "patch", "append", "morph"]
-        for m in messages_since_user[:3]
-        for tu in ToolUse.iter_from_content(m.content)
-    )
-    # logger.debug(
-    #     f"Found {len(messages_since_user)} messages since user ({found_user_message=}, {has_modifications=})"
-    # )
-    return has_modifications
-
-
-def check_changes() -> tuple[bool, str | None]:
-    """Run lint/pre-commit checks after file modifications."""
-    return run_precommit_checks()

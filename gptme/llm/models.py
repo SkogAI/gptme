@@ -88,6 +88,24 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
     "openai": OPENAI_MODELS,
     # https://docs.anthropic.com/en/docs/about-claude/models
     "anthropic": {
+        "claude-sonnet-4-5": {
+            "context": 200_000,
+            "max_output": 64_000,
+            "price_input": 3,
+            "price_output": 15,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "knowledge_cutoff": datetime(2025, 7, 1),
+        },
+        "claude-haiku-4-5": {
+            "context": 200_000,
+            "max_output": 64_000,
+            "price_input": 1,
+            "price_output": 5,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "knowledge_cutoff": datetime(2025, 2, 1),
+        },
         "claude-opus-4-1-20250805": {
             "context": 200_000,
             "max_output": 32_000,
@@ -227,14 +245,14 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
     # https://api-docs.deepseek.com/quick_start/pricing
     "deepseek": {
         "deepseek-chat": {
-            "context": 64_000,
+            "context": 128_000,
             "max_output": 8192,
             # 10x better price for cache hits
             "price_input": 0.14,
             "price_output": 1.1,
         },
         "deepseek-reasoner": {
-            "context": 64_000,
+            "context": 128_000,
             "max_output": 8192,
             "price_input": 0.55,
             "price_output": 2.19,
@@ -265,6 +283,21 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
         },
     },
     "openrouter": {
+        "qwen/qwen3-max": {
+            "context": 256_000,
+            "max_output": 8192,
+            "price_input": 1.2,
+            "price_output": 6.0,
+            "supports_vision": True,
+        },
+        "mistralai/magistral-medium-2506": {
+            "context": 41_000,
+            "max_output": 40_000,
+            "price_input": 2,
+            "price_output": 5,
+            # "supports_vision": True,
+            "supports_reasoning": True,
+        },
         "anthropic/claude-3.5-sonnet": {
             "context": 200_000,
             "max_output": 8192,
@@ -289,6 +322,20 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "max_output": 8192,
             "price_input": 0.075,
             "price_output": 0.3,
+            "supports_vision": True,
+        },
+        "moonshotai/kimi-k2": {
+            "context": 262_144,
+            "max_output": 262_144,
+            "price_input": 0.38,
+            "price_output": 1.52,
+            "supports_vision": True,
+        },
+        "moonshotai/kimi-k2-0905": {
+            "context": 262_144,
+            "max_output": 262_144,
+            "price_input": 0.38,
+            "price_output": 1.52,
             "supports_vision": True,
         },
     },
@@ -336,24 +383,58 @@ def get_model(model: str) -> ModelMeta:
         model = get_recommended_model(provider)
         return get_model(f"{provider}/{model}")
 
-    if any(f"{provider}/" in model for provider in PROVIDERS):
-        provider, model = cast(tuple[Provider, str], model.split("/", 1))
-        if provider not in MODELS or model not in MODELS[provider]:
+    # Check if model has provider/model format
+    if any(model.startswith(f"{provider}/") for provider in PROVIDERS):
+        provider_str, model_name = model.split("/", 1)
+
+        # Check if provider is known
+        if provider_str in PROVIDERS:
+            provider = cast(Provider, provider_str)
+
+            # First try static MODELS dict for performance
+            if provider in MODELS and model_name in MODELS[provider]:
+                return ModelMeta(provider, model_name, **MODELS[provider][model_name])
+
+            # For providers that support dynamic fetching, use _get_models_for_provider
+            if provider == "openrouter":
+                try:
+                    models = _get_models_for_provider(provider, dynamic_fetch=True)
+                    for model_meta in models:
+                        if model_meta.model == model_name:
+                            return model_meta
+                except Exception:
+                    # Fall back to unknown model metadata
+                    pass
+
+            # Unknown model, use fallback metadata
             if provider not in ["openrouter", "local"]:
                 log_warn_once(
-                    f"Unknown model: using fallback metadata for {provider}/{model}"
+                    f"Unknown model: using fallback metadata for {provider}/{model_name}"
                 )
-            return ModelMeta(provider, model, context=128_000)
-    else:
-        # try to find model in all providers
-        for provider in MODELS:
-            if model in MODELS[provider]:
-                break
+            return ModelMeta(provider, model_name, context=128_000)
         else:
+            # Unknown provider
             logger.warning(f"Unknown model {model}, using fallback metadata")
             return ModelMeta(provider="unknown", model=model, context=128_000)
+    else:
+        # try to find model in all providers, starting with static models
+        for provider in cast(list[Provider], MODELS.keys()):
+            if model in MODELS[provider]:
+                return ModelMeta(provider, model, **MODELS[provider][model])
 
-    return ModelMeta(provider, model, **MODELS[provider][model])
+        # For model name without provider, also try dynamic fetching for openrouter
+        try:
+            openrouter_models = _get_models_for_provider(
+                "openrouter", dynamic_fetch=True
+            )
+            for model_meta in openrouter_models:
+                if model_meta.model == model:
+                    return model_meta
+        except Exception:
+            pass
+
+        logger.warning(f"Unknown model {model}, using fallback metadata")
+        return ModelMeta(provider="unknown", model=model, context=128_000)
 
 
 def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
@@ -364,7 +445,7 @@ def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
     elif provider == "gemini":
         return "gemini-2.5-pro"
     elif provider == "anthropic":
-        return "claude-sonnet-4-20250514"
+        return "claude-sonnet-4-5"
     else:
         raise ValueError(f"Provider {provider} did not have a recommended model")
 
@@ -377,7 +458,7 @@ def get_summary_model(provider: Provider) -> str:  # pragma: no cover
     elif provider == "gemini":
         return "gemini-2.5-flash"
     elif provider == "anthropic":
-        return "claude-3-5-haiku-20241022"
+        return "claude-haiku-4-5"
     elif provider == "deepseek":
         return "deepseek-chat"
     else:
@@ -388,13 +469,13 @@ def _get_models_for_provider(
     provider: Provider, dynamic_fetch: bool = True
 ) -> list[ModelMeta]:
     """Get models for a specific provider, with optional dynamic fetching."""
+    from . import get_available_models  # fmt: skip
+
     models_to_show = []
 
     # Try dynamic fetching first for supported providers
     if dynamic_fetch and provider == "openrouter":
         try:
-            from . import get_available_models
-
             dynamic_models = get_available_models(provider)
             models_to_show = dynamic_models
         except Exception:

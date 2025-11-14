@@ -11,8 +11,16 @@ from datetime import datetime
 from itertools import islice
 
 import flask
+from dateutil.parser import isoparse
 from flask import request
+
 from gptme.config import ChatConfig, Config, set_config
+from gptme.llm.models import (
+    PROVIDERS,
+    Provider,
+    _get_models_for_provider,
+    get_default_model,
+)
 from gptme.prompts import get_prompt
 
 from ..dirs import get_logs_dir
@@ -23,6 +31,7 @@ from .api import _abs_to_rel_workspace
 from .api_v2_agents import agents_api
 from .api_v2_common import msg2dict
 from .api_v2_sessions import SessionManager, sessions_api
+from .auth import require_auth
 from .openapi_docs import (
     CONVERSATION_ID_PARAM,
     ConversationCreateRequest,
@@ -61,6 +70,7 @@ def api_root():
 
 
 @v2_api.route("/api/v2/conversations")
+@require_auth
 @api_doc_simple(
     responses={200: ConversationListResponse, 500: ErrorResponse},
     tags=["conversations-v2"],
@@ -84,6 +94,7 @@ def api_conversations():
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>")
+@require_auth
 @api_doc_simple(
     responses={200: ConversationResponse, 404: ErrorResponse}, tags=["conversations-v2"]
 )
@@ -109,6 +120,7 @@ def api_conversation(conversation_id: str):
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["PUT"])
+@require_auth
 @api_doc(
     summary="Create conversation (V2)",
     description="Create a new conversation with initial configuration and messages using the V2 API",
@@ -140,7 +152,9 @@ def api_conversation_put(conversation_id: str):
     logdir.mkdir(parents=True)
 
     # Load or create the chat config, overriding values from request config if provided
-    request_config = ChatConfig.from_dict(req_json.get("config", {}))
+    config_dict = req_json.get("config", {})
+    config_dict["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
+    request_config = ChatConfig.from_dict(config_dict)
     chat_config = ChatConfig.load_or_create(logdir, request_config)
     prompt = req_json.get("prompt", "full")
 
@@ -156,9 +170,7 @@ def api_conversation_put(conversation_id: str):
 
     for msg in req_json.get("messages", []):
         timestamp: datetime = (
-            datetime.fromisoformat(msg["timestamp"])
-            if "timestamp" in msg
-            else datetime.now()
+            isoparse(msg["timestamp"]) if "timestamp" in msg else datetime.now()
         )
         msgs.append(Message(msg["role"], msg["content"], timestamp=timestamp))
 
@@ -191,6 +203,7 @@ def api_conversation_put(conversation_id: str):
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["POST"])
+@require_auth
 @api_doc(
     summary="Add message to conversation (V2)",
     description="Add a new message to an existing conversation using the V2 API",
@@ -239,6 +252,7 @@ def api_conversation_post(conversation_id: str):
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["DELETE"])
+@require_auth
 @api_doc(
     summary="Delete conversation (V2)",
     description="Delete a conversation and all its data using the V2 API",
@@ -269,9 +283,10 @@ def api_conversation_delete(conversation_id: str):
     logdir = get_logs_dir() / conversation_id
     assert logdir.parent == get_logs_dir()
     if not logdir.exists():
-        return flask.jsonify(
-            {"error": f"Conversation not found: {conversation_id}"}
-        ), 404
+        return (
+            flask.jsonify({"error": f"Conversation not found: {conversation_id}"}),
+            404,
+        )
 
     try:
         shutil.rmtree(logdir)
@@ -285,6 +300,7 @@ def api_conversation_delete(conversation_id: str):
 
 
 @v2_api.route("/api/v2/models")
+@require_auth
 @api_doc_simple(
     responses={200: StatusResponse, 500: ErrorResponse},
     tags=["models"],
@@ -295,13 +311,6 @@ def api_models():
     Returns available models based on current configuration.
     If proxy is configured, only returns proxy-supported models.
     """
-    from gptme.config import Config
-    from gptme.llm.models import (
-        PROVIDERS,
-        Provider,
-        _get_models_for_provider,
-        get_default_model,
-    )
 
     config = Config()
 
@@ -319,7 +328,7 @@ def api_models():
     # If proxy is configured (like gptme.ai), show supported providers
     # The proxy now supports both OpenAI and Anthropic models
     providers_to_check: list[Provider] = (
-        ["openai", "anthropic"] if is_proxy else PROVIDERS
+        ["openai", "anthropic", "openrouter"] if is_proxy else PROVIDERS
     )
     for provider in providers_to_check:
         models = _get_models_for_provider(provider, dynamic_fetch=True)
@@ -348,6 +357,7 @@ def api_models():
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>/config", methods=["GET"])
+@require_auth
 def api_conversation_config(conversation_id: str):
     """Get the chat config for a conversation."""
     logdir = get_logs_dir() / conversation_id
@@ -365,6 +375,7 @@ def api_conversation_config(conversation_id: str):
 @v2_api.route(
     "/api/v2/conversations/<string:conversation_id>/config", methods=["PATCH"]
 )
+@require_auth
 def api_conversation_config_patch(conversation_id: str):
     """Update the chat config for a conversation."""
     req_json = flask.request.json
@@ -374,6 +385,7 @@ def api_conversation_config_patch(conversation_id: str):
     logdir = get_logs_dir() / conversation_id
 
     # Create and set config
+    req_json["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
     request_config = ChatConfig.from_dict(req_json)
     chat_config = ChatConfig.load_or_create(logdir, request_config).save()
     config = Config.from_workspace(workspace=chat_config.workspace)

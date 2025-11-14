@@ -1,8 +1,17 @@
+from __future__ import annotations
+
 import importlib
 import inspect
 import logging
 import pkgutil
+import threading
 from collections.abc import Generator
+from contextvars import ContextVar
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..logmanager import Log
 
 from gptme.config import get_config
 from gptme.constants import INTERRUPT_CONTENT
@@ -36,31 +45,30 @@ __all__ = [
     "set_tool_format",
 ]
 
-import threading
+# Context-local storage for tools
+# Each context (thread/async task) gets its own independent copy of tool state
+_loaded_tools_var: ContextVar[list[ToolSpec] | None] = ContextVar("loaded_tools", default=None)
+_available_tools_var: ContextVar[list[ToolSpec] | None] = ContextVar("available_tools", default=None)
 
-# Thread-local storage for tools
-# Each thread gets its own independent copy of tool state
-_thread_local = threading.local()
-
-# Note: Tools must be initialized in each thread that needs them.
+# Note: Tools must be initialized in each context that needs them.
 # This is particularly important for server environments where request handling
-# happens in different threads than where tools were initially loaded.
+# happens in different contexts than where tools were initially loaded.
 
 
 def _get_loaded_tools() -> list[ToolSpec]:
-    if not hasattr(_thread_local, "loaded_tools"):
-        _thread_local.loaded_tools = []
-    return _thread_local.loaded_tools
+    tools = _loaded_tools_var.get()
+    if tools is None:
+        tools = []
+        _loaded_tools_var.set(tools)
+    return tools
 
 
 def _get_available_tools_cache() -> list[ToolSpec] | None:
-    if not hasattr(_thread_local, "available_tools"):
-        _thread_local.available_tools = None
-    return _thread_local.available_tools
+    return _available_tools_var.get()
 
 
 def _set_available_tools_cache(tools: list[ToolSpec] | None) -> None:
-    _thread_local.available_tools = tools
+    _available_tools_var.set(tools)
 
 
 def _discover_tools(module_names: list[str]) -> list[ToolSpec]:
@@ -130,11 +138,14 @@ def init_tools(
                 allowlist = config.chat.tools
 
         for tool in get_toolchain(allowlist):
-            if tool in loaded_tools:
-                # logger.warning("Tool '%s' already loaded", tool.name)
+            if has_tool(tool.name):
                 continue
             if tool.init:
                 tool = tool.init()
+
+            # Register tool's hooks and commands
+            tool.register_hooks()
+            tool.register_commands()
 
             loaded_tools.append(tool)
 
@@ -183,7 +194,12 @@ def get_toolchain(allowlist: list[str] | None) -> list[ToolSpec]:
 
 
 @trace_function(name="tools.execute_msg", attributes={"component": "tools"})
-def execute_msg(msg: Message, confirm: ConfirmFunc) -> Generator[Message, None, None]:
+def execute_msg(
+    msg: Message,
+    confirm: ConfirmFunc,
+    log: Log | None = None,
+    workspace: Path | None = None,
+) -> Generator[Message, None, None]:
     """Uses any tools called in a message and returns the response."""
     assert msg.role == "assistant", "Only assistant messages can be executed"
 
@@ -191,7 +207,7 @@ def execute_msg(msg: Message, confirm: ConfirmFunc) -> Generator[Message, None, 
         if tooluse.is_runnable:
             with terminal_state_title("🛠️ running {tooluse.tool}"):
                 try:
-                    for tool_response in tooluse.execute(confirm):
+                    for tool_response in tooluse.execute(confirm, log, workspace):
                         yield tool_response.replace(call_id=tooluse.call_id)
                 except KeyboardInterrupt:
                     clear_interruptible()
@@ -220,10 +236,11 @@ def is_supported_langtag(lang: str) -> bool:
     return bool(get_tool_for_langtag(lang))
 
 
-def get_available_tools() -> list[ToolSpec]:
+def get_available_tools(include_mcp: bool = True) -> list[ToolSpec]:
     from gptme.tools.mcp_adapter import create_mcp_tools  # fmt: skip
 
-    available_tools = _get_available_tools_cache()
+    # Only use cache if we want MCP tools (cache always includes MCP)
+    available_tools = _get_available_tools_cache() if include_mcp else None
 
     if available_tools is None:
         # We need to load tools first
@@ -236,16 +253,21 @@ def get_available_tools() -> list[ToolSpec]:
             tool_modules = env_tool_modules.split(",")
 
         available_tools = sorted(_discover_tools(tool_modules))
-        available_tools.extend(create_mcp_tools(config))
-        _set_available_tools_cache(available_tools)
+        if include_mcp:
+            available_tools.extend(create_mcp_tools(config))
+            # Only cache if we included MCP tools
+            _set_available_tools_cache(available_tools)
+        else:
+            # Don't cache partial results
+            return available_tools
 
     return available_tools
 
 
 def clear_tools():
-    """Clear all thread-local tool state."""
+    """Clear all context-local tool state."""
     _set_available_tools_cache(None)
-    _thread_local.loaded_tools = []
+    _loaded_tools_var.set([])
 
 
 def get_tools() -> list[ToolSpec]:

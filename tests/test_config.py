@@ -4,7 +4,9 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import tomlkit
+
 from gptme.config import (
     ChatConfig,
     Config,
@@ -456,6 +458,35 @@ def test_chat_config_loaded_from_json():
     assert my_server.env == {"API_KEY": "your-key"}
 
 
+def test_chat_config_workspace_at_log(tmp_path):
+    """Test that workspace '@log' magic value resolves to logdir/workspace."""
+    logdir = tmp_path / "test-conversation"
+    logdir.mkdir()
+
+    config_dict = {
+        "chat": {"workspace": "@log"},
+        "_logdir": logdir,
+    }
+
+    config = ChatConfig.from_dict(config_dict)
+
+    # Should resolve to logdir/workspace
+    expected_workspace = logdir / "workspace"
+    assert config.workspace == expected_workspace
+
+    # Should create the directory
+    assert expected_workspace.exists()
+    assert expected_workspace.is_dir()
+
+
+def test_chat_config_workspace_at_log_without_logdir():
+    """Test that workspace '@log' raises error without logdir."""
+    config_dict = {"chat": {"workspace": "@log"}}
+
+    with pytest.raises(ValueError, match="Cannot use '@log' workspace without logdir"):
+        ChatConfig.from_dict(config_dict)
+
+
 def test_chat_config_to_dict():
     config = ChatConfig.from_dict(json.loads(config_json))
     config_dict = config.to_dict()
@@ -476,6 +507,8 @@ def test_chat_config_to_dict():
                 "command": "server-command",
                 "args": ["--arg1", "--arg2"],
                 "env": {"API_KEY": "your-key"},
+                "url": "",
+                "headers": {},
             }
         ],
     }
@@ -636,7 +669,7 @@ workspace = "{str(workspace)}"
             workspace=workspace,
             logdir=logdir,
             model="anthropic/claude-3-sonnet",  # CLI override
-            tool_allowlist="browser,read",  # CLI override
+            tool_allowlist="read,save",  # CLI override
             tool_format="markdown",  # CLI override
             stream=True,
             interactive=True,
@@ -651,8 +684,8 @@ workspace = "{str(workspace)}"
             config.chat.tool_format == "markdown"
         ), "Should use CLI tool_format when provided"
         assert config.chat.tools == [
-            "browser",
             "read",
+            "save",
         ], "Should use CLI tools when provided"
 
         # Test 3: New conversation (no saved config) - should fall back to env/defaults
@@ -679,3 +712,23 @@ workspace = "{str(workspace)}"
         assert (
             config.chat.model != "openrouter/test-model"
         ), "Should not use saved model for new conversation"
+
+
+def test_reload_config_clears_tools(monkeypatch, tmp_path):
+    """Test that reload_config() clears the tools cache so MCP tools are recreated."""
+    from unittest.mock import MagicMock
+
+    from gptme.config import Config, _config_var, reload_config
+
+    # Set up initial config
+    _config_var.set(Config())
+
+    # Mock clear_tools in the tools module
+    mock_clear_tools = MagicMock()
+    monkeypatch.setattr("gptme.tools.clear_tools", mock_clear_tools)
+
+    # Call reload_config
+    reload_config()
+
+    # Verify clear_tools was called
+    assert mock_clear_tools.called, "reload_config() should call clear_tools()"

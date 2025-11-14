@@ -20,16 +20,24 @@ from pathlib import Path
 import flask
 from dotenv import load_dotenv
 from flask import request
+
 from gptme.config import ChatConfig, Config, set_config
 
 from ..dirs import get_logs_dir
+from ..hooks import HookType, trigger_hook
 from ..llm import _chat_complete, _stream
 from ..llm.models import get_default_model
 from ..logmanager import LogManager, prepare_messages
 from ..message import Message
 from ..telemetry import trace_function
 from ..tools import ToolUse, get_tools, init_tools
-from .api_v2_common import ConfigChangedEvent, ErrorEvent, EventType, msg2dict
+from .api_v2_common import (
+    ConfigChangedEvent,
+    ErrorEvent,
+    EventType,
+    msg2dict,
+)
+from .auth import require_auth
 from .openapi_docs import (
     CONVERSATION_ID_PARAM,
     ErrorResponse,
@@ -140,6 +148,35 @@ class SessionManager:
         """Remove a session."""
         if session_id in cls._sessions:
             conversation_id = cls._sessions[session_id].conversation_id
+
+            # Trigger SESSION_END hook when removing the last session for a conversation
+            is_last_session = (
+                conversation_id in cls._conversation_sessions
+                and len(cls._conversation_sessions[conversation_id]) == 1
+                and session_id in cls._conversation_sessions[conversation_id]
+            )
+
+            if is_last_session:
+                try:
+                    # Load the conversation to trigger the hook
+                    from ..logmanager import LogManager
+
+                    manager = LogManager.load(conversation_id, lock=True)
+
+                    logger.debug(
+                        f"Last session for conversation {conversation_id}, triggering SESSION_END hook"
+                    )
+                    if session_end_msgs := trigger_hook(
+                        HookType.SESSION_END,
+                        manager=manager,
+                    ):
+                        for msg in session_end_msgs:
+                            manager.append(
+                                msg
+                            )  # Just append, no notify needed during cleanup
+                except Exception as e:
+                    logger.warning(f"Failed to trigger SESSION_END hook: {e}")
+
             if conversation_id in cls._conversation_sessions:
                 cls._conversation_sessions[conversation_id].discard(session_id)
                 if not cls._conversation_sessions[conversation_id]:
@@ -228,6 +265,22 @@ def step(
         lock=False,
     )
 
+    # Trigger SESSION_START hook for new conversations
+    assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
+    if len(assistant_messages) == 0:
+        logger.debug("New conversation detected, triggering SESSION_START hook")
+        if session_start_msgs := trigger_hook(
+            HookType.SESSION_START,
+            logdir=logdir,
+            workspace=workspace,
+            initial_msgs=manager.log.messages,
+        ):
+            for msg in session_start_msgs:
+                _append_and_notify(manager, session, msg)
+            # Write messages to disk to ensure they're persisted
+            manager.write()
+            logger.debug("Wrote SESSION_START hook messages to disk")
+
     # TODO: This is not the best way to manage the chdir state, since it's
     # essentially a shared global across chats (bad), but the fix at least
     # addresses the issue where chats don't start in the directory they should.
@@ -240,6 +293,18 @@ def step(
             f"One or fewer user messages found, changing directory to workspace: {workspace}"
         )
         os.chdir(workspace)
+
+    # Trigger MESSAGE_PRE_PROCESS hook BEFORE preparing messages
+    # This ensures hook messages are included in the LLM input
+    if pre_msgs := trigger_hook(
+        HookType.MESSAGE_PRE_PROCESS,
+        manager=manager,
+    ):
+        for msg in pre_msgs:
+            _append_and_notify(manager, session, msg)
+        # Write messages to disk to ensure they're persisted
+        manager.write()
+        logger.debug("Wrote MESSAGE_PRE_PROCESS hook messages to disk")
 
     # Prepare messages for the model
     msgs = prepare_messages(manager.log.messages)
@@ -291,9 +356,26 @@ def step(
         # Persist the assistant message
         msg = Message("assistant", output)
         _append_and_notify(manager, session, msg)
-        logger.debug("Persisted assistant message")
+        # Write immediately after assistant message to ensure it's persisted
+        manager.write()
+        logger.debug("Persisted assistant message and wrote to disk")
+
+        # Trigger MESSAGE_POST_PROCESS hook
+        if post_msgs := trigger_hook(
+            HookType.MESSAGE_POST_PROCESS,
+            manager=manager,
+        ):
+            for msg in post_msgs:
+                _append_and_notify(manager, session, msg)
+
+        # Write messages to disk to ensure they're persisted
+        # This fixes race condition where messages might not be available when log is retrieved
+        manager.write()
+        logger.debug("Wrote messages to disk")
 
         # Auto-generate display name for first assistant response if not already set
+        # TODO: Consider implementing via hook system to streamline with CLI implementation
+        # See: gptme/chat.py for CLI's implementation
         assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
         if len(assistant_messages) == 1 and not chat_config.name:
             try:
@@ -389,7 +471,7 @@ def start_tool_execution(
     # This function would ideally run asynchronously to not block the request
     # For simplicity, we'll run it in a thread
     @trace_function("api_v2.execute_tool", attributes={"component": "api_v2"})
-    def execute_tool_thread():
+    def execute_tool_thread() -> None:
         config = Config.from_workspace(workspace=chat_config.workspace)
         config.chat = chat_config
         set_config(config)
@@ -422,7 +504,9 @@ def start_tool_execution(
         # Execute the tool
         try:
             logger.info(f"Executing tool: {tooluse.tool}")
-            tool_outputs = list(tooluse.execute(lambda _: True))
+            tool_outputs = list(
+                tooluse.execute(lambda _: True, manager.log, manager.workspace)
+            )
             logger.info(f"Tool execution complete, outputs: {len(tool_outputs)}")
 
             # Store the tool outputs
@@ -456,7 +540,7 @@ def _start_step_thread(
 ):
     """Start a step execution in a background thread."""
 
-    def step_thread():
+    def step_thread() -> None:
         try:
             # Mark session as generating
             session.generating = True
@@ -491,6 +575,7 @@ sessions_api = flask.Blueprint("sessions_api", __name__)
 
 
 @sessions_api.route("/api/v2/conversations/<string:conversation_id>/events")
+@require_auth
 @api_doc(
     summary="Subscribe to conversation events (V2)",
     description="Subscribe to real-time conversation events via Server-Sent Events stream",
@@ -580,6 +665,7 @@ def api_conversation_events(conversation_id: str):
 @sessions_api.route(
     "/api/v2/conversations/<string:conversation_id>/step", methods=["POST"]
 )
+@require_auth
 @api_doc(
     summary="Take conversation step (V2)",
     description="Take a step in the conversation - generate a response or continue after tool execution",
@@ -656,6 +742,7 @@ def api_conversation_step(conversation_id: str):
 @sessions_api.route(
     "/api/v2/conversations/<string:conversation_id>/tool/confirm", methods=["POST"]
 )
+@require_auth
 @api_doc(
     summary="Confirm tool execution (V2)",
     description="Confirm, edit, skip, or auto-confirm a pending tool execution",
@@ -752,6 +839,7 @@ def api_conversation_tool_confirm(conversation_id: str):
 @sessions_api.route(
     "/api/v2/conversations/<string:conversation_id>/interrupt", methods=["POST"]
 )
+@require_auth
 @api_doc(
     summary="Interrupt conversation (V2)",
     description="Interrupt the current generation or tool execution in a conversation",

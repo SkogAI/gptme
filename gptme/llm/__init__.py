@@ -57,6 +57,14 @@ def reply(
     stream: bool = False,
     tools: list[ToolSpec] | None = None,
 ) -> Message:
+    # Trigger GENERATION_PRE hooks before generating response
+    from ..hooks import HookType, trigger_hook
+
+    for _ in trigger_hook(
+        HookType.GENERATION_PRE, messages, workspace=None, manager=None
+    ):
+        pass  # GENERATION_PRE hooks can raise SessionCompleteException to stop
+
     init_llm(get_provider_from_model(model))
     config = get_config()
     agent_name = _get_agent_name(config)
@@ -184,9 +192,10 @@ def _reply_stream(
             if break_on_tooluse and char == "\n":
                 # TODO: make this more robust/general, maybe with a callback that runs on each char/chunk
                 # pause inference on finished code-block, letting user run the command before continuing
+                # Use streaming=True to require blank line after code blocks during streaming
                 tooluses = [
                     tooluse
-                    for tooluse in ToolUse.iter_from_content(output)
+                    for tooluse in ToolUse.iter_from_content(output, streaming=True)
                     if tooluse.is_runnable
                 ]
                 if tooluses:

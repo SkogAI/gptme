@@ -31,10 +31,12 @@ Example usage:
 """
 
 import json
-from pathlib import Path
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import TypedDict
+
+from dateutil.parser import isoparse
 
 
 class Stats(TypedDict):
@@ -90,7 +92,7 @@ def convert_conversation(
             pinned = msg.get("pinned", False)
 
             # Format timestamp for filename if needed
-            dt = datetime.fromisoformat(timestamp) if timestamp else datetime.now()
+            dt = isoparse(timestamp) if timestamp else datetime.now()
             timestamp_str = dt.strftime("%Y%m%d-%H%M%S")
 
             # Create filename using format string

@@ -1,5 +1,12 @@
 """
 The assistant can execute shell commands with bash by outputting code blocks with `shell` as the language.
+
+Configuration:
+    GPTME_SHELL_TIMEOUT: Environment variable to configure command timeout (set before starting gptme)
+        - Set to a number (e.g., 30) for timeout in seconds
+        - Set to 0 to disable timeout
+        - Invalid values default to 1200 seconds (20 minutes)
+        - If not set, defaults to 1200 seconds (20 minutes)
 """
 
 import atexit
@@ -8,14 +15,28 @@ import os
 import re
 import select
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Generator
 from pathlib import Path
 
 import bashlex
+
+from ..message import Message
+from ..util import get_installed_programs
+from ..util.ask_execute import execute_with_confirmation
+from ..util.output_storage import save_large_output
+from ..util.tokens import get_tokenizer
+from .base import (
+    ConfirmFunc,
+    Parameter,
+    ToolSpec,
+    ToolUse,
+)
 
 # ANSI escape sequence pattern for stripping terminal formatting
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -25,16 +46,6 @@ def strip_ansi_codes(text: str) -> str:
     """Strip ANSI escape sequences from text."""
     return ANSI_ESCAPE_PATTERN.sub("", text)
 
-
-from ..message import Message
-from ..util import get_installed_programs, get_tokenizer
-from ..util.ask_execute import execute_with_confirmation
-from .base import (
-    ConfirmFunc,
-    Parameter,
-    ToolSpec,
-    ToolUse,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +75,53 @@ allowlist_commands = [
     "df",
 ]
 
+# Commands that should be denied without user confirmation due to their dangerous nature
+# Define deny groups with shared reasons
+deny_groups = [
+    (
+        [
+            r"git\s+add\s+\.(?:\s|$)",  # Match 'git add .' but not '.gitignore'
+            r"git\s+add\s+-A",
+            r"git\s+add\s+--all",
+            r"git\s+commit\s+-a",
+            r"git\s+commit\s+--all",
+        ],
+        "Instead of bulk git operations, use selective commands: `git add <specific-files>` to stage only intended files, then `git commit`.",
+    ),
+    (
+        [
+            r"git\s+reset\s+--hard",
+            r"git\s+clean\s+-[fFdDxX]+",
+            r"git\s+push\s+(-f|--force)(?!-)",  # Allow --force-with-lease
+            r"git\s+reflog\s+expire",
+            r"git\s+filter-branch",
+        ],
+        "Destructive git operations are blocked. Use safer alternatives: `git stash` to save changes, `git reset --soft` to uncommit without losing changes, `git push --force-with-lease` for safer force pushes.",
+    ),
+    (
+        [
+            r"rm\s+-rf\s+/",
+            r"sudo\s+rm\s+-rf\s+/",
+            r"rm\s+-rf\s+\*",
+        ],
+        "Destructive file operations are blocked. Specify exact paths and avoid operations that could delete system files or entire directories.",
+    ),
+    (
+        [
+            r"chmod\s+-R\s+777",
+            r"chmod\s+777",
+        ],
+        "Overly permissive chmod operations are blocked. Use safer permissions like `chmod 755` or `chmod 644` and be specific about target files.",
+    ),
+    (
+        [
+            r"pkill\s",
+            r"killall\s",
+        ],
+        "Killing processes indiscriminately is blocked. Use `ps aux | grep <process-name>` to find specific PIDs and `kill <PID>` to terminate them safely.",
+    ),
+]
+
 candidates = (
     # platform-specific
     "brew",
@@ -75,6 +133,10 @@ candidates = (
     "pandoc",
     "git",
     "docker",
+    "rg",
+    "ag",
+    "ast-grep",
+    "hyperfine",
 )
 
 
@@ -87,12 +149,6 @@ is_macos = sys.platform == "darwin"
 instructions = f"""
 The given command will be executed in a stateful bash shell.
 The shell tool will respond with the output of the execution.
-
-Shell commands can be configured to timeout by setting the GPTME_SHELL_TIMEOUT environment variable.
-- Set GPTME_SHELL_TIMEOUT=30 for a 30-second timeout
-- Set GPTME_SHELL_TIMEOUT=0 to disable timeout
-- Invalid values default to 60 seconds
-- If not set, commands run without timeout
 
 These programs are available, among others:
 {shell_programs_str}
@@ -188,6 +244,10 @@ class ShellSession:
         self.run("export PAGER=")
         self.run("export GH_PAGER=")
         self.run("export GIT_PAGER=cat")
+        # prevent editors from opening (they can break terminal state)
+        self.run("export EDITOR=true")
+        self.run("export GIT_EDITOR=true")
+        self.run("export VISUAL=true")
         # make Python output unbuffered by default for better UX
         self.run("export PYTHONUNBUFFERED=1")
 
@@ -212,22 +272,37 @@ class ShellSession:
     ) -> tuple[int | None, str, str]:
         assert self.process.stdin
 
-        # run the command, redirect stdin to /dev/null to prevent commands from
-        # inheriting bash's pipe stdin (which causes issues with nested gptme calls)
-        # only use this for commands that don't already redirect stdin, like << EOF
+        # Redirect stdin to /dev/null to prevent commands from inheriting bash's pipe stdin
+        # Use shlex to properly parse commands and respect quotes
+        # Only add for commands that don't already redirect stdin
         try:
             command_parts = list(
                 shlex.shlex(command, posix=True, punctuation_chars=True)
             )
-            if (
-                "<" not in command_parts
-                and "<<" not in command_parts
-                and "<<<" not in command_parts
-                and "|" not in command_parts
-            ):
+
+            # Check if there's already stdin redirection
+            has_stdin_redirect = (
+                "<" in command_parts or "<<" in command_parts or "<<<" in command_parts
+            )
+
+            # For pipelines, redirect stdin for the first command only
+            if "|" in command_parts and not has_stdin_redirect:
+                # Find first unquoted pipe in original command
+                # We can't use shlex.join() because it quotes shell operators like 2>&1
+                try:
+                    pipe_pos = _find_first_unquoted_pipe(command)
+                    if pipe_pos is not None and pipe_pos > 0:
+                        first_cmd = command[:pipe_pos].rstrip()
+                        rest = command[pipe_pos + 1 :].lstrip()
+                        command = f"{first_cmd} < /dev/null | {rest}"
+                except Exception as e:
+                    # Fallback to raw command if parsing fails
+                    logger.warning(f"Failed to parse pipe in command '{command}': {e}")
+            elif not has_stdin_redirect and "|" not in command_parts:
+                # No pipe and no stdin redirection - add /dev/null
                 command += " < /dev/null"
         except ValueError as e:
-            logger.warning("Failed shlex parsing command, using raw command", e)
+            logger.warning(f"Failed shlex parsing command, using raw command: {e}")
 
         full_command = f"{command}\n"
         full_command += f"echo ReturnCode:$? {self.delimiter}\n"
@@ -393,6 +468,161 @@ def is_allowlisted(cmd: str) -> bool:
     return True
 
 
+def _find_quotes(cmd: str) -> list[tuple[int, int]]:
+    """Find all quoted regions in a command string.
+
+    Returns a list of (start, end) tuples for each quoted region.
+    """
+    quoted_regions = []
+    in_single = False
+    in_double = False
+    start = -1
+
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+
+        # Handle escape sequences
+        if c == "\\" and i + 1 < len(cmd):
+            i += 2
+            continue
+
+        # Handle single quotes
+        if c == "'" and not in_double:
+            if not in_single:
+                start = i
+                in_single = True
+            else:
+                quoted_regions.append((start, i + 1))
+                in_single = False
+
+        # Handle double quotes
+        elif c == '"' and not in_single:
+            if not in_double:
+                start = i
+                in_double = True
+            else:
+                quoted_regions.append((start, i + 1))
+                in_double = False
+
+        i += 1
+
+    return quoted_regions
+
+
+def _find_heredoc_regions(cmd: str) -> list[tuple[int, int]]:
+    """Find all heredoc regions in a command string.
+
+    Heredoc syntax: << DELIMITER or <<- DELIMITER
+    The delimiter can be quoted: << 'EOF' or << "EOF"
+
+    Returns a list of (start, end) tuples for each heredoc content region.
+    """
+    heredoc_regions = []
+
+    # Pattern to match heredoc operators with optional quotes around delimiter
+    # Matches: << or <<- followed by optional whitespace and delimiter (with optional quotes)
+    heredoc_pattern = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
+
+    for match in heredoc_pattern.finditer(cmd):
+        delimiter = match.group(2)
+
+        # Find where the content starts (after the first newline after the marker)
+        search_start = match.end()
+        newline_idx = cmd.find("\n", search_start)
+        if newline_idx == -1:
+            continue  # No content
+
+        content_start = newline_idx + 1
+
+        # Find the line with just the delimiter
+        pos = content_start
+        while True:
+            newline_idx = cmd.find("\n", pos)
+            if newline_idx == -1:
+                # Check if remaining text is the delimiter
+                if cmd[pos:].strip() == delimiter:
+                    heredoc_regions.append((content_start, pos))
+                break
+
+            # Check if the line from pos to newline_idx is just the delimiter
+            line = cmd[pos:newline_idx]
+            if line.strip() == delimiter:
+                heredoc_regions.append((content_start, pos))
+                break
+
+            pos = newline_idx + 1
+
+    return heredoc_regions
+
+
+def _is_in_quoted_region(pos: int, quoted_regions: list[tuple[int, int]]) -> bool:
+    """Check if a position is within any quoted region."""
+    for start, end in quoted_regions:
+        if start <= pos < end:
+            return True
+    return False
+
+
+def _find_first_unquoted_pipe(command: str) -> int | None:
+    """Find the position of the first pipe operator that's not in quotes.
+
+    Returns None if no unquoted pipe is found.
+    Skips logical OR operators (||).
+    """
+    quoted_regions = _find_quotes(command)
+
+    pos = 0
+    while True:
+        pipe_pos = command.find("|", pos)
+        if pipe_pos == -1:
+            return None
+
+        # Check if this pipe is inside quotes
+        if not _is_in_quoted_region(pipe_pos, quoted_regions):
+            # Check if this is part of || (logical OR)
+            if pipe_pos + 1 < len(command) and command[pipe_pos + 1] == "|":
+                # Skip the || operator
+                pos = pipe_pos + 2
+                continue
+
+            return pipe_pos
+
+        # Try next pipe
+        pos = pipe_pos + 1
+
+
+def is_denylisted(cmd: str) -> tuple[bool, str | None, str | None]:
+    """Check if a command contains dangerous patterns that should be denied.
+
+    Only checks actual commands, not content in quoted strings or heredocs.
+
+    Returns:
+        tuple[bool, str | None, str | None]: (is_denied, reason_if_denied, matched_command)
+    """
+    # Find both quoted regions and heredoc regions in the original command
+    # (heredocs require newlines to be detected properly)
+    quoted_regions = _find_quotes(cmd)
+    heredoc_regions = _find_heredoc_regions(cmd)
+
+    # Combine all safe regions
+    safe_regions = quoted_regions + heredoc_regions
+
+    # Check deny groups against the original command
+    # We don't normalize because it would break heredoc detection
+    for patterns, reason in deny_groups:
+        for pattern in patterns:
+            match = re.search(pattern, cmd, re.IGNORECASE)
+            if match:
+                # Check if the match is within a safe region (quoted or heredoc)
+                match_start = match.start()
+                if not _is_in_quoted_region(match_start, safe_regions):
+                    # Return the matched text to show in error message
+                    return True, reason, match.group(0)
+
+    return False, None, None
+
+
 def _format_shell_output(
     cmd: str,
     stdout: str,
@@ -404,15 +634,20 @@ def _format_shell_output(
     current_cwd: str,
     timed_out: bool = False,
     timeout_value: float | None = None,
+    logdir: Path | None = None,
 ) -> str:
     """Format shell command output into a message."""
     # Strip ANSI escape sequences from output
     stdout = strip_ansi_codes(stdout)
     stderr = strip_ansi_codes(stderr)
 
-    # Apply shortening logic
-    stdout = _shorten_stdout(stdout, pre_tokens=2000, post_tokens=8000)
-    stderr = _shorten_stdout(stderr, pre_tokens=2000, post_tokens=2000)
+    # Apply shortening logic with output storage
+    stdout = _shorten_stdout(
+        stdout, pre_tokens=2000, post_tokens=8000, logdir=logdir, cmd=cmd
+    )
+    stderr = _shorten_stdout(
+        stderr, pre_tokens=2000, post_tokens=2000, logdir=logdir, cmd=f"{cmd} (stderr)"
+    )
 
     # Format header
     if timed_out:
@@ -457,7 +692,7 @@ def _format_shell_output(
 
 
 def execute_shell_impl(
-    cmd: str, _: Path | None, confirm: ConfirmFunc, timeout: float | None = None
+    cmd: str, logdir: Path | None, confirm: ConfirmFunc, timeout: float | None = None
 ) -> Generator[Message, None, None]:
     """Execute shell command and format output."""
     shell = get_shell()
@@ -512,6 +747,7 @@ def execute_shell_impl(
         current_cwd,
         timed_out,
         timeout_value=timeout,
+        logdir=logdir,
     )
     yield Message("system", msg)
 
@@ -521,6 +757,116 @@ def execute_shell_impl(
 
 def get_path_fn(*args, **kwargs) -> Path | None:
     return None
+
+
+def check_with_shellcheck(cmd: str) -> tuple[bool, bool, str]:
+    """
+    Run shellcheck on command if available.
+
+    Returns: Tuple of (has_issues: bool, should_block: bool, message: str)
+    - has_issues: True if any shellcheck issues found
+    - should_block: True if critical error codes found that should prevent execution
+    - message: Description of issues found
+
+    Note:
+        - Requires shellcheck (sudo apt install shellcheck)
+        - Can be disabled with GPTME_SHELLCHECK=off
+        - Non-blocking if shellcheck unavailable
+        - SC2164 (cd error handling) excluded by default
+        - Custom excludes via GPTME_SHELLCHECK_EXCLUDE (comma-separated codes)
+        - Error codes via GPTME_SHELLCHECK_ERROR_CODES (comma-separated, default: SC2006)
+        - Error codes block execution, other codes show warnings only
+    """
+    # Check if disabled via environment variable
+    if os.environ.get("GPTME_SHELLCHECK", "").lower() in ("off", "false", "0"):
+        return False, False, ""
+
+    # Check if shellcheck is available
+    if not shutil.which("shellcheck"):
+        return False, False, ""
+
+    # Default excluded codes
+    # SC2002: Useless cat. Consider 'cmd < file | ..' or 'cmd file | ..' instead
+    # SC2164: Use 'cd ... || exit' in case cd fails (too noisy for interactive commands)
+    default_excludes = ["SC2002", "SC2164"]
+
+    # Get custom excludes from environment variable
+    custom_excludes = os.environ.get("GPTME_SHELLCHECK_EXCLUDE", "").split(",")
+    custom_excludes = [code.strip() for code in custom_excludes if code.strip()]
+
+    # Combine default and custom excludes
+    all_excludes = default_excludes + custom_excludes
+    exclude_str = ",".join(all_excludes)
+
+    # Default error codes (should block execution)
+    # SC2006: Use $(...) notation instead of legacy backticks (causes formatting issues in commits/PRs)
+    default_error_codes = ["SC2006"]
+
+    # Get custom error codes from environment variable
+    custom_error_codes_str = os.environ.get("GPTME_SHELLCHECK_ERROR_CODES", "")
+    if custom_error_codes_str:
+        custom_error_codes = [
+            code.strip() for code in custom_error_codes_str.split(",") if code.strip()
+        ]
+        error_codes = list(set(default_error_codes + custom_error_codes))
+    else:
+        error_codes = default_error_codes
+
+    # Write command to temp file
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
+        f.write("#!/bin/bash\n")
+        f.write(cmd)
+        temp_path = f.name
+
+    try:
+        shellcheck_cmd = ["shellcheck", "-f", "gcc"]
+        if exclude_str:
+            shellcheck_cmd.extend(["--exclude", exclude_str])
+        shellcheck_cmd.append(temp_path)
+
+        result = subprocess.run(
+            shellcheck_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode != 0 and result.stdout:
+            output = result.stdout.replace(temp_path, "<command>")
+
+            # Extract error codes from shellcheck output
+
+            triggered_codes = set()
+            for line in output.splitlines():
+                # Match shellcheck error codes (e.g., SC2006, SC2086)
+                match = re.search(r"\[SC\d+\]", line)
+                if match:
+                    # Extract just the code (e.g., "SC2006")
+                    code = match.group().strip("[]")
+                    triggered_codes.add(code)
+
+            # Check if any triggered codes are error codes (should block)
+            blocking_codes = triggered_codes.intersection(set(error_codes))
+
+            if blocking_codes:
+                # Critical issues that should block execution
+                codes_str = ", ".join(sorted(blocking_codes))
+                message = f"Shellcheck found critical issues that prevent execution:\n```\n{output}```\n\nBlocking codes: {codes_str}"
+                return True, True, message
+            else:
+                # Non-critical warnings
+                message = f"Shellcheck found potential issues:\n```\n{output}```"
+                return True, False, message
+
+        return False, False, ""
+    except (subprocess.TimeoutExpired, Exception):
+        return False, False, ""
+    finally:
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
 
 
 def execute_shell(
@@ -533,22 +879,38 @@ def execute_shell(
     cmd = get_shell_command(code, args, kwargs)
 
     # Check for timeout from environment variable
-    timeout = None
+    # Default to 20 minutes (1200s) if not set
+    timeout: float | None = 1200.0
     timeout_env = os.environ.get("GPTME_SHELL_TIMEOUT")
     if timeout_env is not None:
         try:
-            timeout = float(timeout_env) if timeout_env else 60.0
+            timeout = float(timeout_env)
             if timeout <= 0:
                 timeout = None  # Disable timeout if set to 0 or negative
         except ValueError:
             logger.warning(
-                f"Invalid GPTME_SHELL_TIMEOUT value: {timeout_env}, using default 60s"
+                f"Invalid GPTME_SHELL_TIMEOUT value: {timeout_env}, using default 1200s (20 minutes)"
             )
-            timeout = 60.0
+            timeout = 1200.0
+
+    # Check with shellcheck if available
+    has_issues, should_block, shellcheck_msg = check_with_shellcheck(cmd)
+    if has_issues:
+        yield Message("system", shellcheck_msg)
+        # Block execution if critical shellcheck errors found
+        if should_block:
+            return
+
+    # Check if command is denylisted - these are blocked entirely
+    is_denied, deny_reason, matched_cmd = is_denylisted(cmd)
+    if is_denied:
+        yield Message("system", f"Command denied: `{matched_cmd}`\n\n{deny_reason}")
+        return
 
     # Skip confirmation for allowlisted commands
     if is_allowlisted(cmd):
-        yield from execute_shell_impl(cmd, None, lambda _: True, timeout=timeout)
+        logdir = get_path_fn()
+        yield from execute_shell_impl(cmd, logdir, lambda _: True, timeout=timeout)
     else:
         # Create a wrapper function that passes timeout to execute_shell_impl
         def execute_fn(
@@ -590,8 +952,35 @@ def _shorten_stdout(
     post_tokens=None,
     strip_dates=False,
     strip_common_prefix_lines=0,
+    logdir: Path | None = None,
+    cmd: str | None = None,
 ) -> str:
     lines = stdout.split("\n")
+
+    # Save full output before truncation if it will be truncated
+    will_truncate_by_lines = (
+        pre_lines is not None
+        and post_lines is not None
+        and len(lines) > pre_lines + post_lines
+    )
+    will_truncate_by_tokens = False
+    if pre_tokens is not None and post_tokens is not None:
+        tokenizer = get_tokenizer("gpt-4")
+        tokens = tokenizer.encode(stdout)
+        will_truncate_by_tokens = len(tokens) > pre_tokens + post_tokens
+
+    # If truncation will happen, save full output to file
+    saved_path = None
+    if (will_truncate_by_lines or will_truncate_by_tokens) and logdir:
+        command_info = f"Command: {cmd}" if cmd else None
+        original_tokens = len(tokens) if will_truncate_by_tokens else None
+        _, saved_path = save_large_output(
+            content=stdout,
+            logdir=logdir,
+            output_type="shell",
+            command_info=command_info,
+            original_tokens=original_tokens,
+        )
 
     # NOTE: This can cause issues when, for example, reading a CSV with dates in the first column
     if strip_dates:
@@ -614,30 +1003,62 @@ def _shorten_stdout(
 
     # check that if pre_lines is set, so is post_lines, and vice versa
     assert (pre_lines is None) == (post_lines is None)
+    # Skip line truncation if token truncation will happen (token truncation is more precise)
     if (
         pre_lines is not None
         and post_lines is not None
         and len(lines) > pre_lines + post_lines
+        and not will_truncate_by_tokens
     ):
-        lines = (
-            lines[:pre_lines]
-            + [f"... ({len(lines) - pre_lines - post_lines} truncated) ..."]
-            + lines[-post_lines:]
-        )
+        truncation_msg = f"... ({len(lines) - pre_lines - post_lines} lines truncated"
+        if saved_path:
+            truncation_msg += f", full output saved to {saved_path}"
+        truncation_msg += ") ..."
+        lines = lines[:pre_lines] + [truncation_msg] + lines[-post_lines:]
 
     # check that if pre_tokens is set, so is post_tokens, and vice versa
     assert (pre_tokens is None) == (post_tokens is None)
     if pre_tokens is not None and post_tokens is not None:
-        tokenizer = get_tokenizer("gpt-4")  # TODO: use sane default
-        tokens = tokenizer.encode(stdout)
+        if not will_truncate_by_tokens:
+            tokenizer = get_tokenizer("gpt-4")  # TODO: use sane default
+            tokens = tokenizer.encode(stdout)
         if len(tokens) > pre_tokens + post_tokens:
+            truncation_msg = "... (output truncated"
+            if saved_path:
+                truncation_msg += f", full output saved to {saved_path}"
+            truncation_msg += ") ..."
             lines = (
                 [tokenizer.decode(tokens[:pre_tokens])]
-                + ["... (truncated output) ..."]
+                + [truncation_msg]
                 + [tokenizer.decode(tokens[-post_tokens:])]
             )
 
     return "\n".join(lines)
+
+
+def _find_max_heredoc_pos(node, current_max: int = 0) -> int:
+    """Recursively find the maximum position from any heredoc nodes.
+
+    This is needed because bashlex stores heredoc content in nested RedirectNode
+    objects, and the top-level part.pos doesn't include the heredoc content positions.
+    """
+    max_pos = current_max
+
+    # Check if this node has a heredoc
+    if hasattr(node, "heredoc") and node.heredoc:
+        heredoc_end = node.heredoc.pos[1]
+        max_pos = max(max_pos, heredoc_end)
+
+    # Recursively check child nodes
+    if hasattr(node, "parts"):
+        for part in node.parts:
+            max_pos = max(max_pos, _find_max_heredoc_pos(part, max_pos))
+
+    if hasattr(node, "list"):
+        for item in node.list:
+            max_pos = max(max_pos, _find_max_heredoc_pos(item, max_pos))
+
+    return max_pos
 
 
 def split_commands(script: str) -> list[str]:
@@ -646,7 +1067,31 @@ def split_commands(script: str) -> list[str]:
     # Preprocess script to handle quoted heredoc delimiters that bashlex can't parse
     processed_script = _preprocess_quoted_heredocs(script)
 
-    parts = bashlex.parse(processed_script)
+    try:
+        parts = bashlex.parse(processed_script)
+    except Exception as e:
+        # Fall back to treating script as single command if bashlex can't parse it
+        # bashlex (a Python port of GNU bash parser) cannot handle bash reserved words
+        # like 'time', 'coproc', etc. These are special keywords in bash that have
+        # different parsing rules. When bashlex encounters them, it raises an exception.
+        error_msg = str(e)
+
+        # bashlex reserved word errors contain "token =" in the message
+        # These are valid bash syntax that bashlex can't parse - allow them
+        if "token =" in error_msg:
+            logger.warning(
+                f"bashlex cannot parse bash reserved word. "
+                f"Treating script as single command. Error: {e}"
+            )
+            return [script]
+
+        # Other parsing errors are likely syntax errors - fail fast
+        # Common errors: "unexpected EOF", "unexpected token", etc.
+        raise ValueError(
+            f"Shell syntax error: {e}\n"
+            f"Please fix the syntax or use a different approach."
+        ) from e
+
     commands = []
     for part in parts:
         if part.kind == "command":
@@ -656,16 +1101,10 @@ def split_commands(script: str) -> list[str]:
                 command_parts.append(processed_script[start:end])
             command = " ".join(command_parts)
             commands.append(command)
-        elif part.kind == "compound":
-            for node in part.list:
-                command_parts = []
-                for word in node.parts:
-                    start, end = word.pos
-                    command_parts.append(processed_script[start:end])
-                command = " ".join(command_parts)
-                commands.append(command)
-        elif part.kind in ["function", "pipeline", "list"]:
-            commands.append(processed_script[part.pos[0] : part.pos[1]])
+        elif part.kind in ["function", "pipeline", "list", "compound"]:
+            # Find the maximum position including heredoc content
+            max_pos = _find_max_heredoc_pos(part, part.pos[1])
+            commands.append(processed_script[part.pos[0] : max_pos])
         else:
             logger.warning(
                 f"Unknown shell script part of kind '{part.kind}', hoping this works"

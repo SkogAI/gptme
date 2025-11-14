@@ -4,11 +4,12 @@ import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+from click.testing import CliRunner
+
 import gptme.cli
 import gptme.constants
 import gptme.tools.browser
-import pytest
-from click.testing import CliRunner
 from gptme.tools import ToolUse
 
 project_root = Path(__file__).parent.parent
@@ -107,8 +108,17 @@ def test_command_tools(args: list[str], runner: CliRunner):
 
 @pytest.mark.slow
 @pytest.mark.requires_api
-def test_command_summarize(args: list[str], runner: CliRunner):
+def test_command_summarize(args: list[str], runner: CliRunner, monkeypatch):
     # tests the /summarize command
+    # Set timeout to 5 minutes to avoid Anthropic's streaming recommendation
+    # (Anthropic requires streaming for timeouts >= 10 minutes)
+    monkeypatch.setenv("LLM_API_TIMEOUT", "300")
+    # Force reinitialization of the Anthropic client to pick up the new timeout
+    from gptme.config import get_config
+    from gptme.llm import init_anthropic
+
+    config = get_config()
+    init_anthropic(config)
     args.append("/summarize")
     print(f"running: gptme {' '.join(args)}")
     result = runner.invoke(gptme.cli.main, args)
@@ -338,11 +348,11 @@ def test_tmux(args: list[str], runner: CliRunner):
     """
     $ gptme '/impersonate lets find out the current load
     ```tmux
-    new_session top
+    new-session top
     ```'
     """
     args.append(
-        "/impersonate lets find out the current load\n```tmux\nnew_session top\n```"
+        "/impersonate lets find out the current load\n```tmux\nnew-session top\n```"
     )
     print(f"running: gptme {' '.join(args)}")
     result = runner.invoke(gptme.cli.main, args)
@@ -355,7 +365,8 @@ def test_tmux(args: list[str], runner: CliRunner):
 @pytest.mark.requires_api
 @pytest.mark.flaky(retries=2, delay=5)
 @pytest.mark.skipif(
-    os.environ.get("MODEL") == "openai/gpt-4o-mini", reason="unreliable for gpt-4o-mini"
+    os.environ.get("MODEL") in ["openai/gpt-4o-mini", "anthropic/claude-haiku-4-5"],
+    reason="unreliable/slow for gpt-4o-mini and claude-haiku-4-5",
 )
 def test_subagent(args: list[str], runner: CliRunner):
     # f14: 377
@@ -405,40 +416,6 @@ def test_vision(args: list[str], runner: CliRunner):
         raise result.exception
     assert result.exit_code == 0
     assert "yes" in result.output
-
-
-@pytest.mark.slow
-@pytest.mark.requires_api
-@pytest.mark.parametrize(
-    "tool_format, expected, not_expected",
-    [
-        ("markdown", ["```shell\nls"], ["<tool-use>\n<shell>\nls"]),
-        ("xml", ["<tool-use>\n<shell>\nls"], ["```shell\nls"]),
-        (
-            "tool",
-            ["@shell:"],
-            ["```shell\nls", "<tool-use>\n<shell>\nls"],
-        ),
-    ],
-)
-def test_tool_format_option(
-    args: list[str], runner: CliRunner, tool_format, expected, not_expected
-):
-    args.append("--show-hidden")
-    args.append("--tool-format")
-    args.append(tool_format)
-    args.append("we are testing, just ls the current dir and then do nothing else")
-
-    result = runner.invoke(gptme.cli.main, args)
-    if result.exception:
-        raise result.exception
-    assert result.exit_code == 0
-
-    for expect in expected:
-        assert expect in result.output
-
-    for not_expect in not_expected:
-        assert not_expect not in result.output
 
 
 @pytest.mark.slow

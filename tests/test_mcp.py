@@ -10,6 +10,40 @@ import tomlkit
 from gptme.config import MCPConfig, MCPServerConfig, UserConfig
 
 
+def test_mcp_cli_commands():
+    """Test MCP CLI command logic"""
+    from click.testing import CliRunner
+
+    from gptme.util.cli import mcp_info
+
+    # Test with mock data - this would normally use the config system
+    runner = CliRunner()
+
+    # Test info command with non-existent server
+    result = runner.invoke(mcp_info, ["nonexistent"])
+    # Updated to match improved error message that searches registries
+    assert "not configured locally" in result.output
+    assert "not found in registries either" in result.output
+
+
+def test_mcp_server_config_http():
+    """Test HTTP MCP server configuration"""
+    # Test HTTP server
+    http_server = MCPServerConfig(
+        name="test-http",
+        url="https://example.com/mcp",
+        headers={"Authorization": "Bearer token"},
+    )
+    assert http_server.is_http is True
+    assert http_server.url == "https://example.com/mcp"
+    assert http_server.headers["Authorization"] == "Bearer token"
+
+    # Test stdio server
+    stdio_server = MCPServerConfig(name="test-stdio", command="echo", args=["hello"])
+    assert stdio_server.is_http is False
+    assert stdio_server.command == "echo"
+
+
 @pytest.fixture
 def test_config_path(tmp_path) -> Generator[Path, None, None]:
     """Create a temporary config file for testing"""

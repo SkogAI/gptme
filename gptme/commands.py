@@ -1,5 +1,6 @@
 import logging
 import re
+import shlex
 import sys
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -8,9 +9,9 @@ from time import sleep
 from typing import Literal
 
 from . import llm
-from .util.auto_naming import generate_llm_name
+from .config import ChatConfig
 from .constants import INTERRUPT_CONTENT
-from .llm.models import get_default_model, set_default_model
+from .llm.models import get_default_model, list_models, set_default_model
 from .logmanager import LogManager, prepare_messages
 from .message import (
     Message,
@@ -24,9 +25,11 @@ from .tools import (
     ConfirmFunc,
     ToolUse,
     execute_msg,
+    get_tool,
     get_tool_format,
     get_tools,
 )
+from .util.auto_naming import generate_llm_name
 from .util.cost import log_costs
 from .util.export import export_chat_to_html
 from .util.useredit import edit_text_with_editor
@@ -61,7 +64,7 @@ action_descriptions: dict[Actions, str] = {
     "rename": "Rename the conversation",
     "fork": "Copy the conversation using a new name",
     "summarize": "Summarize the conversation",
-    "replay": "Rerun tools in the conversation, won't store output",
+    "replay": "Replay tool operations",
     "impersonate": "Impersonate the assistant",
     "tokens": "Show the number of tokens used",
     "export": "Export conversation as HTML",
@@ -114,6 +117,41 @@ def command(name: str, aliases: list[str] | None = None):
         return func
 
     return decorator
+
+
+def register_command(
+    name: str, handler: CommandHandler, aliases: list[str] | None = None
+) -> None:
+    """Register a command handler dynamically (for tools).
+
+    Args:
+        name: Command name (without leading /)
+        handler: Function that takes CommandContext and yields Messages
+        aliases: Optional list of command aliases
+    """
+    _command_registry[name] = handler
+    if aliases:
+        for alias in aliases:
+            _command_registry[alias] = handler
+    logger.debug(
+        f"Registered command: {name}" + (f" (aliases: {aliases})" if aliases else "")
+    )
+
+
+def unregister_command(name: str) -> None:
+    """Unregister a command handler.
+
+    Args:
+        name: Command name to unregister
+    """
+    if name in _command_registry:
+        del _command_registry[name]
+        logger.debug(f"Unregistered command: {name}")
+
+
+def get_registered_commands() -> list[str]:
+    """Get list of all registered command names."""
+    return list(_command_registry.keys())
 
 
 @command("log")
@@ -184,23 +222,31 @@ def cmd_exit(ctx: CommandContext) -> None:
 
 @command("replay")
 def cmd_replay(ctx: CommandContext) -> None:
-    """Replay the conversation."""
+    """Replay the conversation or specific tool operations."""
     ctx.manager.undo(1, quiet=True)
     ctx.manager.write()
 
-    # Determine replay scope
+    # Check if replaying a specific tool
+    if ctx.args and ctx.args[0].lower() not in ["last", "all"]:
+        tool_name = ctx.args[0]
+        _replay_tool(ctx.manager.log, tool_name)
+        return
+
+    # Determine replay scope for messages
     if ctx.args:
         scope = ctx.args[0].lower()
         if scope not in ["last", "all"]:
-            print(f"Invalid option '{scope}'. Use 'last' or 'all'.")
+            print(f"Invalid option '{scope}'. Use 'last', 'all', or a tool name.")
             return
     else:
         print("Replay options:")
         print("  last - Replay only the last assistant message")
         print("  all  - Replay all assistant messages")
-        scope = input("Choose (last/all): ").strip().lower()
+        print("  <tool> - Replay all operations for a specific tool (e.g., todowrite)")
+        scope = input("Choose (last/all/<tool>): ").strip().lower()
         if scope not in ["last", "all"]:
-            print("Invalid choice. Aborting.")
+            # Try as tool name
+            _replay_tool(ctx.manager.log, scope)
             return
 
     assistant_messages = [msg for msg in ctx.manager.log if msg.role == "assistant"]
@@ -214,8 +260,6 @@ def cmd_replay(ctx: CommandContext) -> None:
         last_with_tools = None
         for msg in reversed(assistant_messages):
             # Check if message has any tool uses by trying to execute it
-            from .tools import ToolUse
-
             if any(ToolUse.iter_from_content(msg.content)):
                 last_with_tools = msg
                 break
@@ -233,6 +277,57 @@ def cmd_replay(ctx: CommandContext) -> None:
     for msg in messages_to_replay:
         for reply_msg in execute_msg(msg, ctx.confirm):
             print_msg(reply_msg, oneline=False)
+
+
+def _replay_tool(log, tool_name: str) -> None:
+    """Replay all operations for a specific tool from the conversation log."""
+
+    tool = get_tool(tool_name)
+    if not tool:
+        print(f"Error: Tool '{tool_name}' not found or not loaded.")
+        return
+
+    print(f"Replaying all '{tool_name}' operations...")
+    count = 0
+
+    for msg in log:
+        for tooluse in ToolUse.iter_from_content(msg.content):
+            if tooluse.tool == tool_name and tooluse.content:
+                count += 1
+                # Execute the tool operation
+                lines = [
+                    line.strip()
+                    for line in tooluse.content.strip().split("\n")
+                    if line.strip()
+                ]
+
+                for line in lines:
+                    # Use the tool's execute function directly
+                    # For tools like todowrite, this will update internal state
+                    try:
+                        parts = shlex.split(line)
+                        if parts:
+                            # Import the tool's helper function if it exists
+                            # For todowrite, this would be _todowrite
+                            helper_name = f"_{tool_name}"
+                            tool_module = __import__(
+                                f"gptme.tools.{tool_name}",
+                                fromlist=[helper_name],
+                            )
+                            if hasattr(tool_module, helper_name):
+                                helper_func = getattr(tool_module, helper_name)
+                                result = helper_func(*parts)
+                                if result:
+                                    print(f"  {result}")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to replay {tool_name} operation '{line}': {e}"
+                        )
+
+    if count == 0:
+        print(f"No '{tool_name}' operations found to replay.")
+    else:
+        print(f"✅ Replayed {count} '{tool_name}' operations")
 
 
 @command("impersonate")
@@ -303,15 +398,6 @@ def cmd_export(ctx: CommandContext) -> None:
     print(f"Exported conversation to {output_path}")
 
 
-@command("commit")
-def cmd_commit(ctx: CommandContext) -> Generator[Message, None, None]:
-    """Commit staged changes to git."""
-    ctx.manager.undo(1, quiet=True)
-    from .util.context import autocommit
-
-    yield autocommit()
-
-
 @command("setup")
 def cmd_setup(ctx: CommandContext) -> None:
     """Setup gptme with completions, configuration, and project setup."""
@@ -334,7 +420,8 @@ def execute_cmd(msg: Message, log: LogManager, confirm: ConfirmFunc) -> bool:
 
     # if message starts with / treat as command
     # when command has been run,
-    if msg.content[:1] in ["/"]:
+    # absolute paths dont trigger false positives by checking for single /
+    if msg.content.startswith("/") and msg.content.split(" ")[0].count("/") == 1:
         for resp in handle_cmd(msg.content, log, confirm):
             log.append(resp)
         return True
@@ -363,7 +450,7 @@ def handle_cmd(
     # Fallback to tool execution
     tooluse = ToolUse(name, [], full_args)
     if tooluse.is_runnable:
-        yield from tooluse.execute(confirm)
+        yield from tooluse.execute(confirm, manager.log, manager.workspace)
     else:
         manager.undo(1, quiet=True)
         print("Unknown command")
@@ -389,8 +476,6 @@ def edit(manager: LogManager) -> Generator[Message, None, None]:  # pragma: no c
 
 
 def rename(manager: LogManager, new_name: str, confirm: ConfirmFunc) -> None:
-    from .config import ChatConfig
-
     if new_name in ["", "auto"]:
         msgs = prepare_messages(manager.log.messages)[1:]  # skip system message
         new_name = generate_llm_name(msgs)
@@ -445,17 +530,11 @@ def help():
 
 def print_available_models() -> None:
     """Print all available models from all providers."""
-    from .llm.models import list_models
 
     list_models(dynamic_fetch=True)
 
 
 def get_user_commands() -> list[str]:
-    """Returns a list of all user commands"""
-    commands = [f"/{cmd}" for cmd in action_descriptions.keys()]
-
-    # check if command is valid tooluse
-    # TODO: check for registered tools instead of hardcoding
-    commands.extend(["/python", "/shell"])
-
-    return commands
+    """Returns a list of all user commands, including tool-registered commands"""
+    # Get all registered commands (includes built-in + tool-registered)
+    return [f"/{cmd}" for cmd in _command_registry.keys()]

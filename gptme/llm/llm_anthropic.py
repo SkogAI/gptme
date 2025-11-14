@@ -8,11 +8,15 @@ from typing import (
     Any,
     Literal,
     TypedDict,
+    Union,
     cast,
 )
 
+from httpx import RemoteProtocolError
+
 from ..constants import TEMPERATURE, TOP_P
 from ..message import Message, msgs2dicts
+from ..telemetry import record_llm_request
 from ..tools.base import ToolSpec
 from .models import ModelMeta, get_model
 from .utils import (
@@ -20,6 +24,9 @@ from .utils import (
     parameters2dict,
     process_image_file,
 )
+
+ENV_REASONING = "GPTME_REASONING"
+ENV_REASONING_BUDGET = "GPTME_REASONING_BUDGET"
 
 if TYPE_CHECKING:
     # noreorder
@@ -32,9 +39,43 @@ _anthropic: "Anthropic | None" = None
 _is_proxy: bool = False
 
 
+def _record_usage(
+    usage: Union["anthropic.types.Usage", "anthropic.types.MessageDeltaUsage"],
+    model: str,
+) -> None:
+    """Record usage metrics as telemetry."""
+    if not usage:
+        return None
+
+    # Extract token counts
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", None)
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", None)
+
+    # Calculate total tokens
+    total_tokens = 0
+    total_tokens += input_tokens or 0
+    total_tokens += output_tokens or 0
+    total_tokens += cache_creation_tokens or 0
+    total_tokens += cache_read_tokens or 0
+
+    # Record the LLM request with token usage
+    record_llm_request(
+        provider="anthropic",
+        model=model,
+        success=True,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
+        total_tokens=total_tokens if total_tokens > 0 else None,
+    )
+
+
 def _should_use_thinking(model_meta: ModelMeta, tools: list[ToolSpec] | None) -> bool:
     # Support environment variable to override reasoning behavior
-    env_reasoning = os.environ.get("GPTME_REASONING")
+    env_reasoning = os.environ.get(ENV_REASONING)
     if env_reasoning and env_reasoning.lower() in ("1", "true", "yes"):
         return True
     elif env_reasoning and env_reasoning.lower() in ("0", "false", "no"):
@@ -50,25 +91,56 @@ def _should_use_thinking(model_meta: ModelMeta, tools: list[ToolSpec] | None) ->
     return True
 
 
-def _handle_anthropic_overloaded(e, attempt, max_retries, base_delay):
-    """Handle Anthropic API overloaded errors with exponential backoff."""
+def _handle_anthropic_transient_error(e, attempt, max_retries, base_delay):
+    """Handle Anthropic API transient errors with exponential backoff.
+
+    Retries on:
+    - 5xx server errors (500-599): Internal errors, bad gateway, service unavailable, etc.
+    - 429 rate limit errors: Should back off and retry
+    - Error messages containing 'overload', 'internal', 'timeout': Known transient issues
+    """
     from anthropic import APIStatusError  # fmt: skip
 
-    if (
-        not isinstance(e, APIStatusError)
-        or e.status_code != 503
-        or attempt == max_retries - 1
-    ):
+    # Check if this is a transient error we should retry
+    should_retry = False
+    if isinstance(e, APIStatusError):
+        # Retry on all 5xx server errors (transient)
+        if 500 <= e.status_code < 600:
+            should_retry = True
+        # Retry on 429 rate limit (should back off)
+        elif e.status_code == 429:
+            should_retry = True
+        # Also check error message for known transient issues
+        elif hasattr(e, "message"):
+            error_msg = str(e.message).lower()
+            if any(
+                keyword in error_msg for keyword in ["overload", "internal", "timeout"]
+            ):
+                should_retry = True
+    # Also check for "httpx.RemoteProtocolError: peer closed connection without sending complete message body"
+    elif isinstance(e, RemoteProtocolError):
+        should_retry = True
+
+    # Re-raise if not transient or max retries reached
+    if not should_retry or attempt == max_retries - 1:
         raise e
+
     delay = base_delay * (2**attempt)
+    status_code = getattr(e, "status_code", "unknown")
     logger.warning(
-        f"Anthropic API overloaded, retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+        f"Anthropic API transient error (status {status_code}), "
+        f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
     )
+    if status_code in [200, "200"]:
+        logger.warning(f"Status code was strangely 200. Error details: {str(e)}")
     time.sleep(delay)
 
 
 def retry_on_overloaded(max_retries: int = 5, base_delay: float = 1.0):
-    """Decorator to retry functions on Anthropic API overloaded errors with exponential backoff."""
+    """Decorator to retry functions on Anthropic API transient errors with exponential backoff.
+
+    Handles 5xx server errors, rate limits, and other transient API issues.
+    """
 
     def decorator(func):
         @wraps(func)
@@ -77,7 +149,9 @@ def retry_on_overloaded(max_retries: int = 5, base_delay: float = 1.0):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    _handle_anthropic_overloaded(e, attempt, max_retries, base_delay)
+                    _handle_anthropic_transient_error(
+                        e, attempt, max_retries, base_delay
+                    )
 
         return wrapper
 
@@ -85,7 +159,10 @@ def retry_on_overloaded(max_retries: int = 5, base_delay: float = 1.0):
 
 
 def retry_generator_on_overloaded(max_retries: int = 5, base_delay: float = 1.0):
-    """Decorator to retry generator functions on Anthropic API overloaded errors with exponential backoff."""
+    """Decorator to retry generator functions on Anthropic API transient errors with exponential backoff.
+
+    Handles 5xx server errors, rate limits, and other transient API issues.
+    """
 
     def decorator(func):
         @wraps(func)
@@ -95,7 +172,9 @@ def retry_generator_on_overloaded(max_retries: int = 5, base_delay: float = 1.0)
                     yield from func(*args, **kwargs)
                     break  # If generator completes successfully, exit retry loop
                 except Exception as e:
-                    _handle_anthropic_overloaded(e, attempt, max_retries, base_delay)
+                    _handle_anthropic_transient_error(
+                        e, attempt, max_retries, base_delay
+                    )
 
         return wrapper
 
@@ -107,12 +186,21 @@ def init(config):
     proxy_url = config.get_env("LLM_PROXY_URL", None)
     proxy_key = config.get_env("LLM_PROXY_API_KEY")
     api_key = proxy_key or config.get_env_required("ANTHROPIC_API_KEY")
-    from anthropic import Anthropic  # fmt: skip
+
+    from anthropic import NOT_GIVEN, Anthropic  # fmt: skip
+
+    # Get configurable API timeout (default: client's own default of 10 minutes)
+    # If not set explicitly via LLM_API_TIMEOUT, we use NOT_GIVEN to let the
+    # client use its own default behavior, which handles streaming vs non-streaming
+    # requests differently and may evolve with future client versions.
+    timeout_str = config.get_env("LLM_API_TIMEOUT")
+    timeout = float(timeout_str) if timeout_str else NOT_GIVEN
 
     _anthropic = Anthropic(
         api_key=api_key,
         max_retries=5,
         base_url=proxy_url or None,
+        timeout=timeout,
     )
     _is_proxy = proxy_url is not None
 
@@ -137,15 +225,15 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
     model_meta = get_model(f"anthropic/{model}")
     use_thinking = _should_use_thinking(model_meta, tools)
-    thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
+    thinking_budget = int(os.environ.get(ENV_REASONING_BUDGET, "16000"))
     max_tokens = model_meta.max_output or 4096
 
     response = _anthropic.messages.create(
         model=api_model,
         messages=messages_dicts,
         system=system_messages,
-        temperature=TEMPERATURE if not use_thinking else 1,
-        top_p=TOP_P if not use_thinking else NOT_GIVEN,
+        temperature=TEMPERATURE if not model_meta.supports_reasoning else 1,
+        top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
         tools=tools_dict if tools_dict else NOT_GIVEN,
         thinking=(
@@ -153,9 +241,12 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
             if use_thinking
             else NOT_GIVEN
         ),
+        # We set a timeout for non-streaming requests to prevent Anthropic's
+        # "Streaming is strongly recommended" warning/error.
+        timeout=60,
     )
     content = response.content
-    logger.debug(response.usage)
+    _record_usage(response.usage, model)
 
     parsed_block = []
     for block in content:
@@ -187,15 +278,15 @@ def stream(
     model_meta = get_model(f"anthropic/{model}")
     use_thinking = _should_use_thinking(model_meta, tools)
     # Use the same configurable thinking budget as chat()
-    thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
+    thinking_budget = int(os.environ.get(ENV_REASONING_BUDGET, "16000"))
     max_tokens = model_meta.max_output or 4096
 
     with _anthropic.messages.stream(
         model=api_model,
         messages=messages_dicts,
         system=system_messages,
-        temperature=TEMPERATURE if not use_thinking else 1,
-        top_p=TOP_P if not use_thinking else NOT_GIVEN,
+        temperature=TEMPERATURE if not model_meta.supports_reasoning else 1,
+        top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
         tools=tools_dict if tools_dict else NOT_GIVEN,
         thinking=(
@@ -256,10 +347,11 @@ def stream(
                         anthropic.types.MessageStartEvent,
                         chunk,
                     )
-                    logger.debug(chunk.message.usage)
+                    # Don't record usage here, wait for message_delta with final usage
                 case "message_delta":
                     chunk = cast(anthropic.types.MessageDeltaEvent, chunk)
-                    logger.debug(chunk.usage)
+                    # Record usage from message_delta which contains the final/cumulative usage
+                    _record_usage(chunk.usage, model)
                 case "message_stop":
                     pass
                 case _:
@@ -497,10 +589,27 @@ def _prepare_messages_for_api(
                     item = cast(anthropic.types.TextBlockParam, item)
                     item["text"] = item["text"].rstrip()
 
+        # Filter out empty text blocks to prevent API errors
+        filtered_parts = []
+        for part in content_parts:
+            if part.get("type") == "text":
+                text_content = part.get("text", "")
+                # Skip empty text blocks
+                if isinstance(text_content, str) and text_content.strip():
+                    filtered_parts.append(part)
+            else:
+                # Keep all non-text parts
+                filtered_parts.append(part)
+        content_parts = filtered_parts
+
         messages_dicts_new.append({"role": msg["role"], "content": content_parts})
 
     # set for the first system message (static between sessions)
-    system_messages[0]["cache_control"] = {"type": "ephemeral"}
+    # Only set cache_control if the system message has non-empty content
+    if system_messages:
+        system_text = system_messages[0].get("text")
+        if system_text and isinstance(system_text, str) and system_text.strip():
+            system_messages[0]["cache_control"] = {"type": "ephemeral"}
 
     # set cache points at the two last user messages, as suggested in Anthropic docs:
     # > The conversation history (previous messages) is included in the messages array.
@@ -509,6 +618,14 @@ def _prepare_messages_for_api(
     # https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#continuing-a-multi-turn-conversation
     for msgp in [msg for msg in messages_dicts_new if msg["role"] == "user"][-2:]:
         assert isinstance(msgp["content"], list)
-        msgp["content"][-1]["cache_control"] = {"type": "ephemeral"}  # type: ignore
+        if msgp["content"]:  # Ensure content list is not empty
+            last_content = msgp["content"][-1]
+            # Only set cache_control if this isn't an empty text block
+            if last_content.get("type") != "text" or (
+                last_content.get("text")
+                and isinstance(last_content.get("text"), str)
+                and last_content.get("text").strip()
+            ):
+                last_content["cache_control"] = {"type": "ephemeral"}
 
     return messages_dicts_new, system_messages, tools_dict
