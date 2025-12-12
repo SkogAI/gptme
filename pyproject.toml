@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 license = "MIT"
-dynamic = ["dependencies"]  # "version"
+dynamic = ["dependencies"]                                                                                                                                                  # "version"
 
 [project.urls]
 Homepage = "https://gptme.org/"
@@ -25,9 +25,7 @@ gptme-wut = "gptme.wut:main"
 gptme-dspy = "gptme.eval.dspy:main"
 
 [tool.poetry]
-packages = [
-    { include = "gptme" },
-]
+packages = [{ include = "gptme" }]
 include = ["gptme/server/static/**/*", "media/logo.png"]
 
 [tool.poetry.dependencies]
@@ -57,25 +55,25 @@ anthropic = "^0.47"
 # tools
 ipython = "^8.17.2"
 bashlex = "^0.18"
-playwright = {version = "1.49.1", optional=true}  # version constrained due to annoying to have to run `playwright install` on every update
-youtube_transcript_api = {version = "^0.6.1", optional=true}
-python-xlib = {version = "^0.33", optional=true}  # for X11 interaction
+playwright = { version = "1.49.1", optional = true }             # version constrained due to annoying to have to run `playwright install` on every update
+youtube_transcript_api = { version = "^0.6.1", optional = true }
+python-xlib = { version = "^0.33", optional = true }             # for X11 interaction
 
 # evals
 multiprocessing-logging = "^0.3.4"
 dspy = {version = "^3.0.2", python = "<=3.13", optional=true}
 
 # datascience essentials
-pillow = {version = "*"}  # non-optional, needed for image scaling in vision
-matplotlib = {version = "*", optional=true}
-pandas = {version = "*", optional=true}
-numpy = {version = "*", optional=true}
-scipy = {version="*", optional=true}
-sounddevice = {version="^0.5.1", optional=true}
+pillow = { version = "*" }                            # non-optional, needed for image scaling in vision
+matplotlib = { version = "*", optional = true }
+pandas = { version = "*", optional = true }
+numpy = { version = "*", optional = true }
+scipy = { version = "*", optional = true }
+sounddevice = { version = "^0.5.1", optional = true }
 
 # server
-flask = {version = "^3.0", optional=true}
-flask-cors = {version = ">=4,<6", optional=true}
+flask = { version = "^3.0", optional = true }
+flask-cors = { version = ">=4,<6", optional = true }
 pydantic = "^2.11.7"
 
 # telemetry
@@ -110,7 +108,7 @@ pytest-dotenv = "^0.5.2"
 pytest-timeout = "^2.2.0"
 pytest-retry = "^1.6.3"
 pytest-mock = "*"
-greenlet = "*"  # dependency of playwright, but needed for coverage
+greenlet = "*"              # dependency of playwright, but needed for coverage
 
 # build
 pyinstaller = {version="^6.15", python=">=3.10,<3.15"}  # not yet compatible with Python 3.15+
@@ -218,11 +216,11 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "eval: marks tests as evals (deselect with '-m \"not eval\"'), these may fail, and will not run in CI",
-    "serial",
-    "timeout: marks tests with timeout value in seconds",
-    "requires_api: marks tests that require API access",
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "eval: marks tests as evals (deselect with '-m \"not eval\"'), these may fail, and will not run in CI",
+  "serial",
+  "timeout: marks tests with timeout value in seconds",
+  "requires_api: marks tests that require API access",
 ]
 
 [tool.coverage.run]
@@ -234,17 +232,17 @@ concurrency = ["greenlet"]
 [tool.coverage.report]
 # Regexes for lines to exclude from consideration
 exclude_also = [
-    # Don't complain if tests don't hit defensive assertion code
-    "raise NotImplementedError",
+  # Don't complain if tests don't hit defensive assertion code
+  "raise NotImplementedError",
 
-    # Don't complain about interactive stuff
-    "except KeyboardInterrupt:",
-    "if interactive:",
-    "if ask:",
+  # Don't complain about interactive stuff
+  "except KeyboardInterrupt:",
+  "if interactive:",
+  "if ask:",
 
-    # Don't complain if non-runnable code isn't run:
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
+  # Don't complain if non-runnable code isn't run:
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
 ]
 
 [build-system]
