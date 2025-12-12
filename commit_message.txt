@@ -1,0 +1,8 @@
+feat: merge develop into master
+
+Merge commit messages from multiple commits into one.
+
+Squashed commits:
+- Squash merge upstream/master into develop
+- Merge branch 'feature/skogai' into develop
+- ... (list all commit messages)
