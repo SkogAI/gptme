@@ -60,7 +60,7 @@ window.addEventListener("load", () => mermaid.run());
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Server" href="server.html" />
-    <link rel="prev" title="Custom OpenAI-Compatible Providers" href="custom-providers.html" />
+    <link rel="prev" title="Custom Providers" href="custom-providers.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -159,7 +159,10 @@ window.addEventListener("load", () => mermaid.run());
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a></li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="examples.html">Examples</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="demos.html">Demos</a></li>
 <li class="toctree-l2"><a class="reference internal" href="automation.html">Automation</a></li>
@@ -168,13 +171,19 @@ window.addEventListener("load", () => mermaid.run());
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Agents</a></li>
 <li class="toctree-l1"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="nav bd-sidenav">
@@ -186,7 +195,7 @@ window.addEventListener("load", () => mermaid.run());
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="custom_tool.html">Custom Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hooks.html">Hooks</a></li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
@@ -195,6 +204,8 @@ window.addEventListener("load", () => mermaid.run());
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -609,11 +620,31 @@ window.addEventListener("load", () => mermaid.run());
 <p>We are working on a graphical way to create and interact with agents using the <a class="reference internal" href="server.html#server-gptme-webui"><span class="std std-ref">gptme web interface</span></a>. Try it out and let us know what you think! Soon coming as a managed service.</p>
 </div>
 <p><strong>Installing dependencies:</strong></p>
-<p>First install the required dependencies using <a class="reference external" href="https://pipx.pypa.io/">pipx</a> (recommended) to ensure isolation and easy management:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install required dependencies</span>
-pipx<span class="w"> </span>install<span class="w"> </span>gptme<span class="w">   </span><span class="c1"># or `pipx install -e ./gptme` to install from local source</span>
+<p>First install the required dependencies and then gptme itself using <a class="reference external" href="https://pipx.pypa.io/">pipx</a> (recommended) to ensure isolation and easy management:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install pipx and other system dependencies</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>pipx<span class="w"> </span>tree
+<span class="c1"># or `brew install pipx tree`</span>
+
+<span class="c1"># Install common dev dependencies (recommended)</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>git<span class="w"> </span>curl<span class="w"> </span>make<span class="w"> </span>build-essential<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>python3<span class="w"> </span>python3-dev<span class="w"> </span>python-is-python3
+
+<span class="c1"># Install gptme itself</span>
+pipx<span class="w"> </span>install<span class="w"> </span>gptme
+<span class="c1"># or `pipx install -e ./gptme` to install from local source</span>
+<span class="c1"># or `pipx install &quot;git+https://github.com/gptme/gptme.git@master#egg=gptme[browser,server,telemetry]&quot;`_ for latest master with extras</span>
+
+<span class="c1"># Requirements for agent</span>
 pipx<span class="w"> </span>install<span class="w"> </span>uv
 pipx<span class="w"> </span>install<span class="w"> </span>pre-commit
+
+<span class="c1"># Install optional dependencies</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>lynx<span class="w"> </span>shellcheck<span class="w"> </span>jq<span class="w"> </span>pandoc<span class="w"> </span>ripgrep
+<span class="c1"># or `brew install lynx shellcheck jq pandoc ripgrep`</span>
+
+<span class="c1"># Recommended:</span>
+<span class="c1"># Install latest `gh` GitHub CLI from GitHub source (not old package manager version)</span>
+<span class="c1"># See https://cli.github.com/</span>
 </pre></div>
 </div>
 <p><strong>Creating an Agent:</strong></p>
@@ -792,7 +823,7 @@ The template system enables creating agents for specific domains:</p>
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Custom OpenAI-Compatible Providers</p>
+        <p class="prev-next-title">Custom Providers</p>
       </div>
     </a>
     <a class="right-next"
@@ -859,7 +890,7 @@ By Erik Bjäreholt
 
   <p class="copyright">
     
-      © Copyright 2025, Erik Bjäreholt.
+      © Copyright 2026, Erik Bjäreholt.
       <br/>
     
   </p>

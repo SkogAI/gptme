@@ -52,7 +52,7 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Alternatives" href="alternatives.html" />
-    <link rel="prev" title="Server Hooks Analysis" href="misc/server-hooks-analysis.html" />
+    <link rel="prev" title="Plugin System" href="plugins.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -151,7 +151,10 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a></li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="examples.html">Examples</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="demos.html">Demos</a></li>
 <li class="toctree-l2"><a class="reference internal" href="automation.html">Automation</a></li>
@@ -160,13 +163,19 @@
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="agents.html">Agents</a></li>
 <li class="toctree-l1"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="current nav bd-sidenav">
@@ -178,7 +187,7 @@
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="custom_tool.html">Custom Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hooks.html">Hooks</a></li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">API Reference</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
@@ -187,6 +196,8 @@
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -447,6 +458,7 @@
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.pinned"><code class="docutils literal notranslate"><span class="pre">Message.pinned</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.hide"><code class="docutils literal notranslate"><span class="pre">Message.hide</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.quiet"><code class="docutils literal notranslate"><span class="pre">Message.quiet</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.metadata"><code class="docutils literal notranslate"><span class="pre">Message.metadata</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.__init__"><code class="docutils literal notranslate"><span class="pre">Message.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.cost"><code class="docutils literal notranslate"><span class="pre">Message.cost()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.format"><code class="docutils literal notranslate"><span class="pre">Message.format()</span></code></a></li>
@@ -464,6 +476,8 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock"><code class="docutils literal notranslate"><span class="pre">Codeblock</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.__init__"><code class="docutils literal notranslate"><span class="pre">Codeblock.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.from_xml"><code class="docutils literal notranslate"><span class="pre">Codeblock.from_xml()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.iter_from_markdown"><code class="docutils literal notranslate"><span class="pre">Codeblock.iter_from_markdown()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.to_xml"><code class="docutils literal notranslate"><span class="pre">Codeblock.to_xml()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -482,11 +496,17 @@
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.__init__"><code class="docutils literal notranslate"><span class="pre">LogManager.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.append"><code class="docutils literal notranslate"><span class="pre">LogManager.append()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.branch"><code class="docutils literal notranslate"><span class="pre">LogManager.branch()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.create_view"><code class="docutils literal notranslate"><span class="pre">LogManager.create_view()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.diff"><code class="docutils literal notranslate"><span class="pre">LogManager.diff()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.edit"><code class="docutils literal notranslate"><span class="pre">LogManager.edit()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.fork"><code class="docutils literal notranslate"><span class="pre">LogManager.fork()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.get_current_log"><code class="docutils literal notranslate"><span class="pre">LogManager.get_current_log()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.get_next_view_name"><code class="docutils literal notranslate"><span class="pre">LogManager.get_next_view_name()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.load"><code class="docutils literal notranslate"><span class="pre">LogManager.load()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.master_log"><code class="docutils literal notranslate"><span class="pre">LogManager.master_log</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.name"><code class="docutils literal notranslate"><span class="pre">LogManager.name</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.switch_to_master"><code class="docutils literal notranslate"><span class="pre">LogManager.switch_to_master()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.switch_view"><code class="docutils literal notranslate"><span class="pre">LogManager.switch_view()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.to_dict"><code class="docutils literal notranslate"><span class="pre">LogManager.to_dict()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.undo"><code class="docutils literal notranslate"><span class="pre">LogManager.undo()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.workspace"><code class="docutils literal notranslate"><span class="pre">LogManager.workspace</span></code></a></li>
@@ -494,6 +514,8 @@
 </ul>
 </li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.check_for_modifications"><code class="docutils literal notranslate"><span class="pre">check_for_modifications()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.delete_conversation"><code class="docutils literal notranslate"><span class="pre">delete_conversation()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_conversation_by_id"><code class="docutils literal notranslate"><span class="pre">get_conversation_by_id()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_conversations"><code class="docutils literal notranslate"><span class="pre">get_conversations()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_user_conversations"><code class="docutils literal notranslate"><span class="pre">get_user_conversations()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.list_conversations"><code class="docutils literal notranslate"><span class="pre">list_conversations()</span></code></a></li>
@@ -538,6 +560,10 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig.__init__"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig.__init__()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig.is_http"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig.is_http</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.PluginsConfig"><code class="docutils literal notranslate"><span class="pre">PluginsConfig</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.PluginsConfig.__init__"><code class="docutils literal notranslate"><span class="pre">PluginsConfig.__init__()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.ProjectConfig"><code class="docutils literal notranslate"><span class="pre">ProjectConfig</span></code></a><ul class="nav section-nav flex-column">
@@ -684,9 +710,15 @@
 This is not persisted to the log file.</p>
 </dd></dl>
 
+<dl class="py attribute">
+<dt class="sig sig-object py" id="gptme.message.Message.metadata">
+<span class="sig-name descname"><span class="pre">metadata</span></span><a class="headerlink" href="#gptme.message.Message.metadata" title="Link to this definition">#</a></dt>
+<dd><p>Optional metadata including token usage and cost information.</p>
+</dd></dl>
+
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.message.Message.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="pre">role:</span> <span class="pre">~typing.Literal['system',</span> <span class="pre">'user',</span> <span class="pre">'assistant'],</span> <span class="pre">content:</span> <span class="pre">str,</span> <span class="pre">timestamp:</span> <span class="pre">~datetime.datetime</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">files:</span> <span class="pre">list[~pathlib.Path]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">call_id:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">pinned:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">hide:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">quiet:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False</span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.message.Message.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="pre">role:</span> <span class="pre">~typing.Literal['system',</span> <span class="pre">'user',</span> <span class="pre">'assistant'],</span> <span class="pre">content:</span> <span class="pre">str,</span> <span class="pre">timestamp:</span> <span class="pre">~datetime.datetime</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">files:</span> <span class="pre">list[~pathlib.Path</span> <span class="pre">|</span> <span class="pre">~gptme.util.uri.URI]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">file_hashes:</span> <span class="pre">dict[str,</span> <span class="pre">str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">call_id:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">pinned:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">hide:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">quiet:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">metadata:</span> <span class="pre">~gptme.message.MessageMetadata</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.message.Message.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
@@ -745,7 +777,7 @@ If set, will truncate at first newline or max_length, whichever comes first.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.message.Message.to_xml">
 <span class="sig-name descname"><span class="pre">to_xml</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></span><a class="headerlink" href="#gptme.message.Message.to_xml" title="Link to this definition">#</a></dt>
-<dd><p>Converts a message to an XML string.</p>
+<dd><p>Converts a message to an XML string with proper escaping.</p>
 </dd></dl>
 
 </dd></dl>
@@ -770,6 +802,20 @@ If set, will truncate at first newline or max_length, whichever comes first.</p>
 <p>&lt;codeblock lang=”python” path=”example.py”&gt;
 print(“Hello, world!”)
 &lt;/codeblock&gt;</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.codeblock.Codeblock.iter_from_markdown">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">iter_from_markdown</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">markdown</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">streaming</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#gptme.codeblock.Codeblock" title="gptme.codeblock.Codeblock"><span class="pre">Codeblock</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.codeblock.Codeblock.iter_from_markdown" title="Link to this definition">#</a></dt>
+<dd><p>Extract codeblocks from markdown.</p>
+<p>Note: Tracing removed from this function as it’s called hundreds of times
+per conversation, creating ~97% of all trace spans (see Issue #199).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.codeblock.Codeblock.to_xml">
+<span class="sig-name descname"><span class="pre">to_xml</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></span><a class="headerlink" href="#gptme.codeblock.Codeblock.to_xml" title="Link to this definition">#</a></dt>
+<dd><p>Converts codeblock to XML with proper escaping.</p>
 </dd></dl>
 
 </dd></dl>
@@ -810,21 +856,46 @@ print(“Hello, world!”)
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">gptme.logmanager.</span></span><span class="sig-name descname"><span class="pre">LogManager</span></span><a class="headerlink" href="#gptme.logmanager.LogManager" title="Link to this definition">#</a></dt>
 <dd><p>Manages a conversation log.</p>
+<dl class="simple">
+<dt>Can be used as a context manager to ensure locks are properly released:</dt><dd><dl class="simple">
+<dt>with LogManager.load(logdir) as manager:</dt><dd><p># use manager
+pass</p>
+</dd>
+</dl>
+</dd>
+</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logdir</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lock</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#gptme.logmanager.LogManager.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logdir</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lock</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">view</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#gptme.logmanager.LogManager.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.append">
 <span class="sig-name descname"><span class="pre">append</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.append" title="Link to this definition">#</a></dt>
 <dd><p>Appends a message to the log, writes the log, prints the message.</p>
+<p>When on a view branch, implements dual-write:
+- Appends to master branch (preserves full history)
+- Appends to current view (maintains compacted context)</p>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.branch">
 <span class="sig-name descname"><span class="pre">branch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.branch" title="Link to this definition">#</a></dt>
 <dd><p>Switches to a branch.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.create_view">
+<span class="sig-name descname"><span class="pre">create_view</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">log</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#gptme.logmanager.Log" title="gptme.logmanager.Log"><span class="pre">Log</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.create_view" title="Link to this definition">#</a></dt>
+<dd><p>Create a new view branch with compacted content.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> – View name (e.g., ‘compacted-001’)</p></li>
+<li><p><strong>log</strong> – The compacted log to store</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -846,15 +917,50 @@ print(“Hello, world!”)
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.get_current_log">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_current_log</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#gptme.logmanager.LogManager" title="gptme.logmanager.LogManager"><span class="pre">LogManager</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.get_current_log" title="Link to this definition">#</a></dt>
+<dd><p>Get the current LogManager instance for this context.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.get_next_view_name">
+<span class="sig-name descname"><span class="pre">get_next_view_name</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.get_next_view_name" title="Link to this definition">#</a></dt>
+<dd><p>Generate the next sequential view name.</p>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.load">
 <em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">load</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">logdir</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_msgs</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'main'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">create</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lock</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#gptme.logmanager.LogManager" title="gptme.logmanager.LogManager"><span class="pre">LogManager</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.load" title="Link to this definition">#</a></dt>
 <dd><p>Loads a conversation log.</p>
 </dd></dl>
 
 <dl class="py property">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.master_log">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">master_log</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#gptme.logmanager.Log" title="gptme.logmanager.Log"><span class="pre">Log</span></a></em><a class="headerlink" href="#gptme.logmanager.LogManager.master_log" title="Link to this definition">#</a></dt>
+<dd><p>Get the master log (always the main branch, never compacted).</p>
+</dd></dl>
+
+<dl class="py property">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.name">
 <em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">name</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><a class="headerlink" href="#gptme.logmanager.LogManager.name" title="Link to this definition">#</a></dt>
 <dd><p>Get the user-friendly display name from ChatConfig, fallback to chat_id.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.switch_to_master">
+<span class="sig-name descname"><span class="pre">switch_to_master</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.switch_to_master" title="Link to this definition">#</a></dt>
+<dd><p>Switch back to master (full uncompacted history).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.logmanager.LogManager.switch_view">
+<span class="sig-name descname"><span class="pre">switch_view</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.switch_view" title="Link to this definition">#</a></dt>
+<dd><p>Switch to a view branch.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>name</strong> – View name to switch to</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -877,8 +983,16 @@ print(“Hello, world!”)
 
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.logmanager.LogManager.write">
-<span class="sig-name descname"><span class="pre">write</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">branches</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.write" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">write</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">branches</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sync</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.LogManager.write" title="Link to this definition">#</a></dt>
 <dd><p>Writes to the conversation log.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>branches</strong> – Whether to write other branches</p></li>
+<li><p><strong>sync</strong> – If True, force fsync to ensure data is on disk</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 </dd></dl>
@@ -887,6 +1001,37 @@ print(“Hello, world!”)
 <dt class="sig sig-object py" id="gptme.logmanager.check_for_modifications">
 <span class="sig-prename descclassname"><span class="pre">gptme.logmanager.</span></span><span class="sig-name descname"><span class="pre">check_for_modifications</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#gptme.logmanager.Log" title="gptme.logmanager.Log"><span class="pre">Log</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span></span><a class="headerlink" href="#gptme.logmanager.check_for_modifications" title="Link to this definition">#</a></dt>
 <dd><p>Check if there are any file modifications in last 3 assistant messages since last user message.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="gptme.logmanager.delete_conversation">
+<span class="sig-prename descclassname"><span class="pre">gptme.logmanager.</span></span><span class="sig-name descname"><span class="pre">delete_conversation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">conv_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span></span><a class="headerlink" href="#gptme.logmanager.delete_conversation" title="Link to this definition">#</a></dt>
+<dd><p>Delete a conversation by its ID.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>conv_id</strong> – The conversation ID to delete</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>True if deleted successfully, False if not found</p>
+</dd>
+<dt class="field-odd">Raises<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#PermissionError" title="(in Python v3.14)"><strong>PermissionError</strong></a> – If the conversation directory cannot be deleted</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="gptme.logmanager.get_conversation_by_id">
+<span class="sig-prename descclassname"><span class="pre">gptme.logmanager.</span></span><span class="sig-name descname"><span class="pre">get_conversation_by_id</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">conv_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#gptme.logmanager.ConversationMeta" title="gptme.logmanager.ConversationMeta"><span class="pre">ConversationMeta</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.logmanager.get_conversation_by_id" title="Link to this definition">#</a></dt>
+<dd><p>Get a conversation by its ID.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>conv_id</strong> – The conversation ID to find</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>ConversationMeta if found, None otherwise</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py function">
@@ -1076,13 +1221,24 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 </dd></dl>
 
 <dl class="py class">
+<dt class="sig sig-object py" id="gptme.config.PluginsConfig">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">gptme.config.</span></span><span class="sig-name descname"><span class="pre">PluginsConfig</span></span><a class="headerlink" href="#gptme.config.PluginsConfig" title="Link to this definition">#</a></dt>
+<dd><p>Configuration for the plugin system.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="gptme.config.PluginsConfig.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">paths:</span> <span class="pre">list[str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enabled:</span> <span class="pre">list[str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.config.PluginsConfig.__init__" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
 <dt class="sig sig-object py" id="gptme.config.ProjectConfig">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">gptme.config.</span></span><span class="sig-name descname"><span class="pre">ProjectConfig</span></span><a class="headerlink" href="#gptme.config.ProjectConfig" title="Link to this definition">#</a></dt>
 <dd><p>Project-level configuration, such as which files to include in the context by default.</p>
 <p>This is loaded from a gptme.toml <a class="reference internal" href="config.html#project-config"><span class="std std-ref">Project config</span></a> file in the project directory or .github directory.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.config.ProjectConfig.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">_workspace:</span> <span class="pre">~pathlib.Path</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_prompt:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prompt:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">files:</span> <span class="pre">list[str]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_cmd:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rag:</span> <span class="pre">~gptme.config.RagConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">agent:</span> <span class="pre">~gptme.config.AgentConfig</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lessons:</span> <span class="pre">~gptme.config.LessonsConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">env:</span> <span class="pre">dict[str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mcp:</span> <span class="pre">~gptme.config.MCPConfig</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.config.ProjectConfig.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">_workspace:</span> <span class="pre">~pathlib.Path</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_prompt:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prompt:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">files:</span> <span class="pre">list[str]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_cmd:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rag:</span> <span class="pre">~gptme.config.RagConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">agent:</span> <span class="pre">~gptme.config.AgentConfig</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lessons:</span> <span class="pre">~gptme.config.LessonsConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context:</span> <span class="pre">~gptme.context.config.ContextConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">plugins:</span> <span class="pre">~gptme.config.PluginsConfig</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">env:</span> <span class="pre">dict[str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mcp:</span> <span class="pre">~gptme.config.MCPConfig</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.config.ProjectConfig.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
@@ -1163,8 +1319,16 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 
 <dl class="py function">
 <dt class="sig sig-object py" id="gptme.config.get_project_config">
-<span class="sig-prename descclassname"><span class="pre">gptme.config.</span></span><span class="sig-name descname"><span class="pre">get_project_config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workspace</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#gptme.config.ProjectConfig" title="gptme.config.ProjectConfig"><span class="pre">ProjectConfig</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.config.get_project_config" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">gptme.config.</span></span><span class="sig-name descname"><span class="pre">get_project_config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workspace</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">quiet</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#gptme.config.ProjectConfig" title="gptme.config.ProjectConfig"><span class="pre">ProjectConfig</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.config.get_project_config" title="Link to this definition">#</a></dt>
 <dd><p>Get a cached copy of or load the project configuration from a gptme.toml file in the workspace or .github directory.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>workspace</strong> – Path to the workspace directory</p></li>
+<li><p><strong>quiet</strong> – If True, suppress log messages (useful for metadata lookups)</p></li>
+</ul>
+</dd>
+</dl>
 <p>Run <a class="reference internal" href="#gptme.config.reload_config" title="gptme.config.reload_config"><code class="xref py py-func docutils literal notranslate"><span class="pre">reload_config()</span></code></a> or <a class="reference internal" href="#gptme.config.Config.from_workspace" title="gptme.config.Config.from_workspace"><code class="xref py py-func docutils literal notranslate"><span class="pre">Config.from_workspace()</span></code></a> to reset cache and reload the project config.</p>
 </dd></dl>
 
@@ -1251,7 +1415,7 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="gptme.tools.ToolSpec.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="pre">name:</span> <span class="pre">str,</span> <span class="pre">desc:</span> <span class="pre">str,</span> <span class="pre">instructions:</span> <span class="pre">str</span> <span class="pre">=</span> <span class="pre">'',</span> <span class="pre">instructions_format:</span> <span class="pre">dict[str,</span> <span class="pre">str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">examples:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">~collections.abc.Callable[[str],</span> <span class="pre">str]</span> <span class="pre">=</span> <span class="pre">'',</span> <span class="pre">functions:</span> <span class="pre">list[~collections.abc.Callable]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">init:</span> <span class="pre">~collections.abc.Callable[[],</span> <span class="pre">~gptme.tools.base.ToolSpec]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">execute:</span> <span class="pre">~gptme.tools.base.ExecuteFuncGen</span> <span class="pre">|</span> <span class="pre">~gptme.tools.base.ExecuteFuncMsg</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">block_types:</span> <span class="pre">list[str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">available:</span> <span class="pre">bool</span> <span class="pre">|</span> <span class="pre">~collections.abc.Callable[[],</span> <span class="pre">bool]</span> <span class="pre">=</span> <span class="pre">True,</span> <span class="pre">parameters:</span> <span class="pre">list[~gptme.tools.base.Parameter]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">load_priority:</span> <span class="pre">int</span> <span class="pre">=</span> <span class="pre">0,</span> <span class="pre">disabled_by_default:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">is_mcp:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">hooks:</span> <span class="pre">dict[str,</span> <span class="pre">tuple[str,</span> <span class="pre">~gptme.hooks.SessionStartHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.SessionEndHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.ToolExecuteHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.MessageProcessHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.LoopContinueHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.GenerationPreHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.GenerationPostHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.FilePreSaveHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.FilePostSaveHook,</span> <span class="pre">int]]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">commands:</span> <span class="pre">dict[str,</span> <span class="pre">~collections.abc.Callable]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.tools.ToolSpec.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="pre">name:</span> <span class="pre">str,</span> <span class="pre">desc:</span> <span class="pre">str,</span> <span class="pre">instructions:</span> <span class="pre">str</span> <span class="pre">=</span> <span class="pre">'',</span> <span class="pre">instructions_format:</span> <span class="pre">dict[str,</span> <span class="pre">str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">examples:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">~collections.abc.Callable[[str],</span> <span class="pre">str]</span> <span class="pre">=</span> <span class="pre">'',</span> <span class="pre">functions:</span> <span class="pre">list[~collections.abc.Callable]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">init:</span> <span class="pre">~collections.abc.Callable[[],</span> <span class="pre">~gptme.tools.base.ToolSpec]</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">execute:</span> <span class="pre">~gptme.tools.base.ExecuteFuncGen</span> <span class="pre">|</span> <span class="pre">~gptme.tools.base.ExecuteFuncMsg</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">block_types:</span> <span class="pre">list[str]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">available:</span> <span class="pre">bool</span> <span class="pre">|</span> <span class="pre">~collections.abc.Callable[[],</span> <span class="pre">bool]</span> <span class="pre">=</span> <span class="pre">True,</span> <span class="pre">parameters:</span> <span class="pre">list[~gptme.tools.base.Parameter]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">load_priority:</span> <span class="pre">int</span> <span class="pre">=</span> <span class="pre">0,</span> <span class="pre">disabled_by_default:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">is_mcp:</span> <span class="pre">bool</span> <span class="pre">=</span> <span class="pre">False,</span> <span class="pre">hooks:</span> <span class="pre">dict[str,</span> <span class="pre">tuple[str,</span> <span class="pre">~gptme.hooks.SessionStartHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.SessionEndHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.ToolExecuteHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.MessageProcessHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.LoopContinueHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.GenerationPreHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.GenerationPostHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.FilePreSaveHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.FilePostSaveHook</span> <span class="pre">|</span> <span class="pre">~gptme.hooks.CacheInvalidatedHook,</span> <span class="pre">int]]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;,</span> <span class="pre">commands:</span> <span class="pre">dict[str,</span> <span class="pre">~collections.abc.Callable]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#gptme.tools.ToolSpec.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
@@ -1349,12 +1513,12 @@ Care must be taken to avoid this becoming a “god object” passed around loose
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="misc/server-hooks-analysis.html"
+       href="plugins.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Server Hooks Analysis</p>
+        <p class="prev-next-title">Plugin System</p>
       </div>
     </a>
     <a class="right-next"
@@ -1393,6 +1557,7 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.pinned"><code class="docutils literal notranslate"><span class="pre">Message.pinned</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.hide"><code class="docutils literal notranslate"><span class="pre">Message.hide</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.quiet"><code class="docutils literal notranslate"><span class="pre">Message.quiet</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.metadata"><code class="docutils literal notranslate"><span class="pre">Message.metadata</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.__init__"><code class="docutils literal notranslate"><span class="pre">Message.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.cost"><code class="docutils literal notranslate"><span class="pre">Message.cost()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.message.Message.format"><code class="docutils literal notranslate"><span class="pre">Message.format()</span></code></a></li>
@@ -1410,6 +1575,8 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock"><code class="docutils literal notranslate"><span class="pre">Codeblock</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.__init__"><code class="docutils literal notranslate"><span class="pre">Codeblock.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.from_xml"><code class="docutils literal notranslate"><span class="pre">Codeblock.from_xml()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.iter_from_markdown"><code class="docutils literal notranslate"><span class="pre">Codeblock.iter_from_markdown()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.codeblock.Codeblock.to_xml"><code class="docutils literal notranslate"><span class="pre">Codeblock.to_xml()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -1428,11 +1595,17 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.__init__"><code class="docutils literal notranslate"><span class="pre">LogManager.__init__()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.append"><code class="docutils literal notranslate"><span class="pre">LogManager.append()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.branch"><code class="docutils literal notranslate"><span class="pre">LogManager.branch()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.create_view"><code class="docutils literal notranslate"><span class="pre">LogManager.create_view()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.diff"><code class="docutils literal notranslate"><span class="pre">LogManager.diff()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.edit"><code class="docutils literal notranslate"><span class="pre">LogManager.edit()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.fork"><code class="docutils literal notranslate"><span class="pre">LogManager.fork()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.get_current_log"><code class="docutils literal notranslate"><span class="pre">LogManager.get_current_log()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.get_next_view_name"><code class="docutils literal notranslate"><span class="pre">LogManager.get_next_view_name()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.load"><code class="docutils literal notranslate"><span class="pre">LogManager.load()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.master_log"><code class="docutils literal notranslate"><span class="pre">LogManager.master_log</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.name"><code class="docutils literal notranslate"><span class="pre">LogManager.name</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.switch_to_master"><code class="docutils literal notranslate"><span class="pre">LogManager.switch_to_master()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.switch_view"><code class="docutils literal notranslate"><span class="pre">LogManager.switch_view()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.to_dict"><code class="docutils literal notranslate"><span class="pre">LogManager.to_dict()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.undo"><code class="docutils literal notranslate"><span class="pre">LogManager.undo()</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.LogManager.workspace"><code class="docutils literal notranslate"><span class="pre">LogManager.workspace</span></code></a></li>
@@ -1440,6 +1613,8 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 </ul>
 </li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.check_for_modifications"><code class="docutils literal notranslate"><span class="pre">check_for_modifications()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.delete_conversation"><code class="docutils literal notranslate"><span class="pre">delete_conversation()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_conversation_by_id"><code class="docutils literal notranslate"><span class="pre">get_conversation_by_id()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_conversations"><code class="docutils literal notranslate"><span class="pre">get_conversations()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.get_user_conversations"><code class="docutils literal notranslate"><span class="pre">get_user_conversations()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.logmanager.list_conversations"><code class="docutils literal notranslate"><span class="pre">list_conversations()</span></code></a></li>
@@ -1484,6 +1659,10 @@ Care must be taken to avoid this becoming a “god object” passed around loose
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig.__init__"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig.__init__()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.MCPServerConfig.is_http"><code class="docutils literal notranslate"><span class="pre">MCPServerConfig.is_http</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.PluginsConfig"><code class="docutils literal notranslate"><span class="pre">PluginsConfig</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.PluginsConfig.__init__"><code class="docutils literal notranslate"><span class="pre">PluginsConfig.__init__()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.config.ProjectConfig"><code class="docutils literal notranslate"><span class="pre">ProjectConfig</span></code></a><ul class="nav section-nav flex-column">
@@ -1571,7 +1750,7 @@ By Erik Bjäreholt
 
   <p class="copyright">
     
-      © Copyright 2025, Erik Bjäreholt.
+      © Copyright 2026, Erik Bjäreholt.
       <br/>
     
   </p>

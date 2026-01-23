@@ -148,14 +148,34 @@ Usage
 
 **Installing dependencies:**
 
-First install the required dependencies using `pipx <https://pipx.pypa.io/>`_ (recommended) to ensure isolation and easy management:
+First install the required dependencies and then gptme itself using `pipx <https://pipx.pypa.io/>`_ (recommended) to ensure isolation and easy management:
 
 .. code-block:: bash
 
-    # Install required dependencies
-    pipx install gptme   # or `pipx install -e ./gptme` to install from local source
+    # Install pipx and other system dependencies
+    sudo apt install pipx tree
+    # or `brew install pipx tree`
+
+    # Install common dev dependencies (recommended)
+    sudo apt install git curl make build-essential \
+        python3 python3-dev python-is-python3
+
+    # Install gptme itself
+    pipx install gptme
+    # or `pipx install -e ./gptme` to install from local source
+    # or `pipx install "git+https://github.com/gptme/gptme.git@master#egg=gptme[browser,server,telemetry]"`_ for latest master with extras
+
+    # Requirements for agent
     pipx install uv
     pipx install pre-commit
+
+    # Install optional dependencies
+    sudo apt install lynx shellcheck jq pandoc ripgrep
+    # or `brew install lynx shellcheck jq pandoc ripgrep`
+
+    # Recommended:
+    # Install latest `gh` GitHub CLI from GitHub source (not old package manager version)
+    # See https://cli.github.com/
 
 **Creating an Agent:**
 

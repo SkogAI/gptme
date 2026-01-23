@@ -151,7 +151,10 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a></li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="examples.html">Examples</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="demos.html">Demos</a></li>
 <li class="toctree-l2"><a class="reference internal" href="automation.html">Automation</a></li>
@@ -160,13 +163,19 @@
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="agents.html">Agents</a></li>
 <li class="toctree-l1"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="current nav bd-sidenav">
@@ -178,7 +187,7 @@
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="custom_tool.html">Custom Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hooks.html">Hooks</a></li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
@@ -187,6 +196,8 @@
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -443,6 +454,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_gptme"><code class="docutils literal notranslate"><span class="pre">prompt_gptme()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_project"><code class="docutils literal notranslate"><span class="pre">prompt_project()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_short"><code class="docutils literal notranslate"><span class="pre">prompt_short()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_skills_summary"><code class="docutils literal notranslate"><span class="pre">prompt_skills_summary()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_systeminfo"><code class="docutils literal notranslate"><span class="pre">prompt_systeminfo()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_timeinfo"><code class="docutils literal notranslate"><span class="pre">prompt_timeinfo()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_tools"><code class="docutils literal notranslate"><span class="pre">prompt_tools()</span></code></a></li>
@@ -467,8 +479,23 @@ It is used to instruct the LLM about its role, how to use tools, and provide con
 <p>When prompting, it is important to provide clear instructions and avoid any ambiguity.</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="gptme.prompts.get_prompt">
-<span class="sig-prename descclassname"><span class="pre">gptme.prompts.</span></span><span class="sig-name descname"><span class="pre">get_prompt</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tools</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.tools.ToolSpec" title="gptme.tools.base.ToolSpec"><span class="pre">ToolSpec</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tool_format</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'markdown'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'xml'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'tool'</span></span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'markdown'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prompt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'full'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'short'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'full'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">interactive</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">workspace</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">agent_path</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.prompts.get_prompt" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">gptme.prompts.</span></span><span class="sig-name descname"><span class="pre">get_prompt</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tools</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.tools.ToolSpec" title="gptme.tools.base.ToolSpec"><span class="pre">ToolSpec</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tool_format</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'markdown'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'xml'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'tool'</span></span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'markdown'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">prompt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'full'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'short'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'full'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">interactive</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">workspace</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">agent_path</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><span class="pre">Path</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_mode</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'full'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'instructions-only'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'selective'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_include</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.prompts.get_prompt" title="Link to this definition">#</a></dt>
 <dd><p>Get the initial system prompt.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>tools</strong> – List of available tools</p></li>
+<li><p><strong>tool_format</strong> – Format for tool descriptions</p></li>
+<li><p><strong>prompt</strong> – Prompt type or custom prompt string</p></li>
+<li><p><strong>interactive</strong> – Whether in interactive mode</p></li>
+<li><p><strong>model</strong> – Model to use</p></li>
+<li><p><strong>workspace</strong> – Workspace directory</p></li>
+<li><p><strong>agent_path</strong> – Path to agent configuration</p></li>
+<li><p><strong>context_mode</strong> – Context mode (full, instructions-only, selective)</p></li>
+<li><p><strong>context_include</strong> – Components to include in selective mode (agent, tools, workspace)</p></li>
+</ul>
+</dd>
+</dl>
 <p>Returns a list of messages: [core_system_prompt, workspace_prompt] (if workspace provided).</p>
 </dd></dl>
 
@@ -506,7 +533,7 @@ helping the assistant understand context across conversation boundaries.</p>
 </dd>
 </dl>
 <p>Example output (interactive=True, model=’claude-sonnet-4-5’):</p>
-<div class="highlight-markdown notranslate"><div class="highlight"><pre><span></span>You are gptme v0.29.0+unknown, a general-purpose AI assistant powered by LLMs. Currently using model: anthropic/claude-sonnet-4-5
+<div class="highlight-markdown notranslate"><div class="highlight"><pre><span></span>You are gptme v0.31.0+unknown, a general-purpose AI assistant powered by LLMs. Currently using model: anthropic/claude-sonnet-4-5
 You are designed to help users with programming tasks, such as writing code, debugging, and learning new concepts.
 You can run code, execute terminal commands, and access the filesystem on the local machine.
 You will help the user with writing code, either from scratch or in existing projects.
@@ -566,6 +593,17 @@ This is gptme
 </dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="gptme.prompts.prompt_skills_summary">
+<span class="sig-prename descclassname"><span class="pre">gptme.prompts.</span></span><span class="sig-name descname"><span class="pre">prompt_skills_summary</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Generator" title="(in Python v3.14)"><span class="pre">Generator</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.prompts.prompt_skills_summary" title="Link to this definition">#</a></dt>
+<dd><p>Generate a compact skills summary for the system prompt.</p>
+<p>Lists available skills (lessons with name/description metadata) so the agent
+knows what skills are available without loading full content. Skills can be
+read on-demand using <cite>cat &lt;path&gt;</cite>.</p>
+<p>Note: This should only be included when tools are enabled, since loading
+skills on-demand requires tool access (e.g., the shell tool to run <cite>cat</cite>).</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="gptme.prompts.prompt_systeminfo">
 <span class="sig-prename descclassname"><span class="pre">gptme.prompts.</span></span><span class="sig-name descname"><span class="pre">prompt_systeminfo</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Generator" title="(in Python v3.14)"><span class="pre">Generator</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.prompts.prompt_systeminfo" title="Link to this definition">#</a></dt>
 <dd><p>Generate the system information prompt.</p>
@@ -589,7 +627,7 @@ This is gptme
 <dt class="sig sig-object py" id="gptme.prompts.prompt_tools">
 <span class="sig-prename descclassname"><span class="pre">gptme.prompts.</span></span><span class="sig-name descname"><span class="pre">prompt_tools</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tools</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.tools.ToolSpec" title="gptme.tools.base.ToolSpec"><span class="pre">ToolSpec</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tool_format</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'markdown'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'xml'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'tool'</span></span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'markdown'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">examples</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Generator" title="(in Python v3.14)"><span class="pre">Generator</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#gptme.prompts.prompt_tools" title="Link to this definition">#</a></dt>
 <dd><p>Generate the tools overview prompt.</p>
-<p>Example output (tools=&lt;function &lt;lambda&gt; at 0x7f3dd3f3dd00&gt;, tool_format=’markdown’):</p>
+<p>Example output (tools=&lt;function &lt;lambda&gt; at 0x7f1862bb0fe0&gt;, tool_format=’markdown’):</p>
 <div class="highlight-markdown notranslate"><div class="highlight"><pre><span></span><span class="gh"># Tools Overview</span>
 
 <span class="gu">## append</span>
@@ -627,9 +665,9 @@ to append the code block content to the file at the given path.
 <span class="gs">**Instructions:**</span> The following Python functions are available using the <span class="sb">`ipython`</span> tool:
 
 <span class="sb">```txt</span>
-<span class="s">read_url(url: str) -&gt; str: Read a webpage in a text format.</span>
+<span class="s">read_url(url: str) -&gt; str: Read a webpage or PDF in a text format.</span>
 <span class="s">search(query: str, engine: Literal[&quot;google&quot;, &quot;duckduckgo&quot;, &quot;perplexity&quot;]) -&gt; str: Search for a query on a search engine.</span>
-<span class="s">screenshot_url(url: str, path: Union[Path, str, NoneType]) -&gt; Path: Take a screenshot of a webpage.</span>
+<span class="s">screenshot_url(url: str, path: Union[Path, str, None]) -&gt; Path: Take a screenshot of a webpage.</span>
 <span class="s">read_logs() -&gt; str: Read browser console logs from the last read URL.</span>
 <span class="sb">```</span>
 
@@ -728,6 +766,23 @@ This domain is for use in illustrative examples...
 <span class="sb">```result</span>
 <span class="s">No logs or errors captured.</span>
 <span class="sb">```</span>
+
+<span class="gu">### Read PDF document</span>
+
+<span class="k">&gt; </span><span class="ge">User: read this research paper from arxiv</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll read the PDF and extract its text content.</span>
+<span class="sb">```ipython</span>
+<span class="n">read_url</span><span class="p">(</span><span class="s1">&#39;https://arxiv.org/pdf/2410.12361v2&#39;</span><span class="p">)</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System:</span>
+<span class="sb">```result</span>
+<span class="s">--- Page 1 ---</span>
+<span class="s">[PDF text content...]</span>
+
+<span class="s">--- Page 2 ---</span>
+<span class="s">[More content...]</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ve extracted the text from the PDF. The paper discusses [summary of key points]...</span>
 
 <span class="gu">## chats</span>
 
@@ -855,7 +910,7 @@ Common modifiers (ctrl, alt, cmd/super, shift) work consistently across platform
 The following Python functions are available using the <span class="sb">`ipython`</span> tool:
 
 <span class="sb">```txt</span>
-<span class="s">computer(action: Literal[&quot;key&quot;, &quot;type&quot;, &quot;mouse_move&quot;, &quot;left_click&quot;, &quot;left_click_drag&quot;, &quot;right_click&quot;, &quot;middle_click&quot;, &quot;double_click&quot;, &quot;screenshot&quot;, &quot;cursor_position&quot;], text: Union[str, NoneType], coordinate: Union[tuple, NoneType]) -&gt; Union[Message, NoneType]:</span>
+<span class="s">computer(action: Literal[&quot;key&quot;, &quot;type&quot;, &quot;mouse_move&quot;, &quot;left_click&quot;, &quot;left_click_drag&quot;, &quot;right_click&quot;, &quot;middle_click&quot;, &quot;double_click&quot;, &quot;screenshot&quot;, &quot;cursor_position&quot;], text: Union[str, None], coordinate: Union[tuple[int, int], None]) -&gt; Union[Message, None]:</span>
 <span class="s">    Perform computer interactions in X11 or macOS environments.</span>
 
 <span class="s">    Args:</span>
@@ -912,6 +967,55 @@ The following Python functions are available using the <span class="sb">`ipython
 <span class="n">computer</span><span class="p">(</span><span class="s2">&quot;key&quot;</span><span class="p">,</span> <span class="n">text</span><span class="o">=</span><span class="s2">&quot;ctrl+t&quot;</span><span class="p">)</span>
 <span class="sb">```</span>
 <span class="k">&gt; </span><span class="ge">System: Sent key sequence: ctrl+t</span>
+
+<span class="gu">## form</span>
+
+<span class="gs">**Description:**</span> Present a form with multiple fields for user input
+
+<span class="gs">**Instructions:**</span> Present a form with multiple fields for user input.
+
+Each field is specified on a separate line with the format:
+  field_name: Prompt text [options]
+
+Field types are inferred from the prompt:
+<span class="k">-</span><span class="w"> </span>Text field (default): <span class="sb">`name: What&#39;s your name?`</span>
+<span class="k">-</span><span class="w"> </span>Select field: <span class="sb">`priority: Priority level [low, medium, high]`</span>
+<span class="k">-</span><span class="w"> </span>Boolean field: <span class="sb">`confirm: Are you sure? [yes/no]`</span>
+<span class="k">-</span><span class="w"> </span>Number field: <span class="sb">`count: How many? (number)`</span>
+
+The tool will present an interactive form and return the collected data as JSON.
+
+Use a code block with the language tag: <span class="sb">`form`</span> followed by field definitions.
+
+<span class="gu">### Examples</span>
+
+<span class="gu">### Collect project information</span>
+
+<span class="k">&gt; </span><span class="ge">User: I want to start a new project</span>
+<span class="k">&gt; </span><span class="ge">Assistant: Let me gather some information about your project:</span>
+<span class="sb">```form</span>
+<span class="s">&gt; name: Project name?</span>
+<span class="s">&gt; description: Brief description?</span>
+<span class="s">&gt; language: Primary language [python, javascript, rust, go, other]</span>
+<span class="s">&gt; priority: Priority level [low, medium, high]</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Form submitted:</span>
+<span class="sb">```json</span>
+<span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;my-awesome-project&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;A CLI tool for productivity&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;language&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;priority&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;high&quot;</span><span class="p">}</span>
+<span class="sb">```</span>
+
+<span class="gu">### Simple confirmation form</span>
+
+<span class="k">&gt; </span><span class="ge">User: Deploy to production</span>
+<span class="k">&gt; </span><span class="ge">Assistant: Please confirm the deployment details:</span>
+<span class="sb">```form</span>
+<span class="s">&gt; environment: Target environment [staging, production]</span>
+<span class="s">&gt; confirm: Proceed with deployment? [yes/no]</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Form submitted:</span>
+<span class="sb">```json</span>
+<span class="p">{</span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;production&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;confirm&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+<span class="sb">```</span>
 
 <span class="gu">## gh</span>
 
@@ -1046,6 +1150,15 @@ Once loaded, server tools are available as <span class="sb">`&lt;server-name&gt;
 
 Search queries the Official MCP Registry (registry.modelcontextprotocol.io).
 
+<span class="gs">**Resource Commands**</span> (for servers that expose resources):
+<span class="k">-</span><span class="w"> </span><span class="sb">`resources list &lt;server&gt;`</span> - List available resources from a loaded server
+<span class="k">-</span><span class="w"> </span><span class="sb">`resources read &lt;server&gt; &lt;uri&gt;`</span> - Read a specific resource by URI
+<span class="k">-</span><span class="w"> </span><span class="sb">`templates list &lt;server&gt;`</span> - List resource templates (parameterized resources)
+
+<span class="gs">**Prompt Commands**</span> (for servers that expose prompts):
+<span class="k">-</span><span class="w"> </span><span class="sb">`prompts list &lt;server&gt;`</span> - List available prompts from a loaded server
+<span class="k">-</span><span class="w"> </span><span class="sb">`prompts get &lt;server&gt; &lt;name&gt; [args]`</span> - Get a specific prompt, optionally with JSON arguments
+
 <span class="gu">### Examples</span>
 
 <span class="sb">```mcp</span>
@@ -1071,6 +1184,26 @@ Search queries the Official MCP Registry (registry.modelcontextprotocol.io).
 <span class="sb">```mcp</span>
 <span class="s">load my-server</span>
 <span class="s">{&quot;command&quot;: &quot;uvx&quot;, &quot;args&quot;: [&quot;my-mcp-server&quot;, &quot;--option&quot;]}</span>
+<span class="sb">```</span>
+
+<span class="sb">```mcp</span>
+<span class="s">resources list sqlite</span>
+<span class="sb">```</span>
+
+<span class="sb">```mcp</span>
+<span class="s">resources read sqlite db://main/users</span>
+<span class="sb">```</span>
+
+<span class="sb">```mcp</span>
+<span class="s">templates list sqlite</span>
+<span class="sb">```</span>
+
+<span class="sb">```mcp</span>
+<span class="s">prompts list sqlite</span>
+<span class="sb">```</span>
+
+<span class="sb">```mcp</span>
+<span class="s">prompts get sqlite create-query {&quot;table&quot;: &quot;users&quot;}</span>
 <span class="sb">```</span>
 
 <span class="gu">## morph</span>
@@ -1154,7 +1287,7 @@ Use RAG to index and semantically search through text files such as documentatio
 The following Python functions are available using the <span class="sb">`ipython`</span> tool:
 
 <span class="sb">```txt</span>
-<span class="s">rag_index(paths: str, glob: Union[str, NoneType]) -&gt; str: Index documents in specified paths.</span>
+<span class="s">rag_index(paths: str, glob: Union[str, None]) -&gt; str: Index documents in specified paths.</span>
 <span class="s">rag_search(query: str, return_full: bool) -&gt; str: Search indexed documents.</span>
 <span class="s">rag_status() -&gt; str: Show index status.</span>
 <span class="sb">```</span>
@@ -1197,6 +1330,40 @@ Functions are documented using docstrings...
 cat<span class="w"> </span>file.txt
 <span class="sb">```</span>
 
+<span class="gu">## restart</span>
+
+<span class="gs">**Description:**</span> Restart the gptme process
+
+<span class="gs">**Instructions:**</span>
+Restart the gptme process, useful for:
+<span class="k">-</span><span class="w"> </span>Applying configuration changes that require a restart
+<span class="k">-</span><span class="w"> </span>Reloading tools after code modifications
+<span class="k">-</span><span class="w"> </span>Recovering from state issues
+<span class="k">-</span><span class="w"> </span>Testing tool initialization
+
+The restart preserves the current conversation by reloading it from disk.
+All command-line arguments are preserved in the new process.
+
+This tool is disabled by default and must be explicitly enabled with <span class="sb">`--tools restart`</span>.
+
+
+<span class="gu">### Examples</span>
+
+<span class="k">&gt; </span><span class="ge">User: restart gptme to apply the config changes</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll restart gptme now.</span>
+<span class="sb">```restart</span>
+
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Restarting gptme...</span>
+(gptme restarts and conversation continues)
+
+<span class="k">&gt; </span><span class="ge">User: can you restart?</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll restart the gptme process.</span>
+<span class="sb">```restart</span>
+
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Restarting gptme...</span>
+
 <span class="gu">## save</span>
 
 <span class="gs">**Description:**</span> Write text to file
@@ -1230,7 +1397,7 @@ To write to a file, use a code block with the language tag: <span class="sb">`sa
 <span class="gs">**Instructions:**</span> The following Python functions are available using the <span class="sb">`ipython`</span> tool:
 
 <span class="sb">```txt</span>
-<span class="s">screenshot(path: Union[Path, NoneType]) -&gt; Path:</span>
+<span class="s">screenshot(path: Union[Path, None]) -&gt; Path:</span>
 <span class="s">    Take a screenshot and save it to a file.</span>
 
 <span class="sb">```</span>
@@ -1256,6 +1423,16 @@ These programs are available, among others:
 <span class="k">-</span><span class="w"> </span>git
 <span class="k">-</span><span class="w"> </span>hyperfine
 <span class="k">-</span><span class="w"> </span>pandoc
+
+<span class="gu">## Background Jobs</span>
+
+For long-running commands (dev servers, builds, etc.), use background jobs:
+<span class="k">-</span><span class="w"> </span><span class="sb">`bg &lt;command&gt;`</span> - Start command in background, returns job ID
+<span class="k">-</span><span class="w"> </span><span class="sb">`jobs`</span> - List all background jobs with status
+<span class="k">-</span><span class="w"> </span><span class="sb">`output &lt;id&gt;`</span> - Show accumulated output from a job
+<span class="k">-</span><span class="w"> </span><span class="sb">`kill &lt;id&gt;`</span> - Terminate a background job
+
+This prevents blocking on commands like <span class="sb">`npm run dev`</span> that run indefinitely.
 
 <span class="gu">### Examples</span>
 
@@ -1325,6 +1502,44 @@ npm<span class="w"> </span>init<span class="w"> </span>vue@latest<span class="w"
 <span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;Content with `backticks` and $variables that should not be interpreted&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>example.txt
 <span class="sb">```</span>
 
+<span class="gu">#### Background jobs for long-running commands</span>
+
+<span class="k">&gt; </span><span class="ge">User: start a dev server</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll start the dev server as a background job so it doesn&#39;t block:</span>
+<span class="sb">```shell</span>
+<span class="nb">bg</span><span class="w"> </span>npm<span class="w"> </span>run<span class="w"> </span>dev
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Started background job **#1**: `npm run dev`</span>
+<span class="k">&gt;</span>
+<span class="ge">&gt; Use these commands to manage it:</span>
+<span class="k">&gt; </span><span class="ge">- `jobs` - List all background jobs</span>
+<span class="k">&gt; </span><span class="ge">- `output 1` - Show output from job #1</span>
+<span class="k">&gt; </span><span class="ge">- `kill 1` - Terminate job #1</span>
+
+<span class="k">&gt; </span><span class="ge">User: check the server output</span>
+<span class="k">&gt; </span><span class="ge">Assistant: Let me check the output from the background job:</span>
+<span class="sb">```shell</span>
+output<span class="w"> </span><span class="m">1</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: **Job #1** - Running (45.2s)</span>
+<span class="k">&gt; </span><span class="ge">Command: `npm run dev`</span>
+<span class="k">&gt;</span>
+<span class="ge">&gt; ```stdout</span>
+<span class="k">&gt; </span><span class="ge">&gt; project@1.0.0 dev</span>
+<span class="k">&gt; </span><span class="ge">&gt; vite</span>
+<span class="k">&gt;</span>
+<span class="ge">&gt; VITE v5.0.0  ready in 300 ms</span>
+<span class="k">&gt;</span>
+<span class="ge">&gt; ➜  Local:   http://localhost:5173/</span>
+<span class="k">&gt; </span><span class="ge">```</span>
+
+<span class="k">&gt; </span><span class="ge">User: stop the server</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll terminate the background job:</span>
+<span class="sb">```shell</span>
+<span class="nb">kill</span><span class="w"> </span><span class="m">1</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Terminated job #1: `npm run dev`</span>
+
 <span class="gu">## subagent</span>
 
 <span class="gs">**Description:**</span> Create and manage subagents
@@ -1332,7 +1547,11 @@ npm<span class="w"> </span>init<span class="w"> </span>vue@latest<span class="w"
 <span class="gs">**Instructions:**</span> The following Python functions are available using the <span class="sb">`ipython`</span> tool:
 
 <span class="sb">```txt</span>
-<span class="s">subagent(agent_id: str, prompt: str, mode: Literal[&quot;executor&quot;, &quot;planner&quot;], subtasks: Union[list, NoneType], execution_mode: Literal[&quot;parallel&quot;, &quot;sequential&quot;], context_mode: Literal[&quot;full&quot;, &quot;instructions-only&quot;, &quot;selective&quot;], context_include: Union[list, NoneType]): Starts an asynchronous subagent. Returns None immediately; output is retrieved later via subagent_wait().</span>
+<span class="s">subagent(agent_id: str, prompt: str, mode: Literal[&quot;executor&quot;, &quot;planner&quot;], subtasks: Union[list[SubtaskDef], None], execution_mode: Literal[&quot;parallel&quot;, &quot;sequential&quot;], context_mode: Literal[&quot;full&quot;, &quot;instructions-only&quot;, &quot;selective&quot;], context_include: Union[list[str], None], output_schema: Union[type, None], use_subprocess: bool): Starts an asynchronous subagent. Returns None immediately.</span>
+
+<span class="s">    Subagent completions are delivered via the LOOP_CONTINUE hook, enabling</span>
+<span class="s">    a &quot;fire-and-forget-then-get-alerted&quot; pattern where the orchestrator can</span>
+<span class="s">    continue working and get notified when subagents finish.</span>
 
 <span class="s">    Args:</span>
 <span class="s">        agent_id: Unique identifier for the subagent</span>
@@ -1350,9 +1569,11 @@ npm<span class="w"> </span>init<span class="w"> </span>vue@latest<span class="w"
 <span class="s">            - &quot;agent&quot;: Agent identity and capabilities</span>
 <span class="s">            - &quot;tools&quot;: Tool descriptions and usage</span>
 <span class="s">            - &quot;workspace&quot;: Workspace files and structure</span>
+<span class="s">        use_subprocess: If True, run subagent in subprocess for output isolation.</span>
+<span class="s">            Subprocess mode captures stdout/stderr separately from the parent.</span>
 
 <span class="s">    Returns:</span>
-<span class="s">        None: Starts asynchronous execution. Use subagent_wait() to retrieve output.</span>
+<span class="s">        None: Starts asynchronous execution.</span>
 <span class="s">            In executor mode, starts a single task execution.</span>
 <span class="s">            In planner mode, starts execution of all subtasks using the specified execution_mode.</span>
 
@@ -1360,7 +1581,59 @@ npm<span class="w"> </span>init<span class="w"> </span>vue@latest<span class="w"
 <span class="s">            The full conversation log is available at the logdir path.</span>
 
 <span class="s">subagent_status(agent_id: str) -&gt; dict: Returns the status of a subagent.</span>
-<span class="s">subagent_wait(agent_id: str) -&gt; dict: Waits for a subagent to finish. Timeout is 1 minute.</span>
+<span class="s">subagent_wait(agent_id: str, timeout: int) -&gt; dict: Waits for a subagent to finish.</span>
+
+<span class="s">    Args:</span>
+<span class="s">        agent_id: The subagent to wait for</span>
+<span class="s">        timeout: Maximum seconds to wait (default 60)</span>
+
+<span class="s">    Returns:</span>
+<span class="s">        Status dict with &#39;status&#39; and &#39;result&#39; keys</span>
+
+<span class="s">subagent_read_log(agent_id: str, max_messages: int, include_system: bool, message_filter: Union[str, None]) -&gt; str: Read the conversation log of a subagent.</span>
+
+<span class="s">    Args:</span>
+<span class="s">        agent_id: The subagent to read logs from</span>
+<span class="s">        max_messages: Maximum number of messages to return</span>
+<span class="s">        include_system: Whether to include system messages</span>
+<span class="s">        message_filter: Filter messages by role (user/assistant/system) or None for all</span>
+
+<span class="s">    Returns:</span>
+<span class="s">        Formatted log output showing the conversation</span>
+
+<span class="s">subagent_batch(tasks: list[tuple[str, str]], use_subprocess: bool) -&gt; BatchJob: Start multiple subagents in parallel and return a BatchJob to manage them.</span>
+
+<span class="s">    This is a convenience function for fire-and-gather patterns where you want</span>
+<span class="s">    to run multiple independent tasks concurrently.</span>
+
+<span class="s">    With the hook-based notification system, completion messages are delivered</span>
+<span class="s">    automatically via the LOOP_CONTINUE hook. The BatchJob provides additional</span>
+<span class="s">    utilities for explicit synchronization when needed.</span>
+
+<span class="s">    Args:</span>
+<span class="s">        tasks: List of (agent_id, prompt) tuples</span>
+<span class="s">        use_subprocess: If True, run subagents in subprocesses for output isolation</span>
+
+<span class="s">    Returns:</span>
+<span class="s">        A BatchJob instance for managing the parallel subagents.</span>
+<span class="s">        The BatchJob provides wait_all(timeout) to wait for completion,</span>
+<span class="s">        is_complete() to check status, and get_completed() for partial results.</span>
+
+<span class="s">    Example::</span>
+
+<span class="s">        job = subagent_batch([</span>
+<span class="s">            (&quot;impl&quot;, &quot;Implement feature X&quot;),</span>
+<span class="s">            (&quot;test&quot;, &quot;Write tests for feature X&quot;),</span>
+<span class="s">            (&quot;docs&quot;, &quot;Document feature X&quot;),</span>
+<span class="s">        ])</span>
+<span class="s">        # Orchestrator continues with other work...</span>
+<span class="s">        # Completion messages delivered via LOOP_CONTINUE hook:</span>
+<span class="s">        #   &quot;✅ Subagent &#39;impl&#39; completed: Feature implemented&quot;</span>
+<span class="s">        #   &quot;✅ Subagent &#39;test&#39; completed: 5 tests added&quot;</span>
+<span class="s">        #</span>
+<span class="s">        # Or explicitly wait for all if needed:</span>
+<span class="s">        results = job.wait_all(timeout=300)</span>
+
 <span class="sb">```</span>
 
 <span class="gu">### Examples</span>
@@ -1425,16 +1698,62 @@ npm<span class="w"> </span>init<span class="w"> </span>vue@latest<span class="w"
 <span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;tests&quot;</span><span class="p">,</span> <span class="s2">&quot;Write pytest tests for the calculate function&quot;</span><span class="p">,</span> <span class="n">context_mode</span><span class="o">=</span><span class="s2">&quot;selective&quot;</span><span class="p">,</span> <span class="n">context_include</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;tools&quot;</span><span class="p">])</span>
 <span class="sb">```</span>
 
-<span class="gu">## time-awareness</span>
+<span class="gu">### Subprocess Mode (output isolation)</span>
 
-<span class="gs">**Description:**</span> Time tracking awareness for conversations
+<span class="k">&gt; </span><span class="ge">User: run a subagent without output mixing with parent</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll use subprocess mode for better output isolation.</span>
+<span class="sb">```ipython</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;isolated&quot;</span><span class="p">,</span> <span class="s2">&quot;Compute complex calculation&quot;</span><span class="p">,</span> <span class="n">use_subprocess</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Subagent started in subprocess mode.</span>
 
-<span class="gs">**Instructions:**</span> This tool provides time awareness to help manage long-running conversations.
+<span class="gu">### Batch Execution (parallel tasks)</span>
 
-The assistant receives periodic updates about how much time has elapsed:
-&lt;system_info&gt;Time elapsed: Xmin&lt;/system_info&gt;
+<span class="k">&gt; </span><span class="ge">User: implement, test, and document a feature in parallel</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll use subagent_batch for parallel execution with fire-and-gather pattern.</span>
+<span class="sb">```ipython</span>
+<span class="n">job</span> <span class="o">=</span> <span class="n">subagent_batch</span><span class="p">([</span>
+    <span class="p">(</span><span class="s2">&quot;impl&quot;</span><span class="p">,</span> <span class="s2">&quot;Implement the user authentication feature&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="s2">&quot;test&quot;</span><span class="p">,</span> <span class="s2">&quot;Write tests for authentication&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="s2">&quot;docs&quot;</span><span class="p">,</span> <span class="s2">&quot;Document the authentication API&quot;</span><span class="p">),</span>
+<span class="p">])</span>
 
-Time messages are shown at: 1min, 5min, 10min, 15min, 20min, then every 10 minutes.
+<span class="c1"># Do other work while subagents run...</span>
+
+<span class="n">results</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">wait_all</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">agent_id</span><span class="p">,</span> <span class="n">result</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">{{</span><span class="s2">agent_id</span><span class="se">}}</span><span class="s2">: </span><span class="se">{{</span><span class="s2">result[&#39;status&#39;]</span><span class="se">}}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Started batch of 3 subagents: [&#39;impl&#39;, &#39;test&#39;, &#39;docs&#39;]</span>
+<span class="k">&gt; </span><span class="ge">impl: success</span>
+<span class="k">&gt; </span><span class="ge">test: success</span>
+<span class="k">&gt; </span><span class="ge">docs: success</span>
+
+<span class="gu">### Fire-and-Forget with Hook Notifications</span>
+
+<span class="k">&gt; </span><span class="ge">User: start a subagent and continue working</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll spawn a subagent. Completion will be delivered via the LOOP_CONTINUE hook.</span>
+<span class="sb">```ipython</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;compute-demo&quot;</span><span class="p">,</span> <span class="s2">&quot;Compute pi to 100 digits&quot;</span><span class="p">)</span>
+
+<span class="c1"># I can continue with other work now</span>
+
+<span class="c1"># When the subagent completes, I&#39;ll receive a system message like:</span>
+
+<span class="c1"># &quot;✅ Subagent &#39;compute-demo&#39; completed: pi = 3.14159...&quot;</span>
+
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Started subagent &quot;compute-demo&quot;</span>
+<span class="k">&gt; </span><span class="ge">System: ✅ Subagent &#39;compute-demo&#39; completed: pi = 3.14159265358979...</span>
+
+<span class="gu">### Structured Delegation Template</span>
+
+<span class="k">&gt; </span><span class="ge">User: implement a robust auth feature</span>
+<span class="k">&gt; </span><span class="ge">Assistant: I&#39;ll use the structured delegation template for clear task handoff.</span>
+<span class="sb">```ipython</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;auth-impl&quot;</span><span class="p">,</span> <span class="s2">&quot;TASK: Implement JWT auth | OUTCOME: auth.py with tests | MUST: bcrypt, validation | MUST NOT: plaintext passwords&quot;</span><span class="p">)</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Subagent started successfully.</span>
 
 <span class="gu">## tmux</span>
 
@@ -1450,6 +1769,7 @@ Available commands:
 <span class="k">-</span><span class="w"> </span>new-session &lt;command&gt;: Start a new tmux session with the given command
 <span class="k">-</span><span class="w"> </span>send-keys &lt;session_id&gt; &lt;keys&gt; [&lt;keys&gt;]: Send keys to the specified session
 <span class="k">-</span><span class="w"> </span>inspect-pane &lt;session_id&gt;: Show the current content of the specified pane
+<span class="k">-</span><span class="w"> </span>wait &lt;session_id&gt; [timeout] [stable_time]: Wait for output to stabilize (default: 60s timeout, 3s stable)
 <span class="k">-</span><span class="w"> </span>kill-session &lt;session_id&gt;: Terminate the specified tmux session
 <span class="k">-</span><span class="w"> </span>list-sessions: Show all active tmux sessions
 
@@ -1510,6 +1830,14 @@ Available commands:
 <span class="sb">```tmux</span>
 <span class="s">send-keys 2 &#39;print(&quot;Hello, world!&quot;)&#39; Enter</span>
 <span class="sb">```</span>
+
+<span class="gu">#### Listing active sessions</span>
+
+<span class="k">&gt; </span><span class="ge">User: List all active tmux sessions</span>
+<span class="sb">```tmux</span>
+<span class="s">list-sessions</span>
+<span class="sb">```</span>
+<span class="k">&gt; </span><span class="ge">System: Active tmux sessions [&#39;0&#39;, &#39;gptme_1&#39;]</span>
 
 <span class="gu">## todoread</span>
 
@@ -1596,26 +1924,6 @@ to restore your todo list state.
 <span class="sb">```todowrite</span>
 <span class="s">clear completed</span>
 <span class="sb">```</span>
-
-<span class="gu">## token-awareness</span>
-
-<span class="gs">**Description:**</span> Token budget awareness for conversations
-
-<span class="gs">**Instructions:**</span> This tool provides token budget awareness to the assistant across all LLM providers.
-
-At the start of each conversation, the assistant receives information about the total token budget:
-&lt;budget:token_budget&gt;XXX&lt;/budget:token_budget&gt;
-
-Token usage warnings are shown at meaningful thresholds to avoid noise:
-<span class="k">-</span><span class="w"> </span>When crossing percentage thresholds: 50%, 75%, 90%, 95%
-<span class="k">-</span><span class="w"> </span>Every 10,000 tokens used
-&lt;system_warning&gt;Token usage: X/Y; Z remaining&lt;/system_warning&gt;
-
-This helps the assistant:
-<span class="k">-</span><span class="w"> </span>Understand how much context capacity remains
-<span class="k">-</span><span class="w"> </span>Plan responses to fit within the budget
-<span class="k">-</span><span class="w"> </span>Manage long-running conversations effectively
-<span class="k">-</span><span class="w"> </span>Avoid overwhelming the context with frequent status updates
 
 <span class="gu">## tts</span>
 
@@ -1716,7 +2024,7 @@ It will respond with the output and result of the execution.
 <span class="ge">*End of Tools List.*</span>
 </pre></div>
 </div>
-<p>Tokens: 8237</p>
+<p>Tokens: 10325</p>
 </dd></dl>
 
 <dl class="py function">
@@ -1797,6 +2105,7 @@ just testing
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_gptme"><code class="docutils literal notranslate"><span class="pre">prompt_gptme()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_project"><code class="docutils literal notranslate"><span class="pre">prompt_project()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_short"><code class="docutils literal notranslate"><span class="pre">prompt_short()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_skills_summary"><code class="docutils literal notranslate"><span class="pre">prompt_skills_summary()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_systeminfo"><code class="docutils literal notranslate"><span class="pre">prompt_systeminfo()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_timeinfo"><code class="docutils literal notranslate"><span class="pre">prompt_timeinfo()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme.prompts.prompt_tools"><code class="docutils literal notranslate"><span class="pre">prompt_tools()</span></code></a></li>
@@ -1826,7 +2135,7 @@ By Erik Bjäreholt
 
   <p class="copyright">
     
-      © Copyright 2025, Erik Bjäreholt.
+      © Copyright 2026, Erik Bjäreholt.
       <br/>
     
   </p>

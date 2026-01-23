@@ -151,7 +151,10 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a></li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="examples.html">Examples</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="demos.html">Demos</a></li>
 <li class="toctree-l2"><a class="reference internal" href="automation.html">Automation</a></li>
@@ -160,13 +163,19 @@
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="agents.html">Agents</a></li>
 <li class="toctree-l1"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="current nav bd-sidenav">
@@ -178,7 +187,7 @@
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="custom_tool.html">Custom Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hooks.html">Hooks</a></li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
@@ -187,6 +196,8 @@
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -473,11 +484,20 @@
 </ul>
 <p>Decent alternatives include:</p>
 <ul class="simple">
-<li><p>GPT-4o (<code class="docutils literal notranslate"><span class="pre">openai/gpt-4o</span></code>)</p></li>
+<li><p>Gemini 3 Pro (<code class="docutils literal notranslate"><span class="pre">openrouter/google/gemini-3-pro-preview</span></code>, <code class="docutils literal notranslate"><span class="pre">gemini/gemini-3-pro-preview</span></code>)</p></li>
+<li><p>GPT-5, GPT-4o (<code class="docutils literal notranslate"><span class="pre">openai/gpt-5</span></code>, <code class="docutils literal notranslate"><span class="pre">openai/gpt-4o</span></code>)</p></li>
+<li><p>Grok 4 (<code class="docutils literal notranslate"><span class="pre">xai/grok-4</span></code>, <code class="docutils literal notranslate"><span class="pre">openrouter/x-ai/grok-4</span></code>)</p></li>
+<li><p>Qwen3 Coder 480B A35B (<code class="docutils literal notranslate"><span class="pre">openrouter/qwen/qwen3-coder</span></code>)</p></li>
+<li><p>Kimi K2 (<code class="docutils literal notranslate"><span class="pre">openrouter/moondreamai/kimi-k2-thinking</span></code>, <code class="docutils literal notranslate"><span class="pre">openrouter/moondreamai/kimi-k2</span></code>)</p></li>
+<li><p>MiniMax M2 (<code class="docutils literal notranslate"><span class="pre">openrouter/minimax/minimax-m2</span></code>)</p></li>
 <li><p>Llama 3.1 405B (<code class="docutils literal notranslate"><span class="pre">openrouter/meta-llama/llama-3.1-405b-instruct</span></code>)</p></li>
 <li><p>DeepSeek V3 (<code class="docutils literal notranslate"><span class="pre">deepseek/deepseek-chat</span></code>)</p></li>
 <li><p>DeepSeek R1 (<code class="docutils literal notranslate"><span class="pre">deepseek/deepseek-reasoner</span></code>)</p></li>
 </ul>
+<p>Note that some models may perform better or worse with different <code class="docutils literal notranslate"><span class="pre">--tool-format</span></code> options (<code class="docutils literal notranslate"><span class="pre">markdown</span></code>, <code class="docutils literal notranslate"><span class="pre">xml</span></code>, or <code class="docutils literal notranslate"><span class="pre">tool</span></code> for native tool-calling).</p>
+<p>Note that many providers on OpenRouter have poor performance and reliability, so be sure to test your chosen model/provider combination before committing to it. This is especially true for open weight models which any provider can host at any quality. You can choose a specific provider by appending with <code class="docutils literal notranslate"><span class="pre">:provider</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">openrouter/qwen/qwen3-coder:alibaba/opensource</span></code>.</p>
+<p>Note that pricing for models varies widely when accounting for caching, making some providers much cheaper than others. Anthropic is known and tested to cache well, significantly reducing costs for conversations with many turns.</p>
+<p>You can get an overview of actual model usage in the wild from the <a class="reference external" href="https://openrouter.ai/apps?url=https://github.com/gptme/gptme">OpenRouter app analytics for gptme</a>.</p>
 </section>
 <section id="usage">
 <h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">#</a></h2>
@@ -628,7 +648,7 @@ By Erik Bjäreholt
 
   <p class="copyright">
     
-      © Copyright 2025, Erik Bjäreholt.
+      © Copyright 2026, Erik Bjäreholt.
       <br/>
     
   </p>

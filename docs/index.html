@@ -152,7 +152,10 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a></li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="examples.html">Examples</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="demos.html">Demos</a></li>
 <li class="toctree-l2"><a class="reference internal" href="automation.html">Automation</a></li>
@@ -161,13 +164,19 @@
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="agents.html">Agents</a></li>
 <li class="toctree-l1"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="nav bd-sidenav">
@@ -179,7 +188,7 @@
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="custom_tool.html">Custom Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hooks.html">Hooks</a></li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
@@ -188,6 +197,8 @@
 <li class="toctree-l1"><a class="reference internal" href="arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -483,10 +494,38 @@
 <li class="toctree-l2"><a class="reference internal" href="getting-started.html#support">Support</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="system-dependencies.html">System Dependencies</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="system-dependencies.html#optional-dependencies">Optional Dependencies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="system-dependencies.html#details">Details</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#commands">Commands</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#interfaces">Interfaces</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#features">Features</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#architecture-overview">Architecture Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#knowledge-files-context-injection">Knowledge Files (Context Injection)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#tools-capabilities">Tools (Capabilities)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#hooks-lifecycle-integration">Hooks (Lifecycle Integration)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#commands-user-interface">Commands (User Interface)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#plugins-packaging-mechanism">Plugins (Packaging Mechanism)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#how-they-work-together">How They Work Together</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#decision-guide">Decision Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#progressive-enhancement">Progressive Enhancement</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#best-practices">Best Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#further-reading">Further Reading</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#summary">Summary</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="glossary.html#conversational-concepts">Conversational Concepts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="glossary.html#context-and-memory">Context and Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="glossary.html#tool-concepts">Tool Concepts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="glossary.html#session-concepts">Session Concepts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="glossary.html#configuration">Configuration</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
@@ -527,6 +566,16 @@
 <li class="toctree-l2"><a class="reference internal" href="lessons.html#see-also">See Also</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="skills/README.html">Skills System</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#skill-vs-lesson-vs-plugin">Skill vs. Lesson vs. Plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#skill-format">Skill Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#use-cases">Use Cases</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#integration-with-lessons">Integration with Lessons</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#roadmap">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="skills/README.html#related">Related</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="config.html#global-config">Global config</a></li>
 <li class="toctree-l2"><a class="reference internal" href="config.html#project-config">Project config</a></li>
@@ -534,14 +583,8 @@
 <li class="toctree-l2"><a class="reference internal" href="config.html#environment-variables">Environment Variables</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="custom-providers.html">Custom OpenAI-Compatible Providers</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#configuration">Configuration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#usage">Usage</a></li>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#backward-compatibility">Backward Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#implementation-details">Implementation Details</a></li>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#examples">Examples</a></li>
-<li class="toctree-l2"><a class="reference internal" href="custom-providers.html#related">Related</a></li>
+<li class="toctree-l1"><a class="reference internal" href="providers.html">Providers</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agents.html">Agents</a><ul>
@@ -572,11 +615,41 @@
 <li class="toctree-l2"><a class="reference internal" href="mcp.html#managing-mcp-servers">Managing MCP Servers</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#installation">Installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#usage">Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#architecture">Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#protocol-methods">Protocol Methods</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#capabilities">Capabilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#development-roadmap">Development Roadmap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="acp.html#related">Related</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#built-in-commands">Built-in Commands</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#tool-commands">Tool Commands</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#tool-shortcuts">Tool Shortcuts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#keyboard-shortcuts">Keyboard Shortcuts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#command-registration">Command Registration</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="cli.html">CLI Reference</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="cli.html#gptme">gptme</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli.html#gptme-server">gptme-server</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli.html#gptme-eval">gptme-eval</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli.html#gptme-util">gptme-util</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security Considerations</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="security.html#threat-model">Threat Model</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#project-configuration-trust">Project Configuration Trust</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#tool-specific-security-notes">Tool-Specific Security Notes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#best-practices">Best Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#reporting-security-issues">Reporting Security Issues</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#related-documentation">Related Documentation</a></li>
 </ul>
 </li>
 </ul>
@@ -589,6 +662,7 @@
 <li class="toctree-l2"><a class="reference internal" href="contributing.html#tests">Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="contributing.html#telemetry">Telemetry</a></li>
 <li class="toctree-l2"><a class="reference internal" href="contributing.html#release">Release</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#issue-labels">Issue Labels</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="building.html">Building Executables</a><ul>
@@ -606,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_gptme"><code class="docutils literal notranslate"><span class="pre">prompt_gptme()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_project"><code class="docutils literal notranslate"><span class="pre">prompt_project()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_short"><code class="docutils literal notranslate"><span class="pre">prompt_short()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_skills_summary"><code class="docutils literal notranslate"><span class="pre">prompt_skills_summary()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_systeminfo"><code class="docutils literal notranslate"><span class="pre">prompt_systeminfo()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_timeinfo"><code class="docutils literal notranslate"><span class="pre">prompt_timeinfo()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="prompts.html#gptme.prompts.prompt_tools"><code class="docutils literal notranslate"><span class="pre">prompt_tools()</span></code></a></li>
@@ -622,7 +697,16 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="bot.html">GitHub Bot</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="bot.html#usage">Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#quick-start">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#how-it-works">How It Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#configuration-options">Configuration Options</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#best-practices">Best Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#security-considerations">Security Considerations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#local-testing">Local Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#limitations">Limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#examples-in-the-wild">Examples in the Wild</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bot.html#related">Related</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="finetuning.html">Finetuning</a><ul>
@@ -656,15 +740,21 @@
 <li class="toctree-l2"><a class="reference internal" href="hooks.html#see-also">See Also</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="misc/server-hooks-analysis.html">Server Hooks Analysis</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#summary">Summary</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#hooks-that-work-in-server">Hooks That Work in Server</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#hooks-that-now-work-in-server-after-implementation">Hooks That NOW Work in Server (After Implementation)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#root-cause">Root Cause</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#impact">Impact</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#implementation-details">Implementation Details</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#recommendations">Recommendations</a></li>
-<li class="toctree-l2"><a class="reference internal" href="misc/server-hooks-analysis.html#files-to-check">Files to Check</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins.html">Plugin System</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#plugin-structure">Plugin Structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#skills-vs-plugins">Skills vs Plugins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#creating-a-plugin">Creating a Plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#how-it-works">How It Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#plugin-tool-modules">Plugin Tool Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#plugin-hook-modules">Plugin Hook Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#plugin-command-modules">Plugin Command Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#example-logging-plugin">Example: Logging Plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#example-weather-plugin">Example: Weather Plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#distribution">Distribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#migration-from-tool-modules">Migration from TOOL_MODULES</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#future-hooks-and-commands">Future: Hooks and Commands</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugins.html#troubleshooting">Troubleshooting</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a><ul>
@@ -692,12 +782,16 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="timeline.html#id1">2025</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeline.html#id2">2024</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeline.html#id3">2023</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeline.html#unreleased">Unreleased</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeline.html#id1">2026</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeline.html#id2">2025</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeline.html#id3">2024</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeline.html#id4">2023</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="changelog.html">Changelog</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.3.html">v0.28.3</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.28.2.html">v0.28.2</a></li>
@@ -837,7 +931,7 @@ By Erik Bjäreholt
 
   <p class="copyright">
     
-      © Copyright 2025, Erik Bjäreholt.
+      © Copyright 2026, Erik Bjäreholt.
       <br/>
     
   </p>

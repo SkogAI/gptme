@@ -26,17 +26,23 @@ See the `README <https://github.com/gptme/gptme/blob/master/README.md>`_ file fo
    :caption: User Guide
 
    getting-started
+   system-dependencies
    usage
+   concepts
+   glossary
    examples
    tools
    lessons
+   skills/README
    config
    providers
-   custom-providers
    agents
    server
    mcp
+   acp
+   commands
    cli
+   security
 
 .. toctree::
    :maxdepth: 2
@@ -50,7 +56,7 @@ See the `README <https://github.com/gptme/gptme/blob/master/README.md>`_ file fo
    finetuning
    custom_tool
    hooks
-   misc/server-hooks-analysis
+   plugins
    api
 
 .. toctree::
