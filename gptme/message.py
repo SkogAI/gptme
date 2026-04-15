@@ -3,6 +3,7 @@ import logging
 import shutil
 import sys
 import textwrap
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, TypedDict
@@ -28,6 +29,19 @@ from .util.uri import URI, FilePath, parse_file_reference
 logger = logging.getLogger(__name__)
 
 
+class UsageData(TypedDict, total=False):
+    """Token usage data from LLM API responses.
+
+    Nested under ``usage`` in :class:`MessageMetadata` to mirror the structure
+    returned by LLM provider APIs (Anthropic, OpenAI, etc.).
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+
+
 class MessageMetadata(TypedDict, total=False):
     """
     Metadata stored with each message.
@@ -36,40 +50,75 @@ class MessageMetadata(TypedDict, total=False):
 
     Token/cost fields are populated for assistant messages when telemetry is enabled.
 
-    Uses flat token format (matches cost_tracker and common industry conventions):
+    Token counts are nested under ``usage`` to match LLM API response structure::
+
         {
             "model": "claude-sonnet",
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cache_read_tokens": 80,
-            "cache_creation_tokens": 10,
-            "cost": 0.005
+            "cost": 0.005,
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 80,
+                "cache_creation_tokens": 10,
+            }
         }
     """
 
     model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_creation_tokens: int
     cost: float  # Cost in USD
+    usage: UsageData
+
+
+_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+)
+
+
+def _migrate_metadata(meta: dict) -> MessageMetadata:
+    """Migrate flat token format to nested ``usage`` format.
+
+    Old format had token fields at the top level alongside ``model`` and ``cost``.
+    New format nests them under ``usage``.  This function detects the old format
+    and converts it, allowing transparent deserialization of old logs.
+    """
+    # Already migrated (or new format)
+    if "usage" in meta or not any(k in meta for k in _TOKEN_KEYS):
+        return MessageMetadata(**meta)
+
+    usage: dict[str, int] = {}
+    remaining: dict = {}
+    for k, v in meta.items():
+        if k in _TOKEN_KEYS:
+            usage[k] = v
+        else:
+            remaining[k] = v
+    if usage:
+        remaining["usage"] = usage
+    return MessageMetadata(**remaining)
 
 
 def _format_toml_value(value: object) -> str:
     """Format a value for TOML inline table, properly escaping strings."""
     if isinstance(value, str):
         return f'"{escape_string(value)}"'
-    elif isinstance(value, float):
+    if isinstance(value, float):
         return f"{value:.6f}"
-    else:
-        return str(value)
+    return str(value)
 
 
 def _format_metadata_toml(metadata: MessageMetadata) -> str:
-    """Format metadata as TOML inline table."""
+    """Format metadata as TOML inline table, handling nested ``usage``."""
     meta_items = []
     for k, v in metadata.items():
-        meta_items.append(f'"{k}" = {_format_toml_value(v)}')
+        if k == "usage" and isinstance(v, dict):
+            # Format usage as a nested inline table
+            usage_items = [f'"{uk}" = {_format_toml_value(uv)}' for uk, uv in v.items()]
+            meta_items.append(f'"usage" = {{ {", ".join(usage_items)} }}')
+        else:
+            meta_items.append(f'"{k}" = {_format_toml_value(v)}')
     return f"metadata = {{ {', '.join(meta_items)} }}"
 
 
@@ -112,14 +161,46 @@ class Message:
         return f"<Message role={self.role} content={content}>"
 
     def __eq__(self, other):
-        # FIXME: really include timestamp?
         if not isinstance(other, Message):
             return False
-        return (
-            self.role == other.role
-            and self.content == other.content
-            and self.timestamp == other.timestamp
+        return self.role == other.role and self.content == other.content
+
+    def concat(self, other: "Message", separator: str = "\n\n") -> "Message":
+        """Concatenate two messages of the same role.
+
+        Merges content with separator, and combines files and file_hashes.
+        Preserves timestamp from the first message.
+
+        Args:
+            other: Message to concatenate with this one
+            separator: String to join content with (default: "\\n\\n")
+
+        Returns:
+            New Message with merged content and files
+
+        Raises:
+            ValueError: If messages have different roles
+        """
+        if self.role != other.role:
+            raise ValueError(
+                f"Cannot concatenate messages with different roles: {self.role} vs {other.role}"
+            )
+
+        # Merge file_hashes (other's hashes take precedence for same paths)
+        merged_hashes = {**self.file_hashes, **other.file_hashes}
+
+        return self.replace(
+            content=f"{self.content}{separator}{other.content}",
+            files=self.files + other.files,
+            file_hashes=merged_hashes,
+            # Keep pinned/hide/quiet if either message has it set
+            pinned=self.pinned or other.pinned,
+            hide=self.hide or other.hide,
+            quiet=self.quiet or other.quiet,
         )
+
+    def __hash__(self):
+        return hash((self.role, self.content))
 
     def len_tokens(self, model: str) -> int:
         return len_tokens(self, model=model)
@@ -151,7 +232,12 @@ class Message:
             d["call_id"] = self.call_id
         # Only serialize metadata if it has content (compact storage)
         if self.metadata:
-            d["metadata"] = dict(self.metadata)
+            meta_dict = dict(self.metadata)
+            # Ensure nested usage dict is also a plain dict (not tomlkit types)
+            usage = meta_dict.get("usage")
+            if isinstance(usage, dict):
+                meta_dict["usage"] = dict(usage)
+            d["metadata"] = meta_dict
         if keys:
             return {k: d[k] for k in keys if k in d}
         return d
@@ -258,12 +344,12 @@ timestamp = "{self.timestamp.isoformat()}"
 
         t = tomlkit.parse(toml)
         assert "message" in t and isinstance(t["message"], dict)
-        msg: dict = t["message"]  # type: ignore
+        msg: dict = t["message"]
 
-        # Parse metadata if present
+        # Parse metadata if present (migrate old flat format if needed)
         metadata: MessageMetadata | None = None
-        if "metadata" in msg and msg["metadata"]:
-            metadata = MessageMetadata(**msg["metadata"])
+        if msg.get("metadata"):
+            metadata = _migrate_metadata(dict(msg["metadata"]))
 
         return cls(
             msg["role"],
@@ -273,7 +359,7 @@ timestamp = "{self.timestamp.isoformat()}"
             files=[parse_file_reference(f) for f in msg.get("files", [])],
             file_hashes=msg.get("file_hashes", {}),
             timestamp=isoparse(msg["timestamp"]),
-            call_id=msg.get("call_id", None),
+            call_id=msg.get("call_id"),
             metadata=metadata,
         )
 
@@ -312,9 +398,16 @@ def format_msgs(
     indent: int = 0,
 ) -> list[str]:
     """Formats messages for printing to the console."""
+    # Import here to avoid circular import
+    from .config import get_config
+
     outputs = []
     for msg in msgs:
-        userprefix = msg.role.capitalize()
+        # Use configured username for user messages, otherwise capitalize the role
+        if msg.role == "user":
+            userprefix = get_config().user.user.name
+        else:
+            userprefix = msg.role.capitalize()
         if highlight:
             color = ROLE_COLOR[msg.role]
             userprefix = f"[bold {color}]{userprefix}[/bold {color}]"
@@ -339,7 +432,7 @@ def format_msgs(
                         block = escape_markup(block)
                     output += textwrap.indent(block, prefix=indent * " ")
                     continue
-                elif highlight:
+                if highlight:
                     lang = block.split("\n", 1)[0]
                     content = block.split("\n", 1)[-1]
                     fmt = "underline blue"
@@ -398,7 +491,7 @@ def print_msg(
         )
 
 
-def msgs_to_toml(msgs: list[Message]) -> str:
+def msgs_to_toml(msgs: Iterable[Message]) -> str:
     """Converts a list of messages to a TOML string, for easy editing by hand in editor to then be parsed back."""
     t = ""
     for msg in msgs:
@@ -415,8 +508,7 @@ def _fix_toml_content(content: str) -> str:
     closing delimiter. This function removes that artifact while preserving
     all other whitespace.
     """
-    if content.endswith("\n"):
-        content = content[:-1]
+    content = content.removesuffix("\n")
     return content
 
 
@@ -428,7 +520,7 @@ def toml_to_msgs(toml: str) -> list[Message]:
     """
     t = tomlkit.parse(toml)
     assert "messages" in t and isinstance(t["messages"], list)
-    msgs: list[dict] = t["messages"]  # type: ignore
+    msgs: list[dict] = t["messages"]
 
     return [
         Message(
@@ -440,7 +532,7 @@ def toml_to_msgs(toml: str) -> list[Message]:
             files=[parse_file_reference(f) for f in msg.get("files", [])],
             file_hashes=dict(msg.get("file_hashes", {})),
             call_id=msg.get("call_id"),
-            metadata=MessageMetadata(**msg["metadata"])
+            metadata=_migrate_metadata(dict(msg["metadata"]))
             if msg.get("metadata")
             else None,
         )

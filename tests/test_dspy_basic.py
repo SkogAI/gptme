@@ -34,6 +34,7 @@ try:
     from gptme.eval.dspy.prompt_optimizer import (  # fmt: skip
         PromptOptimizer,
         get_current_gptme_prompt,
+        is_quota_error,
     )
     from gptme.eval.dspy.signatures import (  # fmt: skip
         GptmeTaskSignature,
@@ -134,6 +135,21 @@ def test_metrics_creation():
     assert callable(composite_metric)
 
 
+def test_tool_metric_empty_messages():
+    """Test that tool_usage_metric returns 0.0 on empty messages instead of raising."""
+    tool_metric = create_tool_usage_metric()
+
+    # Simulate a prediction with empty messages (e.g. from API quota exhaustion)
+    pred = MagicMock()
+    pred.messages = []
+    gold = MagicMock()
+    gold.tools = ["save"]
+
+    # Should return 0.0 gracefully, not raise ValueError
+    score = tool_metric(gold, pred, None)
+    assert score == 0.0
+
+
 @patch("gptme.eval.dspy.prompt_optimizer.dspy")
 def test_prompt_optimizer_init(mock_dspy):
     """Test PromptOptimizer initialization."""
@@ -196,13 +212,72 @@ def test_optimization_experiment():
     assert experiment.output_dir.exists()
 
 
+def test_is_quota_error():
+    """Test is_quota_error correctly identifies API quota/rate-limit errors."""
+    # Anthropic usage limit message (the real-world trigger)
+    assert is_quota_error(
+        Exception("You have reached your specified API usage limits.")
+    )
+
+    # Rate limit phrase variants
+    assert is_quota_error(Exception("rate limit exceeded"))
+    assert is_quota_error(Exception("rate_limit error"))
+
+    # API quota phrase (specific, not bare "quota")
+    assert is_quota_error(Exception("api quota exceeded"))
+
+    # Should NOT match unrelated quota messages (false-positive guard)
+    assert not is_quota_error(Exception("disk quota exceeded"))
+    assert not is_quota_error(Exception("quota: storage full"))
+
+    # Generic errors that are NOT quota-related
+    assert not is_quota_error(ValueError("No messages available"))
+    assert not is_quota_error(RuntimeError("Connection timeout"))
+    assert not is_quota_error(Exception("Bad request: invalid model"))
+
+
+def test_is_quota_error_type_based():
+    """Test is_quota_error with anthropic exception types (isinstance-based paths)."""
+    try:
+        from anthropic import BadRequestError, RateLimitError
+        from httpx import Request, Response
+
+        request = Request("POST", "https://api.anthropic.com/v1/messages")
+
+        # RateLimitError → always a quota error
+        rate_limit_err = RateLimitError(
+            "rate limit exceeded",
+            response=Response(429, request=request),
+            body={},
+        )
+        assert is_quota_error(rate_limit_err)
+
+        # BadRequestError with "usage limits" → quota error
+        quota_bad_request = BadRequestError(
+            "You have reached your specified API usage limits.",
+            response=Response(400, request=request),
+            body={},
+        )
+        assert is_quota_error(quota_bad_request)
+
+        # BadRequestError without quota message → not a quota error
+        other_bad_request = BadRequestError(
+            "invalid model specified",
+            response=Response(400, request=request),
+            body={},
+        )
+        assert not is_quota_error(other_bad_request)
+
+    except ImportError:
+        pytest.skip("anthropic package not available for isinstance tests")
+
+
 def test_cli_argument_parsing():
     """Test CLI argument parsing without actually running commands."""
 
     # Test help command
-    with patch.object(sys, "argv", ["cli.py", "--help"]):
-        with pytest.raises(SystemExit):
-            main()
+    with patch.object(sys, "argv", ["cli.py", "--help"]), pytest.raises(SystemExit):
+        main()
 
     # Test show-prompt command parsing - verify it runs successfully
     with patch.object(sys, "argv", ["cli.py", "show-prompt", "--model", "test-model"]):

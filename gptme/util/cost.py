@@ -3,6 +3,9 @@ from . import console
 
 
 def _tokens_inout(msgs: list[Message]) -> tuple[int, int]:
+    if not msgs:
+        return 0, 0
+
     from ..llm.models import get_default_model  # fmt: skip
 
     model = get_default_model()
@@ -16,6 +19,8 @@ def _tokens_inout(msgs: list[Message]) -> tuple[int, int]:
 
 
 def _cost(msgs: list[Message]) -> float:
+    if not msgs:
+        return 0.0
     return sum(msg.cost() for msg in msgs[:-1]) + msgs[-1].cost(
         output=msgs[-1].role == "assistant"
     )
@@ -61,15 +66,3 @@ def log_costs(msgs: list[Message]) -> None:
         if turns > 1:
             cost_msg += f" (session: ${sum(costs):.2f})"
         console.log(cost_msg)
-
-    # ALTERNATIVE
-    # print tokens and cost by request and session on separate lines
-    # console.log(
-    #     f"Cost (request): ${costs[-1]:.2f}  (tokens: {tok_in}/{tok_out} in/out)"
-    # )
-    # if turns > 1:
-    #     tok_in_total = sum(t[0] for t in tokens)
-    #     tok_out_total = sum(t[1] for t in tokens)
-    #     console.log(
-    #         f"Cost (session): ${sum(costs):.2f}  (tokens: {tok_in_total}/{tok_out_total} in/out, turns: {turns})"
-    #     )

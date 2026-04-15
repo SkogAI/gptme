@@ -3,7 +3,7 @@ Tests for auto-compacting functionality that handles conversations with massive 
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -32,9 +32,15 @@ def create_test_conversation():
     tool_output = f"Ran command: `find /usr -type f`\n{repeated_content}"
 
     return [
-        Message("user", "Please run a command to list files", datetime.now()),
-        Message("assistant", "I'll run the ls command for you.", datetime.now()),
-        Message("system", tool_output, datetime.now()),
+        Message(
+            "user", "Please run a command to list files", datetime.now(tz=timezone.utc)
+        ),
+        Message(
+            "assistant",
+            "I'll run the ls command for you.",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message("system", tool_output, datetime.now(tz=timezone.utc)),
     ]
 
 
@@ -43,19 +49,21 @@ def test_should_auto_compact_with_massive_tool_result():
     messages = create_test_conversation()
 
     # Should trigger auto-compacting due to massive tool result + being close to limit
-    assert should_auto_compact(messages)
+    assert should_auto_compact(messages) == "rule_based"
 
 
 def test_should_auto_compact_with_small_messages():
     """Test that should_auto_compact doesn't trigger for small conversations."""
     small_messages = [
-        Message("user", "Hello", datetime.now()),
-        Message("assistant", "Hi there!", datetime.now()),
-        Message("system", "Command executed successfully.", datetime.now()),
+        Message("user", "Hello", datetime.now(tz=timezone.utc)),
+        Message("assistant", "Hi there!", datetime.now(tz=timezone.utc)),
+        Message(
+            "system", "Command executed successfully.", datetime.now(tz=timezone.utc)
+        ),
     ]
 
     # Should not trigger auto-compacting
-    assert not should_auto_compact(small_messages)
+    assert should_auto_compact(small_messages) == "none"
 
 
 def test_auto_compact_log_reduces_massive_tool_result():
@@ -104,7 +112,7 @@ def test_create_tool_result_summary():
 
     content = "Ran command: `ls -la`\n/usr/bin/file1.txt\n/usr/bin/file2.txt\n..."
     tokens = 1000
-    msg = Message("system", content, timestamp=datetime.now())
+    msg = Message("system", content, timestamp=datetime.now(tz=timezone.utc))
 
     summary = create_tool_result_summary(msg.content, tokens, None, "autocompact")
 
@@ -123,7 +131,7 @@ def test_create_tool_result_summary_with_error():
         "Ran command: `invalid_command`\nError: command not found\nFailed to execute"
     )
     tokens = 500
-    msg = Message("system", content, timestamp=datetime.now())
+    msg = Message("system", content, timestamp=datetime.now(tz=timezone.utc))
 
     summary = create_tool_result_summary(msg.content, tokens, None, "autocompact")
 
@@ -135,9 +143,11 @@ def test_create_tool_result_summary_with_error():
 def test_auto_compact_preserves_small_messages():
     """Test that auto-compacting preserves small messages unchanged."""
     small_messages = [
-        Message("user", "Hello", datetime.now()),
-        Message("assistant", "Hi there!", datetime.now()),
-        Message("system", "Command executed successfully.", datetime.now()),
+        Message("user", "Hello", datetime.now(tz=timezone.utc)),
+        Message("assistant", "Hi there!", datetime.now(tz=timezone.utc)),
+        Message(
+            "system", "Command executed successfully.", datetime.now(tz=timezone.utc)
+        ),
     ]
 
     compacted = list(auto_compact_log(small_messages))
@@ -309,13 +319,35 @@ def test_strip_reasoning_preserves_content_without_tags():
 def test_auto_compact_strips_reasoning_from_older_messages():
     """Test that auto_compact_log strips reasoning from older messages."""
     messages = [
-        Message("user", "First <think>old reasoning</think>", datetime.now()),
-        Message("assistant", "Second <think>old reasoning</think>", datetime.now()),
-        Message("user", "Third <think>old reasoning</think>", datetime.now()),
-        Message("assistant", "Fourth <think>old reasoning</think>", datetime.now()),
-        Message("user", "Fifth <think>old reasoning</think>", datetime.now()),
-        Message("assistant", "Recent <think>recent reasoning</think>", datetime.now()),
-        Message("user", "Most recent <think>recent reasoning</think>", datetime.now()),
+        Message(
+            "user", "First <think>old reasoning</think>", datetime.now(tz=timezone.utc)
+        ),
+        Message(
+            "assistant",
+            "Second <think>old reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "user", "Third <think>old reasoning</think>", datetime.now(tz=timezone.utc)
+        ),
+        Message(
+            "assistant",
+            "Fourth <think>old reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "user", "Fifth <think>old reasoning</think>", datetime.now(tz=timezone.utc)
+        ),
+        Message(
+            "assistant",
+            "Recent <think>recent reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "user",
+            "Most recent <think>recent reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
     ]
 
     # Apply auto-compacting with reasoning_strip_age_threshold=5
@@ -335,9 +367,21 @@ def test_auto_compact_strips_reasoning_from_older_messages():
 def test_auto_compact_reasoning_strip_threshold_zero():
     """Test that threshold=0 strips reasoning from all messages."""
     messages = [
-        Message("user", "Message 1 <think>reasoning 1</think>", datetime.now()),
-        Message("assistant", "Message 2 <think>reasoning 2</think>", datetime.now()),
-        Message("user", "Message 3 <think>reasoning 3</think>", datetime.now()),
+        Message(
+            "user",
+            "Message 1 <think>reasoning 1</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "assistant",
+            "Message 2 <think>reasoning 2</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "user",
+            "Message 3 <think>reasoning 3</think>",
+            datetime.now(tz=timezone.utc),
+        ),
     ]
 
     # Apply with threshold=0 (strip all)
@@ -553,9 +597,9 @@ def test_estimate_compaction_savings_includes_phase3():
 
     # Should have savings from assistant compression (not just reasoning)
     # Since we have no reasoning tags, savings should come from compression
-    assert (
-        estimated_savings > 0
-    ), f"Expected compression savings for long assistant message, got {estimated_savings}"
+    assert estimated_savings > 0, (
+        f"Expected compression savings for long assistant message, got {estimated_savings}"
+    )
 
 
 def test_should_auto_compact_respects_minimum_savings():
@@ -571,13 +615,13 @@ def test_should_auto_compact_respects_minimum_savings():
     messages = [Message("user", f"Short message {i}") for i in range(100)]
 
     # Even if close to limit, should not trigger if savings would be minimal
-    result = should_auto_compact(messages, limit=500)  # Low limit to trigger check
+    result = should_auto_compact(messages, limit=100)  # Low limit to trigger check
 
     # With minimal savings potential (no reasoning, no tool results, no long messages),
-    # should return False even though we're "over limit"
-    assert (
-        result is False
-    ), "should_auto_compact should return False when savings are below threshold"
+    # should return "summarize" (not "rule_based") even though we're "over limit"
+    assert result == "summarize", (
+        "should_auto_compact should return 'summarize' when rule-based savings are below threshold"
+    )
 
 
 def test_should_auto_compact_triggers_with_high_savings():
@@ -603,9 +647,9 @@ def test_should_auto_compact_triggers_with_high_savings():
     # 3. Over the low limit
     result = should_auto_compact(messages, limit=100)
 
-    assert (
-        result is True
-    ), "should_auto_compact should return True when savings exceed threshold"
+    assert result == "rule_based", (
+        "should_auto_compact should return 'rule_based' when savings exceed threshold"
+    )
 
 
 def test_compact_resume_error_handling():
@@ -629,7 +673,7 @@ def test_compact_resume_error_handling():
     ]
 
     # Mock the LLM to raise an exception with an empty message
-    with patch("gptme.tools.autocompact.llm") as mock_llm:
+    with patch("gptme.tools.autocompact.resume.llm") as mock_llm:
         # Exception with empty string (the bug we're fixing)
         mock_llm.reply.side_effect = Exception("")
 
@@ -662,7 +706,7 @@ def test_compact_resume_error_with_message():
         Message("assistant", "Assistant response 2"),
     ]
 
-    with patch("gptme.tools.autocompact.llm") as mock_llm:
+    with patch("gptme.tools.autocompact.resume.llm") as mock_llm:
         # Exception with actual message
         mock_llm.reply.side_effect = Exception("API rate limit exceeded")
 
@@ -690,7 +734,7 @@ def test_compact_resume_no_model():
         Message("assistant", "Assistant response 2"),
     ]
 
-    with patch("gptme.tools.autocompact.get_default_model") as mock_get_model:
+    with patch("gptme.tools.autocompact.resume.get_default_model") as mock_get_model:
         # No model configured
         mock_get_model.return_value = None
 
@@ -701,3 +745,215 @@ def test_compact_resume_no_model():
         error_msg = results[-1]
         assert error_msg.role == "system"
         assert "No default model configured" in error_msg.content
+
+
+# Tests for context file parsing and loading (Issue #1148)
+
+
+def test_parse_context_files_basic():
+    """Test parsing file paths from resume content."""
+    from gptme.tools.autocompact import _parse_context_files
+
+    content = """
+# Conversation Resume
+
+## Summary
+We worked on implementing a feature.
+
+## Context Files
+
+- `src/main.py` - Main entry point
+- `docs/spec.md` - Specification
+- `tests/test_feature.py` - Test file
+"""
+    files = _parse_context_files(content)
+    assert "src/main.py" in files
+    assert "docs/spec.md" in files
+    assert "tests/test_feature.py" in files
+
+
+def test_parse_context_files_absolute_paths():
+    """Test parsing absolute file paths."""
+    from gptme.tools.autocompact import _parse_context_files
+
+    content = """
+## Context Files
+
+- `/home/user/project/config.yaml` - Config file
+- `~/dotfiles/.bashrc` - Shell config
+"""
+    files = _parse_context_files(content)
+    assert "/home/user/project/config.yaml" in files
+    assert "~/dotfiles/.bashrc" in files
+
+
+def test_parse_context_files_no_section():
+    """Test parsing when no explicit Context Files section exists."""
+    from gptme.tools.autocompact import _parse_context_files
+
+    content = """
+# Resume
+
+Working on the following files:
+- `src/app.py` - Application code
+- `README.md` - Documentation
+"""
+    files = _parse_context_files(content)
+    # Should still find files from the whole content
+    assert len(files) >= 2
+
+
+def test_parse_context_files_filters_urls():
+    """Test that URLs are not parsed as files."""
+    from gptme.tools.autocompact import _parse_context_files
+
+    content = """
+## Context Files
+
+- `src/main.py` - Real file
+- https://github.com/example/repo - URL should be ignored
+- `#heading-link` - Anchor should be ignored
+"""
+    files = _parse_context_files(content)
+    assert "src/main.py" in files
+    assert not any("http" in f for f in files)
+    assert not any(f.startswith("#") for f in files)
+
+
+def test_load_context_files_existing(tmp_path):
+    """Test loading files that exist."""
+    from gptme.tools.autocompact import _load_context_files
+
+    # Create test files
+    test_file = tmp_path / "test.py"
+    test_file.write_text("print('hello')")
+
+    loaded = _load_context_files(["test.py"], workspace=tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0][0] == "test.py"
+    assert "print('hello')" in loaded[0][1]
+
+
+def test_load_context_files_nonexistent(tmp_path):
+    """Test that nonexistent files are skipped gracefully."""
+    from gptme.tools.autocompact import _load_context_files
+
+    loaded = _load_context_files(
+        ["nonexistent.py", "also_missing.md"], workspace=tmp_path
+    )
+    assert len(loaded) == 0
+
+
+@pytest.mark.slow
+def test_load_context_files_truncates_long_files(tmp_path):
+    """Test that very long files are truncated."""
+    from gptme.tools.autocompact import _load_context_files
+
+    # Create a file with lots of content
+    long_content = "x" * 50000 + "\n" + "y" * 50000
+    test_file = tmp_path / "long.txt"
+    test_file.write_text(long_content)
+
+    loaded = _load_context_files(
+        ["long.txt"], workspace=tmp_path, max_tokens_per_file=500
+    )
+    assert len(loaded) == 1
+    # Should be truncated
+    assert len(loaded[0][1]) < len(long_content)
+    assert "truncated" in loaded[0][1].lower()
+
+
+def test_should_auto_compact_returns_summarize_when_over_limit_low_savings():
+    """Test that should_auto_compact returns 'summarize' when over limit but rule-based savings are too low."""
+    # Many short user messages: over a low limit but nothing to rule-based compact
+    messages = [Message("user", f"Short message {i}") for i in range(100)]
+    result = should_auto_compact(messages, limit=100)
+    assert result == "summarize"
+
+
+def test_resume_via_llm_with_mocked_reply():
+    """Test _resume_via_llm creates a resume using the LLM and replaces the log."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.tools.autocompact import _resume_via_llm
+
+    mock_manager = MagicMock()
+    mock_manager.workspace = None
+
+    messages = [
+        Message("system", "System prompt"),
+        Message("user", "User message 1"),
+        Message("assistant", "Assistant response 1"),
+        Message("user", "User message 2"),
+        Message("assistant", "Assistant response 2"),
+    ]
+
+    resume_content = (
+        "# Resume\n## Summary\nWe discussed testing.\n"
+        "## Context Files\n- `src/main.py` - Main file\n"
+    )
+
+    with patch("gptme.tools.autocompact.resume.llm") as mock_llm:
+        mock_response = MagicMock()
+        mock_response.content = resume_content
+        mock_llm.reply.return_value = mock_response
+
+        with patch("gptme.tools.autocompact.resume.get_default_model") as mock_model:
+            mock_m = MagicMock()
+            mock_m.full = "test-model"
+            mock_model.return_value = mock_m
+
+            results = list(
+                _resume_via_llm(mock_manager, messages, use_view_branch=False)
+            )
+
+    # Should have progress message + completion message
+    assert len(results) >= 2
+    assert results[-1].role == "system"
+    assert "LLM-powered resume completed" in results[-1].content
+    # Log should have been replaced directly (not via view branch)
+    mock_manager.write.assert_called_once()
+
+
+def test_resume_via_llm_with_view_branch():
+    """Test _resume_via_llm creates a view branch when use_view_branch=True."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.tools.autocompact import _resume_via_llm
+
+    mock_manager = MagicMock()
+    mock_manager.workspace = None
+    mock_manager.get_next_view_name.return_value = "view-1"
+
+    messages = [
+        Message("system", "System prompt"),
+        Message("user", "User message 1"),
+        Message("assistant", "Assistant response 1"),
+        Message("user", "User message 2"),
+        Message("assistant", "Assistant response 2"),
+    ]
+
+    resume_content = "# Resume\n## Summary\nWe discussed testing.\n"
+
+    with patch("gptme.tools.autocompact.resume.llm") as mock_llm:
+        mock_response = MagicMock()
+        mock_response.content = resume_content
+        mock_llm.reply.return_value = mock_response
+
+        with patch("gptme.tools.autocompact.resume.get_default_model") as mock_model:
+            mock_m = MagicMock()
+            mock_m.full = "test-model"
+            mock_model.return_value = mock_m
+
+            results = list(
+                _resume_via_llm(mock_manager, messages, use_view_branch=True)
+            )
+
+    # Should create view branch instead of replacing log directly
+    mock_manager.create_view.assert_called_once()
+    mock_manager.switch_view.assert_called_once_with("view-1")
+    # write() should NOT be called when using view branch
+    mock_manager.write.assert_not_called()
+    # Status messages should be hidden
+    for msg in results:
+        assert msg.hide is True

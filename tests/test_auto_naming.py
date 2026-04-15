@@ -17,6 +17,10 @@ pytest.importorskip(
 @pytest.mark.timeout(30)
 @pytest.mark.slow
 @pytest.mark.requires_api
+@pytest.mark.skipif(
+    "glm" in os.getenv("MODEL", "").lower(),
+    reason="GLM models are too slow for 30s auto-naming timeout",
+)
 def test_auto_naming_generates_display_name(event_listener, wait_for_event):
     """Test that auto-naming generates a display name after the first assistant response."""
     port = event_listener["port"]
@@ -62,9 +66,14 @@ def test_auto_naming_generates_display_name(event_listener, wait_for_event):
     assert len(chat_config.name) <= 50
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(45)
 @pytest.mark.slow
 @pytest.mark.requires_api
+@pytest.mark.skipif(
+    "claude-haiku" in os.getenv("MODEL", "").lower()
+    or "glm" in os.getenv("MODEL", "").lower(),
+    reason="Claude Haiku can exceed the SSE completion timeout here; GLM is too slow for auto-naming timeout",
+)
 def test_auto_naming_only_runs_once(event_listener, wait_for_event):
     """Test that auto-naming doesn't overwrite existing names."""
     port = event_listener["port"]
@@ -97,7 +106,7 @@ def test_auto_naming_only_runs_once(event_listener, wait_for_event):
     # We'll wait a bit to make sure it doesn't happen
     assert not wait_for_event(event_listener, "config_changed", timeout=3)
 
-    assert wait_for_event(event_listener, "generation_complete")
+    assert wait_for_event(event_listener, "generation_complete", timeout=30)
 
     # Verify that the config didn't change after generation
     assert not wait_for_event(event_listener, "config_changed", timeout=1)
@@ -114,8 +123,9 @@ def test_auto_naming_only_runs_once(event_listener, wait_for_event):
 @pytest.mark.slow
 @pytest.mark.requires_api
 @pytest.mark.skipif(
-    "claude-haiku" in os.getenv("MODEL", "").lower(),
-    reason="Claude Haiku models output thinking tags in names",
+    "claude-haiku" in os.getenv("MODEL", "").lower()
+    or "glm" in os.getenv("MODEL", "").lower(),
+    reason="Claude Haiku outputs thinking tags; GLM is too slow for auto-naming timeout",
 )
 def test_auto_naming_meaningful_content(event_listener, wait_for_event):
     """Test that auto-naming generates contextually relevant names."""
@@ -163,7 +173,67 @@ def test_auto_naming_meaningful_content(event_listener, wait_for_event):
         "web",
     ]
     has_relevant_content = any(keyword in name for keyword in relevant_keywords)
-    assert has_relevant_content, f"Generated name '{chat_config.name}' doesn't seem contextually relevant. Expected keywords: {relevant_keywords}"
+    assert has_relevant_content, (
+        f"Generated name '{chat_config.name}' doesn't seem contextually relevant. Expected keywords: {relevant_keywords}"
+    )
+
+
+# Unit tests for try_auto_name
+def test_try_auto_name_skips_when_name_set(tmp_path):
+    """Test that try_auto_name returns None when config already has a name."""
+    from gptme.config import ChatConfig
+    from gptme.message import Message
+    from gptme.util.auto_naming import try_auto_name
+
+    config = ChatConfig(_logdir=tmp_path)
+    config.name = "Existing Name"
+
+    messages = [
+        Message("user", "Help me debug a Python script"),
+        Message("assistant", "Sure, I can help with that. What's the error?"),
+    ]
+
+    result = try_auto_name(config, messages, "test/model")
+    assert result is None
+    assert config.name == "Existing Name"
+
+
+def test_try_auto_name_skips_when_no_assistant_msgs(tmp_path):
+    """Test that try_auto_name returns None when no assistant messages exist."""
+    from gptme.config import ChatConfig
+    from gptme.message import Message
+    from gptme.util.auto_naming import try_auto_name
+
+    config = ChatConfig(_logdir=tmp_path)
+
+    messages = [Message("user", "Hello")]
+
+    result = try_auto_name(config, messages, "test/model")
+    assert result is None
+    assert config.name is None
+
+
+def test_try_auto_name_skips_when_too_many_assistant_msgs(tmp_path):
+    """Test that try_auto_name returns None after max_assistant_msgs is exceeded."""
+    from gptme.config import ChatConfig
+    from gptme.message import Message
+    from gptme.util.auto_naming import try_auto_name
+
+    config = ChatConfig(_logdir=tmp_path)
+
+    messages = [
+        Message("user", "msg1"),
+        Message("assistant", "reply1"),
+        Message("user", "msg2"),
+        Message("assistant", "reply2"),
+        Message("user", "msg3"),
+        Message("assistant", "reply3"),
+        Message("user", "msg4"),
+        Message("assistant", "reply4"),  # 4 assistant msgs > default max of 3
+    ]
+
+    result = try_auto_name(config, messages, "test/model")
+    assert result is None
 
 
 # Unit tests for validation function

@@ -9,7 +9,7 @@ from gptme.config import set_config_from_workspace
 
 from ..init import init, init_logging
 from ..telemetry import init_telemetry, shutdown_telemetry
-from .api import create_app
+from .app import create_app
 from .auth import get_server_token, init_auth
 from .constants import DEFAULT_FALLBACK_MODEL
 
@@ -73,17 +73,15 @@ def serve(
 
     # Try to initialize with provided/configured model
     # If init fails due to missing model/API keys, use fallback
-    from gptme.server.exceptions import ModelConfigurationError
-
     try:
         init(
             model,
             interactive=False,
             tool_allowlist=None if tools is None else tools.split(","),
             tool_format="markdown",
+            server=True,
         )
     except (ValueError, KeyError) as e:
-        # Detect model configuration errors and wrap in custom exception
         error_msg = str(e)
         is_config_error = (
             "No API key found" in error_msg
@@ -91,27 +89,21 @@ def serve(
             or "not set in env or config" in error_msg
         )
 
-        if is_config_error:
-            # Wrap in custom exception for type-based error handling
-            raise ModelConfigurationError(
-                f"Model configuration missing: {error_msg}"
-            ) from e
-        else:
-            # Re-raise other exceptions unchanged
+        if not is_config_error:
             raise
-    except ModelConfigurationError:
+
         # Handle model configuration errors with fallback
         fallback_model = DEFAULT_FALLBACK_MODEL
         logger.warning(
             f"No default model configured. Using fallback: {fallback_model}. "
             "Set MODEL environment variable or use --model flag for explicit configuration."
         )
-        # Retry init with fallback model
         init(
             fallback_model,
             interactive=False,
             tool_allowlist=None if tools is None else tools.split(","),
             tool_format="markdown",
+            server=True,
         )
 
     # Initialize telemetry (server is API/WebUI driven, not CLI interactive)

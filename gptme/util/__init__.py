@@ -7,12 +7,11 @@ import logging
 import re
 import shutil
 import textwrap
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
-from rich import print
 from rich.console import Console
 
 EMOJI_WARN = "⚠️"
@@ -23,33 +22,61 @@ console = Console(log_path=False)
 
 def epoch_to_age(epoch, incl_date=False):
     # takes epoch and returns "x minutes ago", "3 hours ago", "yesterday", etc.
-    age = datetime.now() - datetime.fromtimestamp(epoch)
+    age = datetime.now(tz=timezone.utc) - datetime.fromtimestamp(epoch, tz=timezone.utc)
     if age < timedelta(minutes=1):
         return "just now"
-    elif age < timedelta(hours=1):
+    if age < timedelta(hours=1):
         return f"{age.seconds // 60} minutes ago"
-    elif age < timedelta(days=1):
+    if age < timedelta(days=1):
         return f"{age.seconds // 3600} hours ago"
-    elif age < timedelta(days=2):
+    if age < timedelta(days=2):
         return "yesterday"
-    else:
-        return f"{age.days} days ago" + (
-            " ({datetime.fromtimestamp(epoch).strftime('%Y-%m-%d')})"
-            if incl_date
-            else ""
-        )
+    return f"{age.days} days ago" + (
+        " ({datetime.fromtimestamp(epoch).strftime('%Y-%m-%d')})" if incl_date else ""
+    )
 
 
-def clean_example(s: str, strict=False, quote=False) -> str:
+def clean_example(s: str, strict=False, quote=False, strip_system=False) -> str:
     orig = s
     s = re.sub(
         r"(^|\n)([>] )?([A-Za-z]+):",
         rf"\1{'> ' if quote else ''}\3:",
         s,
     )
+    if strip_system:
+        s = _strip_system_blocks(s)
     if strict:
         assert s != orig, "Couldn't find a message"
     return s
+
+
+def _strip_system_blocks(s: str) -> str:
+    """Remove System message blocks from example text.
+
+    Filters out lines starting with 'System:' and all subsequent lines
+    until the next role header or blank line. Codeblock state is NOT
+    tracked inside skipped content to avoid state desynchronization.
+    """
+    lines = s.split("\n")
+    filtered = []
+    skipping = False
+    for line in lines:
+        if skipping:
+            # Stop skipping at blank line or new non-System role header
+            if not line.strip() or (
+                re.match(r"^(> )?[A-Za-z]+:", line)
+                and not re.match(r"^(> )?System:", line)
+            ):
+                skipping = False
+                if line.strip():
+                    filtered.append(line)
+            # else: skip the line (including consecutive System headers)
+            continue
+        if re.match(r"^(> )?System:", line):
+            skipping = True
+            continue
+        filtered.append(line)
+    return "\n".join(filtered)
 
 
 def example_to_xml(s: str) -> str:
@@ -58,7 +85,6 @@ def example_to_xml(s: str) -> str:
     """
     s = clean_example(s)
     orig = s
-    print(f"After clean_example: {s!r}")  # Debug print
 
     lines = s.split("\n")
     result = []
@@ -103,7 +129,6 @@ def example_to_xml(s: str) -> str:
         )
 
     s = "\n".join(result).strip()
-    print(f"Final result: {s!r}")  # Debug print
     assert s != orig, "Couldn't find place to put start of directive"
     return s
 

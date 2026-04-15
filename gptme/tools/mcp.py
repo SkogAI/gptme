@@ -17,24 +17,31 @@ Once loaded, server tools are available as ``<server-name>.<tool-name>``.
 import json
 from collections.abc import Generator
 from logging import getLogger
+from typing import cast
 
+from ..hooks import confirm
 from ..message import Message
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolFormat,
     ToolSpec,
     ToolUse,
 )
 from .mcp_adapter import (
+    add_mcp_root,
+    disable_mcp_elicitation,
+    enable_mcp_elicitation,
+    get_mcp_elicitation_status,
     get_mcp_prompt,
     get_mcp_server_info,
     list_loaded_servers,
     list_mcp_prompts,
     list_mcp_resource_templates,
     list_mcp_resources,
+    list_mcp_roots,
     load_mcp_server,
     read_mcp_resource,
+    remove_mcp_root,
     search_mcp_servers,
     unload_mcp_server,
 )
@@ -75,7 +82,6 @@ def execute_mcp(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Execute MCP management commands."""
     if not code:
@@ -135,7 +141,7 @@ def execute_mcp(
                 return
 
             name = parts[1]
-            config_override = command_args if command_args else None
+            config_override = command_args or None
 
             # Ask for confirmation
             if not confirm(f"Load MCP server '{name}'?"):
@@ -235,6 +241,67 @@ def execute_mcp(
             result = get_mcp_prompt(server_name, prompt_name, arguments)
             yield Message("system", result)
 
+        elif command.startswith("roots list"):
+            # roots list [server-name]
+            parts = command.split()
+            roots_server_name = parts[2] if len(parts) > 2 else None
+            result = list_mcp_roots(roots_server_name)
+            yield Message("system", result)
+
+        elif command.startswith("roots add"):
+            # roots add <server-name> <uri> [name]
+            parts = command.split(maxsplit=4)
+            if len(parts) < 4:
+                yield Message("system", "Usage: roots add <server-name> <uri> [name]")
+                return
+
+            add_server_name = parts[2]
+            add_uri = parts[3]
+            add_name = parts[4] if len(parts) > 4 else None
+            result = add_mcp_root(add_server_name, add_uri, add_name)
+            yield Message("system", result)
+
+        elif command.startswith("roots remove"):
+            # roots remove <server-name> <uri>
+            parts = command.split()
+            if len(parts) < 4:
+                yield Message("system", "Usage: roots remove <server-name> <uri>")
+                return
+
+            remove_server_name = parts[2]
+            remove_uri = parts[3]
+            result = remove_mcp_root(remove_server_name, remove_uri)
+            yield Message("system", result)
+
+        elif command.startswith("elicitation enable"):
+            # elicitation enable <server-name>
+            parts = command.split()
+            if len(parts) < 3:
+                yield Message("system", "Usage: elicitation enable <server-name>")
+                return
+
+            elicit_server = parts[2]
+            result = enable_mcp_elicitation(elicit_server)
+            yield Message("system", result)
+
+        elif command.startswith("elicitation disable"):
+            # elicitation disable <server-name>
+            parts = command.split()
+            if len(parts) < 3:
+                yield Message("system", "Usage: elicitation disable <server-name>")
+                return
+
+            elicit_server = parts[2]
+            result = disable_mcp_elicitation(elicit_server)
+            yield Message("system", result)
+
+        elif command.startswith("elicitation status"):
+            # elicitation status [server-name]
+            parts = command.split()
+            status_server: str | None = parts[2] if len(parts) > 2 else None
+            result = get_mcp_elicitation_status(status_server)
+            yield Message("system", result)
+
         else:
             yield Message(
                 "system",
@@ -249,7 +316,13 @@ def execute_mcp(
                 "  resources read <server> <uri> - Read a resource\n"
                 "  templates list <server> - List resource templates\n"
                 "  prompts list <server> - List prompts from a server\n"
-                "  prompts get <server> <name> [args] - Get a prompt",
+                "  prompts get <server> <name> [args] - Get a prompt\n"
+                "  roots list [server] - List configured roots\n"
+                "  roots add <server> <uri> [name] - Add a root\n"
+                "  roots remove <server> <uri> - Remove a root\n"
+                "  elicitation enable <server> - Enable elicitation for a server\n"
+                "  elicitation disable <server> - Disable elicitation\n"
+                "  elicitation status [server] - Show elicitation status",
             )
 
     except Exception as e:
@@ -260,8 +333,7 @@ def execute_mcp(
 def examples(tool_format: str) -> str:
     """Return example usage."""
 
-    # Cast to ToolFormat type
-    fmt: ToolFormat = tool_format  # type: ignore
+    fmt = cast(ToolFormat, tool_format)
     return "\n\n".join(
         [
             ToolUse("mcp", [], "search sqlite").to_output(fmt),
@@ -280,6 +352,13 @@ def examples(tool_format: str) -> str:
             ToolUse("mcp", [], "prompts list sqlite").to_output(fmt),
             ToolUse(
                 "mcp", [], 'prompts get sqlite create-query {"table": "users"}'
+            ).to_output(fmt),
+            ToolUse("mcp", [], "roots list").to_output(fmt),
+            ToolUse(
+                "mcp", [], "roots add filesystem file:///home/user/project Project"
+            ).to_output(fmt),
+            ToolUse(
+                "mcp", [], "roots remove filesystem file:///home/user/project"
             ).to_output(fmt),
         ]
     )
@@ -302,11 +381,10 @@ def _cmd_mcp_info(name: str) -> str:
 
     if local_info:
         return local_info
-    else:
-        result = get_mcp_server_info(name)
-        if "not found" in result.lower():
-            result = f"Server '{name}' not configured locally.\n\n" + result
-        return result
+    result = get_mcp_server_info(name)
+    if "not found" in result.lower():
+        result = f"Server '{name}' not configured locally.\n\n" + result
+    return result
 
 
 def _cmd_mcp_list() -> str:
@@ -381,24 +459,57 @@ def _cmd_mcp_prompts_get(
     return get_mcp_prompt(server_name, prompt_name, arguments)
 
 
+def _cmd_mcp_roots_list(server_name: str | None = None) -> str:
+    """List configured roots for MCP servers.
+
+    Args:
+        server_name: Optional server name to list roots for
+    """
+    return list_mcp_roots(server_name)
+
+
+def _cmd_mcp_roots_add(server_name: str, uri: str, name: str | None = None) -> str:
+    """Add a root to an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+        uri: URI of the root (e.g., file:///path/to/project)
+        name: Optional human-readable name
+    """
+    return add_mcp_root(server_name, uri, name)
+
+
+def _cmd_mcp_roots_remove(server_name: str, uri: str) -> str:
+    """Remove a root from an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+        uri: URI of the root to remove
+    """
+    return remove_mcp_root(server_name, uri)
+
+
 tool = ToolSpec(
     name="mcp",
     desc="Search, discover, and manage MCP servers",
     instructions="""
-This tool allows you to search for MCP servers in various registries and dynamically load/unload them.
+Search, load, and manage MCP servers. Loaded server tools available as `<server-name>.<tool-name>`. Search queries the Official MCP Registry (registry.modelcontextprotocol.io).
 
-Once loaded, server tools are available as `<server-name>.<tool-name>`.
+**Resource Commands:**
+- `resources list <server>` - List available resources
+- `resources read <server> <uri>` - Read a resource by URI
+- `templates list <server>` - List resource templates
 
-Search queries the Official MCP Registry (registry.modelcontextprotocol.io).
+**Prompt Commands:**
+- `prompts list <server>` - List available prompts
+- `prompts get <server> <name> [args]` - Get a prompt with optional args
 
-**Resource Commands** (for servers that expose resources):
-- `resources list <server>` - List available resources from a loaded server
-- `resources read <server> <uri>` - Read a specific resource by URI
-- `templates list <server>` - List resource templates (parameterized resources)
+**Roots Commands** (operational boundaries):
+- `roots list [server]` - List configured roots
+- `roots add <server> <uri> [name]` - Add a root URI
+- `roots remove <server> <uri>` - Remove a root
 
-**Prompt Commands** (for servers that expose prompts):
-- `prompts list <server>` - List available prompts from a loaded server
-- `prompts get <server> <name> [args]` - Get a specific prompt, optionally with JSON arguments
+Roots are advisory URIs (file paths, HTTP URLs) defining workspace boundaries.
 """.strip(),
     examples=examples,
     execute=execute_mcp,
@@ -414,6 +525,9 @@ Search queries the Official MCP Registry (registry.modelcontextprotocol.io).
         "mcp templates list": _cmd_mcp_templates_list,
         "mcp prompts list": _cmd_mcp_prompts_list,
         "mcp prompts get": _cmd_mcp_prompts_get,
+        "mcp roots list": _cmd_mcp_roots_list,
+        "mcp roots add": _cmd_mcp_roots_add,
+        "mcp roots remove": _cmd_mcp_roots_remove,
     },
     parameters=[
         Parameter(

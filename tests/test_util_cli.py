@@ -2,12 +2,14 @@
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
+from gptme.cli.util import main
 from gptme.logmanager import ConversationMeta
-from gptme.util.cli import main
+from gptme.profiles import Profile
 
 
 def test_tokens_count(tmp_path):
@@ -45,7 +47,9 @@ def test_chats_list(tmp_path, mocker):
 
     # Mock both the logs directory and the conversation listing
     mocker.patch("gptme.dirs.get_logs_dir", return_value=str(logs_dir))
-    mocker.patch("gptme.logmanager.get_user_conversations", return_value=[])
+    mocker.patch(
+        "gptme.logmanager.conversations.get_user_conversations", return_value=[]
+    )
 
     # Test empty list (should work now since we're using our empty logs_dir)
     result = runner.invoke(main, ["chats", "list"])
@@ -90,7 +94,10 @@ def test_chats_list(tmp_path, mocker):
     )
 
     # Update the mock to return our test conversations
-    mocker.patch("gptme.logmanager.get_user_conversations", return_value=[conv1, conv2])
+    mocker.patch(
+        "gptme.logmanager.conversations.get_user_conversations",
+        return_value=[conv1, conv2],
+    )
 
     # Test with conversations
     result = runner.invoke(main, ["chats", "list"])
@@ -138,11 +145,13 @@ def test_context_index_and_retrieve(tmp_path):
 
 def test_tools_list():
     """Test the tools list command."""
+    import json
+
     runner = CliRunner()
 
     # Test basic list
     result = runner.invoke(main, ["tools", "list"])
-    assert "Available tools:" in result.output
+    assert "Available tools" in result.output
     assert result.exit_code == 0
 
     # Test langtags
@@ -150,19 +159,314 @@ def test_tools_list():
     assert result.exit_code == 0
     assert "language tags" in result.output.lower()
 
+    # Test JSON output
+    result = runner.invoke(main, ["tools", "list", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) > 0
+    # Check required fields (stable schema — all keys always present)
+    tool = data[0]
+    assert "name" in tool
+    assert "desc" in tool
+    assert "available" in tool
+    assert isinstance(tool["available"], bool)
+    assert "block_types" in tool
+    assert isinstance(tool["block_types"], list)
+    assert "functions" in tool
+    assert isinstance(tool["functions"], list)
+    assert "commands" in tool
+    assert isinstance(tool["commands"], list)
+    assert "is_mcp" in tool
+    assert isinstance(tool["is_mcp"], bool)
+    # Default --available filter: all tools should be available
+    assert all(t["available"] for t in data)
+
+    # Test JSON with --all (includes unavailable)
+    result = runner.invoke(main, ["tools", "list", "--all", "--json"])
+    assert result.exit_code == 0
+    data_all = json.loads(result.output)
+    assert isinstance(data_all, list)
+    assert len(data_all) >= len(data)
+
 
 def test_tools_info():
     """Test the tools info command."""
+    import json
+
     runner = CliRunner()
 
     # Test valid tool
     result = runner.invoke(main, ["tools", "info", "ipython"])
     assert result.exit_code == 0
-    assert "Tool: ipython" in result.output
-    assert "Description:" in result.output
-    assert "Instructions:" in result.output
+    assert "# ipython" in result.output
+    assert "Status:" in result.output
+    assert "## Instructions" in result.output
 
     # Test invalid tool
     result = runner.invoke(main, ["tools", "info", "nonexistent-tool"])
     assert result.exit_code != 0  # returns non-zero for not found tool
     assert "not found" in result.output
+
+    # Test JSON output (stable schema — instructions/examples always present)
+    result = runner.invoke(main, ["tools", "info", "shell", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["name"] == "shell"
+    assert data["available"] is True
+    assert "instructions" in data
+    assert isinstance(data["instructions"], str)
+    assert len(data["instructions"]) > 0
+    assert "examples" in data
+    assert isinstance(data["examples"], str)
+    assert "is_mcp" in data
+    assert isinstance(data["is_mcp"], bool)
+
+
+def test_models_list():
+    """Test the models list command."""
+    import json
+
+    runner = CliRunner()
+
+    # Test basic list
+    result = runner.invoke(main, ["models", "list"])
+    assert result.exit_code == 0
+    assert "models" in result.output.lower()
+
+    # Test simple format
+    result = runner.invoke(main, ["models", "list", "--simple"])
+    assert result.exit_code == 0
+    # Simple format should have provider/model on each line
+    lines = [line for line in result.output.strip().splitlines() if "/" in line]
+    assert len(lines) > 0
+
+    # Test JSON output
+    result = runner.invoke(main, ["models", "list", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) > 0
+    # Check required fields in first model
+    model = data[0]
+    assert "provider" in model
+    assert "model" in model
+    assert "full" in model
+    assert "context" in model
+    assert isinstance(model["context"], int)
+
+    # Test JSON with provider filter
+    result = runner.invoke(
+        main, ["models", "list", "--json", "--provider", "anthropic"]
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert all(m["provider"] == "anthropic" for m in data)
+    assert len(data) > 0
+
+    # Test JSON with vision filter
+    result = runner.invoke(main, ["models", "list", "--json", "--vision"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert all(m["supports_vision"] for m in data)
+
+    # Test JSON with reasoning filter
+    result = runner.invoke(main, ["models", "list", "--json", "--reasoning"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert all(m["supports_reasoning"] for m in data)
+
+
+def test_models_list_json_suppresses_provider_noise(mocker):
+    """JSON output should stay parseable even if provider discovery logs to stdio."""
+    import json
+
+    runner = CliRunner()
+
+    def noisy_get_model_list(**_kwargs):
+        print("[12:34:56] noisy provider warning")
+        return [
+            SimpleNamespace(
+                provider="openai",
+                provider_key="openai",
+                model="gpt-5",
+                full="openai/gpt-5",
+                context=400000,
+                max_output=None,
+                supports_streaming=True,
+                supports_vision=True,
+                supports_reasoning=True,
+                supports_parallel_tool_calls=True,
+                price_input=None,
+                price_output=None,
+                knowledge_cutoff=None,
+                deprecated=False,
+            )
+        ]
+
+    mocker.patch(
+        "gptme.cli.util.get_model_list",
+        side_effect=noisy_get_model_list,
+    )
+
+    result = runner.invoke(main, ["models", "list", "--json"])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed[0]["full"] == "openai/gpt-5"
+
+
+def test_models_list_json_available_keeps_plugin_models(mocker):
+    """Plugin models should pass the CLI --json --available filter."""
+    import json
+
+    runner = CliRunner()
+    mocker.patch(
+        "gptme.cli.util.get_model_list",
+        return_value=[
+            SimpleNamespace(
+                provider="unknown",
+                provider_key="minimax",
+                model="minimax/abab6.5s-chat",
+                full="minimax/abab6.5s-chat",
+                context=245760,
+                max_output=None,
+                supports_streaming=True,
+                supports_vision=False,
+                supports_reasoning=False,
+                supports_parallel_tool_calls=False,
+                price_input=0,
+                price_output=0,
+                knowledge_cutoff=None,
+                deprecated=False,
+            )
+        ],
+    )
+    mocker.patch(
+        "gptme.llm.list_available_providers",
+        return_value=[("minimax", True)],
+    )
+
+    result = runner.invoke(main, ["models", "list", "--json", "--available"])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert [model["model"] for model in parsed] == ["minimax/abab6.5s-chat"]
+
+
+def test_models_info():
+    """Test the models info command."""
+    import json
+
+    runner = CliRunner()
+
+    # Test basic info
+    result = runner.invoke(main, ["models", "info", "anthropic/claude-sonnet-4-6"])
+    assert result.exit_code == 0
+    assert "claude-sonnet-4-6" in result.output
+    assert "anthropic" in result.output
+
+    # Test JSON output
+    result = runner.invoke(
+        main, ["models", "info", "anthropic/claude-sonnet-4-6", "--json"]
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["provider"] == "anthropic"
+    assert data["model"] == "claude-sonnet-4-6"
+    assert data["full"] == "anthropic/claude-sonnet-4-6"
+    assert isinstance(data["context"], int)
+    assert data["supports_vision"] is True
+    assert "price_input" in data
+    assert "price_output" in data
+
+    # Test unknown model (falls back to defaults — exit code 0)
+    result = runner.invoke(main, ["models", "info", "nonexistent/model"])
+    assert result.exit_code == 0
+    assert "nonexistent" in result.output
+
+
+def test_profile_validate_success(mocker):
+    """Test profile validate command when all profiles are valid."""
+    runner = CliRunner()
+
+    mocker.patch(
+        "gptme.profiles.list_profiles",
+        return_value={
+            "default": Profile(name="default", description="Default", tools=None),
+            "reader": Profile(name="reader", description="Reader", tools=["read"]),
+        },
+    )
+    mocker.patch(
+        "gptme.tools.get_available_tools",
+        return_value=[SimpleNamespace(name="read"), SimpleNamespace(name="shell")],
+    )
+
+    result = runner.invoke(main, ["profile", "validate"])
+
+    assert result.exit_code == 0
+    assert "Profile 'default': OK (all tools)" in result.output
+    assert "Profile 'reader': OK (1 tools)" in result.output
+    assert "All profiles valid." in result.output
+
+
+def test_profile_validate_failure(mocker):
+    """Test profile validate command when profiles contain unknown tools."""
+    runner = CliRunner()
+
+    mocker.patch(
+        "gptme.profiles.list_profiles",
+        return_value={
+            "broken": Profile(
+                name="broken", description="Broken", tools=["read", "reead"]
+            ),
+        },
+    )
+    mocker.patch(
+        "gptme.tools.get_available_tools",
+        return_value=[SimpleNamespace(name="read"), SimpleNamespace(name="shell")],
+    )
+
+    result = runner.invoke(main, ["profile", "validate"])
+
+    assert result.exit_code == 1
+    assert "Profile 'broken': unknown tools: reead" in result.output
+    assert "Available tools: read, shell" in result.output
+
+
+def test_profile_list_shows_empty_tools_as_empty_not_all(monkeypatch):
+    """Profile with tools=[] should not be displayed as "all" in profile list."""
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        "gptme.profiles.list_profiles",
+        lambda: {
+            "no-tools": Profile(name="no-tools", description="No tools", tools=[]),
+        },
+    )
+
+    result = runner.invoke(main, ["profile", "list"])
+
+    assert result.exit_code == 0
+    assert "no-tools" in result.output
+    assert "No tools" in result.output
+    assert "all" not in result.output.lower()
+
+
+def test_profile_show_shows_empty_tools_as_empty_not_all_tools(monkeypatch):
+    """Profile with tools=[] should not be displayed as "all tools" in profile show."""
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        "gptme.profiles.get_profile",
+        lambda _name: Profile(name="no-tools", description="No tools", tools=[]),
+    )
+
+    result = runner.invoke(main, ["profile", "show", "no-tools"])
+
+    assert result.exit_code == 0
+    assert "Name:" in result.output
+    assert "no-tools" in result.output
+    assert "Tools:" in result.output
+    assert "all tools" not in result.output.lower()

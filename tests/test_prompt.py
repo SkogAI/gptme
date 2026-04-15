@@ -7,6 +7,7 @@ from pygments.token import Name, Text
 from gptme.util.prompt import (
     PathLexer,
     check_cwd,
+    clear_path_cache,
     get_input,
     is_valid_path,
 )
@@ -57,8 +58,7 @@ def test_is_valid_path(test_dir, monkeypatch):
 # Test cases for path lexer
 PATH_LEXER_CASES = [
     pytest.param("Check {}/file.txt exists", Name.Variable, id="absolute_path"),
-    # FIXME
-    # pytest.param("Look at file.txt here", Name.Variable, id="simple_relative_path"),
+    pytest.param("Look at file.txt here", Name.Variable, id="simple_relative_path"),
     pytest.param("Check ./file.txt", Name.Variable, id="explicit_relative_path"),
     pytest.param("Go to ../other/path", Text, id="nonexistent_path"),
     pytest.param(
@@ -71,22 +71,25 @@ PATH_LEXER_CASES = [
 ]
 
 
-@pytest.mark.parametrize("text_template,expected_token", PATH_LEXER_CASES)
+@pytest.mark.parametrize(("text_template", "expected_token"), PATH_LEXER_CASES)
 def test_path_lexer(test_dir, text_template, expected_token, monkeypatch):
     """Test path highlighting in the lexer."""
     lexer = PathLexer()
     monkeypatch.chdir(test_dir)
+    # Clear stale LRU cache so simple filename lookups use the new cwd
+    clear_path_cache()
 
     # Format the text with test_dir if needed
     text = text_template.format(test_dir)
 
     tokens = list(lexer.get_tokens(text))
-    # Find the path-like segment and check its token
+    # Find the path-like segment and check its token.
+    # Match on "/" (absolute/relative paths) or "." (simple filenames like "file.txt").
     path_token = next(
         (
             token
-            for token, text in tokens
-            if ("/" in text) and (token in (Name.Variable, Text))
+            for token, value in tokens
+            if ("/" in value or "." in value) and (token in (Name.Variable, Text))
         ),
         None,
     )
@@ -179,14 +182,14 @@ def test_get_input_cache_clearing():
         # Second call in same directory (within interval)
         get_input("prompt> ")
         cache_info2 = is_valid_path.cache_info()
-        assert (
-            cache_info2.currsize == cache_info1.currsize
-        ), "Cache should not be cleared in same directory"
+        assert cache_info2.currsize == cache_info1.currsize, (
+            "Cache should not be cleared in same directory"
+        )
 
         # Call in different directory (after interval)
         mock_getcwd.return_value = "/dir2"
         get_input("prompt> ")
         cache_info3 = is_valid_path.cache_info()
-        assert (
-            cache_info3.currsize == 0
-        ), "Cache should be cleared after directory change"
+        assert cache_info3.currsize == 0, (
+            "Cache should be cleared after directory change"
+        )

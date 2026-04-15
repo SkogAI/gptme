@@ -39,6 +39,16 @@ class GptmeApiClient:
         if auth_token:
             self.session.headers["Authorization"] = f"Bearer {auth_token}"
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        """Close the underlying HTTP session."""
+        self.session.close()
+
     def create_session(self, conversation_id: str) -> str:
         """Create a new session for conversation via events endpoint.
 
@@ -64,7 +74,11 @@ class GptmeApiClient:
             # Read first event which contains session_id
             for line in response.iter_lines():
                 if line and line.startswith(b"data:"):
-                    data = json.loads(line[5:].strip())
+                    try:
+                        data = json.loads(line[5:].strip())
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse SSE event: {e}")
+                        continue
                     if data.get("type") == "connected":
                         session_id = data.get("session_id")
                         if session_id is None:
@@ -263,7 +277,7 @@ class GptmeApiClient:
                 if event.type == "generation_complete":
                     logger.info("Generation complete - success")
                     return (True, None)
-                elif event.type == "error":
+                if event.type == "error":
                     error_msg = event.data.get("error", "Unknown error")
                     logger.error(f"Conversation error: {error_msg}")
                     return (False, error_msg)

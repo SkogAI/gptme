@@ -12,6 +12,7 @@ from gptme.config import (
     Config,
     MCPConfig,
     ProjectConfig,
+    UserIdentityConfig,
     get_config,
     load_user_config,
     setup_config_from_cli,
@@ -173,6 +174,14 @@ args = ["oura-mcp-server"]
 [rag]
 enabled = true
 
+[agent]
+name = "TestBot"
+avatar = "assets/avatar.png"
+
+[agent.urls]
+dashboard = "https://testbot.example.com/dashboard/"
+repo = "https://github.com/testorg/testbot"
+
 """
 
 project_config_json = """
@@ -201,6 +210,14 @@ project_config_json = """
                 "args": ["oura-mcp-server"]
             }
         ]
+    },
+    "agent": {
+        "name": "TestBot",
+        "avatar": "assets/avatar.png",
+        "urls": {
+            "dashboard": "https://testbot.example.com/dashboard/",
+            "repo": "https://github.com/testorg/testbot"
+        }
     }
 }
 """
@@ -211,168 +228,152 @@ def test_get_config():
     assert config
 
 
-def test_env_vars_loaded_in_correct_priority(monkeypatch):
-    temp_dir = tempfile.gettempdir()
-    temp_user_config = os.path.join(temp_dir, "config.toml")
-    temp_project_config = os.path.join(temp_dir, "gptme.toml")
+def test_env_vars_loaded_in_correct_priority(monkeypatch, tmp_path):
+    temp_user_config = str(tmp_path / "config.toml")
+    temp_project_config = str(tmp_path / "gptme.toml")
 
-    try:
-        # Create a temporary user config file with env vars and check that they are loaded
-        with open(temp_user_config, "w") as temp_file:
-            temp_file.write(default_user_config)
-            temp_file.write('TEST_KEY = "file_test_key"\nANOTHER_KEY = "file_value"')
-            temp_file.flush()
-        config = Config(user=load_user_config(temp_user_config))
-        assert config.get_env("TEST_KEY") == "file_test_key"
-        assert config.get_env("ANOTHER_KEY") == "file_value"
+    # Create a temporary user config file with env vars and check that they are loaded
+    with open(temp_user_config, "w") as temp_file:
+        temp_file.write(default_user_config)
+        temp_file.write('TEST_KEY = "file_test_key"\nANOTHER_KEY = "file_value"')
+        temp_file.flush()
+    config = Config(user=load_user_config(temp_user_config))
+    assert config.get_env("TEST_KEY") == "file_test_key"
+    assert config.get_env("ANOTHER_KEY") == "file_value"
 
-        # Check that the env vars are overridden by the project config
-        project_config = """[env]\nTEST_KEY = \"project_test_key\"\nANOTHER_KEY = \"project_value\""""
-        with open(temp_project_config, "w") as temp_file:
-            temp_file.write(project_config)
-            temp_file.flush()
-        config = Config.from_workspace(Path(temp_dir))
-        config = replace(config, user=load_user_config(temp_user_config))
-        assert config.get_env("TEST_KEY") == "project_test_key"
-        assert config.get_env("ANOTHER_KEY") == "project_value"
+    # Check that the env vars are overridden by the project config
+    project_config = (
+        """[env]\nTEST_KEY = \"project_test_key\"\nANOTHER_KEY = \"project_value\""""
+    )
+    with open(temp_project_config, "w") as temp_file:
+        temp_file.write(project_config)
+        temp_file.flush()
+    config = Config.from_workspace(tmp_path)
+    config = replace(config, user=load_user_config(temp_user_config))
+    assert config.get_env("TEST_KEY") == "project_test_key"
+    assert config.get_env("ANOTHER_KEY") == "project_value"
 
-        # Check that the env vars are overridden by the environment
-        monkeypatch.setenv("ANOTHER_KEY", "env_value")
-        monkeypatch.setenv("TEST_KEY", "env_test_key")
-        assert config.get_env("TEST_KEY") == "env_test_key"
-        assert config.get_env("ANOTHER_KEY") == "env_value"
-
-    finally:
-        # Delete the temporary files
-        if os.path.exists(temp_user_config):
-            os.remove(temp_user_config)
-        if os.path.exists(temp_project_config):
-            os.remove(temp_project_config)
+    # Check that the env vars are overridden by the environment
+    monkeypatch.setenv("ANOTHER_KEY", "env_value")
+    monkeypatch.setenv("TEST_KEY", "env_test_key")
+    assert config.get_env("TEST_KEY") == "env_test_key"
+    assert config.get_env("ANOTHER_KEY") == "env_value"
 
 
-def test_mcp_config_loaded_in_correct_priority():
-    temp_dir = tempfile.gettempdir()
-    temp_user_config = os.path.join(temp_dir, "config.toml")
-    temp_project_config = os.path.join(temp_dir, "gptme.toml")
+def test_mcp_config_loaded_in_correct_priority(tmp_path):
+    temp_user_config = str(tmp_path / "config.toml")
+    temp_project_config = str(tmp_path / "gptme.toml")
 
-    try:
-        # Create a temporary user config file with MCP config
-        with open(temp_user_config, "w") as temp_file:
-            temp_file.write(default_user_config)
-            temp_file.write("\n" + default_mcp_config)
-            temp_file.write("\n" + test_mcp_server_1_enabled)
-            temp_file.write("\n" + test_mcp_server_2_enabled)
-            temp_file.flush()
-        config = Config(user=load_user_config(temp_user_config))
-        assert config.mcp.enabled is True
-        assert config.mcp.auto_start is True
-        assert len(config.mcp.servers) == 2
-        my_server = next(s for s in config.mcp.servers if s.name == "my-server")
-        assert my_server.name == "my-server"
-        assert my_server.enabled is True
-        assert my_server.command == "server-command"
-        assert my_server.args == ["--arg1", "--arg2"]
-        assert my_server.env == {"API_KEY": "your-key"}
-        my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
-        assert my_server_2.name == "my-server-2"
-        assert my_server_2.enabled is True
-        assert my_server_2.command == "server-command-2"
-        assert my_server_2.args == ["--arg2", "--arg3"]
-        assert my_server_2.env == {"API_KEY": "your-key-2"}
+    # Create a temporary user config file with MCP config
+    with open(temp_user_config, "w") as temp_file:
+        temp_file.write(default_user_config)
+        temp_file.write("\n" + default_mcp_config)
+        temp_file.write("\n" + test_mcp_server_1_enabled)
+        temp_file.write("\n" + test_mcp_server_2_enabled)
+        temp_file.flush()
+    config = Config(user=load_user_config(temp_user_config))
+    assert config.mcp.enabled is True
+    assert config.mcp.auto_start is True
+    assert len(config.mcp.servers) == 2
+    my_server = next(s for s in config.mcp.servers if s.name == "my-server")
+    assert my_server.name == "my-server"
+    assert my_server.enabled is True
+    assert my_server.command == "server-command"
+    assert my_server.args == ["--arg1", "--arg2"]
+    assert my_server.env == {"API_KEY": "your-key"}
+    my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
+    assert my_server_2.name == "my-server-2"
+    assert my_server_2.enabled is True
+    assert my_server_2.command == "server-command-2"
+    assert my_server_2.args == ["--arg2", "--arg3"]
+    assert my_server_2.env == {"API_KEY": "your-key-2"}
 
-        # Check that the MCP config is overridden by the project config
-        project_config = """[mcp]\nenabled = false\nauto_start = false"""
-        with open(temp_project_config, "w") as temp_file:
-            temp_file.write(project_config)
-            temp_file.write("\n" + test_mcp_server_1_disabled)
-            temp_file.write("\n" + test_mcp_server_3)
-            temp_file.flush()
-        config = Config.from_workspace(Path(temp_dir))
-        config = replace(config, user=load_user_config(temp_user_config))
+    # Check that the MCP config is overridden by the project config
+    project_config = """[mcp]\nenabled = false\nauto_start = false"""
+    with open(temp_project_config, "w") as temp_file:
+        temp_file.write(project_config)
+        temp_file.write("\n" + test_mcp_server_1_disabled)
+        temp_file.write("\n" + test_mcp_server_3)
+        temp_file.flush()
+    config = Config.from_workspace(tmp_path)
+    config = replace(config, user=load_user_config(temp_user_config))
 
-        # Check that the MCP config is overridden by the project config
-        assert config.mcp.enabled is False
-        assert config.mcp.auto_start is False
+    # Check that the MCP config is overridden by the project config
+    assert config.mcp.enabled is False
+    assert config.mcp.auto_start is False
 
-        # Check that the MCP servers are merged from the user and project configs
-        # Should have 3 servers:
-        # - my-server (enabled in user config, disabled in project config)
-        # - my-server-2 (added in user config, not in project config)
-        # - my-server-3 (added in project config, not in user config)
-        assert len(config.mcp.servers) == 3
-        my_server = next(s for s in config.mcp.servers if s.name == "my-server")
-        assert my_server.name == "my-server"
-        assert my_server.enabled is False
-        my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
-        assert my_server_2.name == "my-server-2"
-        assert my_server_2.enabled is True
-        assert my_server_2.command == "server-command-2"
-        assert my_server_2.args == ["--arg2", "--arg3"]
-        assert my_server_2.env == {"API_KEY": "your-key-2"}
-        my_server_3 = next(s for s in config.mcp.servers if s.name == "my-server-3")
-        assert my_server_3.name == "my-server-3"
-        assert my_server_3.enabled is True
-        assert my_server_3.command == "server-command-3"
-        assert my_server_3.args == ["--arg3", "--arg4"]
-        assert my_server_3.env == {"API_KEY": "your-key-3"}
+    # Check that the MCP servers are merged from the user and project configs
+    # Should have 3 servers:
+    # - my-server (enabled in user config, disabled in project config)
+    # - my-server-2 (added in user config, not in project config)
+    # - my-server-3 (added in project config, not in user config)
+    assert len(config.mcp.servers) == 3
+    my_server = next(s for s in config.mcp.servers if s.name == "my-server")
+    assert my_server.name == "my-server"
+    assert my_server.enabled is False
+    my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
+    assert my_server_2.name == "my-server-2"
+    assert my_server_2.enabled is True
+    assert my_server_2.command == "server-command-2"
+    assert my_server_2.args == ["--arg2", "--arg3"]
+    assert my_server_2.env == {"API_KEY": "your-key-2"}
+    my_server_3 = next(s for s in config.mcp.servers if s.name == "my-server-3")
+    assert my_server_3.name == "my-server-3"
+    assert my_server_3.enabled is True
+    assert my_server_3.command == "server-command-3"
+    assert my_server_3.args == ["--arg3", "--arg4"]
+    assert my_server_3.env == {"API_KEY": "your-key-3"}
 
-        # Load chat config
-        chat_config_toml_str = """
-            [chat]
-            model = "gpt-4o"
-            tools = ["tool1", "tool2"]
-            tool_format = "markdown"
-            stream = true
-            interactive = true
+    # Load chat config
+    chat_config_toml_str = """
+        [chat]
+        model = "gpt-4o"
+        tools = ["tool1", "tool2"]
+        tool_format = "markdown"
+        stream = true
+        interactive = true
 
-            [mcp]
-            enabled = true
-            auto_start = true
+        [mcp]
+        enabled = true
+        auto_start = true
 
-        """
-        chat_config_toml_str += test_mcp_server_2_disabled + "\n\n" + test_mcp_server_4
-        chat_config_dict = tomlkit.loads(chat_config_toml_str)
-        chat_config = ChatConfig.from_dict(chat_config_dict.unwrap())
-        assert chat_config.mcp is not None
-        assert chat_config.mcp.enabled is True
-        assert chat_config.mcp.auto_start is True
-        assert len(chat_config.mcp.servers) == 2
+    """
+    chat_config_toml_str += test_mcp_server_2_disabled + "\n\n" + test_mcp_server_4
+    chat_config_dict = tomlkit.loads(chat_config_toml_str)
+    chat_config = ChatConfig.from_dict(chat_config_dict.unwrap())
+    assert chat_config.mcp is not None
+    assert chat_config.mcp.enabled is True
+    assert chat_config.mcp.auto_start is True
+    assert len(chat_config.mcp.servers) == 2
 
-        # Check that the MCP config is merged from the chat config, project config, and the user config
-        # Should have 4 servers:
-        # - my-server (enabled in user config, disabled in project config)
-        # - my-server-2 (added in user config, not in project config, disabled in chat config)
-        # - my-server-3 (added in project config, not in user config)
-        # - my-server-4 (added in chat config, not in user config or project config)
-        config.chat = chat_config
-        assert config.mcp.enabled is True
-        assert config.mcp.auto_start is True
-        assert len(config.mcp.servers) == 4
-        my_server = next(s for s in config.mcp.servers if s.name == "my-server")
-        assert my_server.name == "my-server"
-        assert my_server.enabled is False
-        my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
-        assert my_server_2.name == "my-server-2"
-        assert my_server_2.enabled is False
-        my_server_3 = next(s for s in config.mcp.servers if s.name == "my-server-3")
-        assert my_server_3.name == "my-server-3"
-        assert my_server_3.enabled is True
-        assert my_server_3.command == "server-command-3"
-        assert my_server_3.args == ["--arg3", "--arg4"]
-        assert my_server_3.env == {"API_KEY": "your-key-3"}
-        my_server_4 = next(s for s in config.mcp.servers if s.name == "my-server-4")
-        assert my_server_4.name == "my-server-4"
-        assert my_server_4.enabled is True
-        assert my_server_4.command == "server-command-4"
-        assert my_server_4.args == ["--arg4", "--arg5"]
-        assert my_server_4.env == {"API_KEY": "your-key-4"}
-
-    finally:
-        # Delete the temporary files
-        if os.path.exists(temp_user_config):
-            os.remove(temp_user_config)
-        if os.path.exists(temp_project_config):
-            os.remove(temp_project_config)
+    # Check that the MCP config is merged from the chat config, project config, and the user config
+    # Should have 4 servers:
+    # - my-server (enabled in user config, disabled in project config)
+    # - my-server-2 (added in user config, not in project config, disabled in chat config)
+    # - my-server-3 (added in project config, not in user config)
+    # - my-server-4 (added in chat config, not in user config or project config)
+    config.chat = chat_config
+    assert config.mcp.enabled is True
+    assert config.mcp.auto_start is True
+    assert len(config.mcp.servers) == 4
+    my_server = next(s for s in config.mcp.servers if s.name == "my-server")
+    assert my_server.name == "my-server"
+    assert my_server.enabled is False
+    my_server_2 = next(s for s in config.mcp.servers if s.name == "my-server-2")
+    assert my_server_2.name == "my-server-2"
+    assert my_server_2.enabled is False
+    my_server_3 = next(s for s in config.mcp.servers if s.name == "my-server-3")
+    assert my_server_3.name == "my-server-3"
+    assert my_server_3.enabled is True
+    assert my_server_3.command == "server-command-3"
+    assert my_server_3.args == ["--arg3", "--arg4"]
+    assert my_server_3.env == {"API_KEY": "your-key-3"}
+    my_server_4 = next(s for s in config.mcp.servers if s.name == "my-server-4")
+    assert my_server_4.name == "my-server-4"
+    assert my_server_4.enabled is True
+    assert my_server_4.command == "server-command-4"
+    assert my_server_4.args == ["--arg4", "--arg5"]
+    assert my_server_4.env == {"API_KEY": "your-key-4"}
 
 
 def test_mcp_config_loaded_from_toml():
@@ -556,6 +557,15 @@ def test_project_config_loaded_from_toml():
     assert oura_server.command == "uvx"
     assert oura_server.args == ["oura-mcp-server"]
 
+    # Agent config
+    assert config.agent is not None
+    assert config.agent.name == "TestBot"
+    assert config.agent.avatar == "assets/avatar.png"
+    assert config.agent.urls == {
+        "dashboard": "https://testbot.example.com/dashboard/",
+        "repo": "https://github.com/testorg/testbot",
+    }
+
 
 def test_project_config_loaded_from_json():
     config = ProjectConfig.from_dict(json.loads(project_config_json))
@@ -583,6 +593,15 @@ def test_project_config_loaded_from_json():
     assert oura_server.enabled is True
     assert oura_server.command == "uvx"
     assert oura_server.args == ["oura-mcp-server"]
+
+    # Agent config
+    assert config.agent is not None
+    assert config.agent.name == "TestBot"
+    assert config.agent.avatar == "assets/avatar.png"
+    assert config.agent.urls == {
+        "dashboard": "https://testbot.example.com/dashboard/",
+        "repo": "https://github.com/testorg/testbot",
+    }
 
 
 def test_project_config_to_dict():
@@ -633,7 +652,7 @@ tool_format = "xml"
 tools = ["shell", "python"]
 stream = true
 interactive = true
-workspace = "{str(workspace)}"
+workspace = "{workspace!s}"
 
 [env]
 """
@@ -654,15 +673,15 @@ workspace = "{str(workspace)}"
         )
 
         assert config.chat is not None, "Chat config should be loaded"
-        assert (
-            config.chat.model == "openrouter/test-model"
-        ), "Should use saved model when no CLI override"
-        assert (
-            config.chat.tool_format == "xml"
-        ), "Should use saved tool_format when no CLI override"
-        assert config.chat.tools is not None and (
-            "shell" in config.chat.tools
-        ), "Should use saved tools when no CLI override"
+        assert config.chat.model == "openrouter/test-model", (
+            "Should use saved model when no CLI override"
+        )
+        assert config.chat.tool_format == "xml", (
+            "Should use saved tool_format when no CLI override"
+        )
+        assert config.chat.tools is not None and ("shell" in config.chat.tools), (
+            "Should use saved tools when no CLI override"
+        )
 
         # Test 2: Resume with CLI overrides - should use CLI values
         config = setup_config_from_cli(
@@ -677,41 +696,48 @@ workspace = "{str(workspace)}"
         )
 
         assert config.chat is not None, "Chat config should be loaded"
-        assert (
-            config.chat.model == "anthropic/claude-3-sonnet"
-        ), "Should use CLI model when provided"
-        assert (
-            config.chat.tool_format == "markdown"
-        ), "Should use CLI tool_format when provided"
+        assert config.chat.model == "anthropic/claude-3-sonnet", (
+            "Should use CLI model when provided"
+        )
+        assert config.chat.tool_format == "markdown", (
+            "Should use CLI tool_format when provided"
+        )
         assert config.chat.tools == [
             "read",
             "save",
         ], "Should use CLI tools when provided"
 
         # Test 3: New conversation (no saved config) - should fall back to env/defaults
+        # Mock model default to None so we test the pure fallback to "markdown"
+        # (otherwise, if the default model has a default_tool_format, that takes precedence)
+        from unittest.mock import patch
+
         new_logdir = Path(tmpdir) / "new-conversation"
         new_logdir.mkdir()
 
-        config = setup_config_from_cli(
-            workspace=workspace,
-            logdir=new_logdir,
-            model=None,  # No CLI override
-            tool_allowlist=None,  # No CLI override
-            tool_format=None,  # No CLI override
-            stream=True,
-            interactive=True,
-            agent_path=None,
-        )
+        with patch(
+            "gptme.config.cli_setup._get_model_default_tool_format", return_value=None
+        ):
+            config = setup_config_from_cli(
+                workspace=workspace,
+                logdir=new_logdir,
+                model=None,  # No CLI override
+                tool_allowlist=None,  # No CLI override
+                tool_format=None,  # No CLI override
+                stream=True,
+                interactive=True,
+                agent_path=None,
+            )
 
         # For new conversations, should use defaults/env (tool_format defaults to "markdown")
         assert config.chat is not None, "Chat config should be loaded"
-        assert (
-            config.chat.tool_format == "markdown"
-        ), "Should use default tool_format for new conversation"
+        assert config.chat.tool_format == "markdown", (
+            "Should use default tool_format for new conversation"
+        )
         # Model will depend on env vars, so we just check it's not the saved value
-        assert (
-            config.chat.model != "openrouter/test-model"
-        ), "Should not use saved model for new conversation"
+        assert config.chat.model != "openrouter/test-model", (
+            "Should not use saved model for new conversation"
+        )
 
 
 def test_reload_config_clears_tools(monkeypatch, tmp_path):
@@ -732,3 +758,309 @@ def test_reload_config_clears_tools(monkeypatch, tmp_path):
 
     # Verify clear_tools was called
     assert mock_clear_tools.called, "reload_config() should call clear_tools()"
+
+
+def test_user_identity_config_new_format():
+    """Test that [user] section is parsed correctly."""
+    config_toml = """
+[user]
+name = "Erik"
+about = "I am a curious human programmer."
+response_preference = "Basic concepts don't need to be explained."
+
+[prompt]
+[prompt.project]
+myproject = "A cool project."
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+        f.flush()
+        try:
+            config = load_user_config(f.name)
+            assert config.user.name == "Erik"
+            assert config.user.about == "I am a curious human programmer."
+            assert (
+                config.user.response_preference
+                == "Basic concepts don't need to be explained."
+            )
+            assert config.prompt.project == {"myproject": "A cool project."}
+        finally:
+            os.remove(f.name)
+
+
+def test_user_identity_config_backward_compat():
+    """Test that old [prompt] about_user/response_preference still works as fallback."""
+    config_toml = """
+[prompt]
+about_user = "I am a legacy user."
+response_preference = "Keep it short."
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+        f.flush()
+        try:
+            config = load_user_config(f.name)
+            # Should fall back to [prompt] values
+            assert config.user.name == "User"
+            assert config.user.about == "I am a legacy user."
+            assert config.user.response_preference == "Keep it short."
+        finally:
+            os.remove(f.name)
+
+
+def test_user_identity_config_new_overrides_old():
+    """Test that [user] values take priority over [prompt] fallback."""
+    config_toml = """
+[user]
+name = "Erik"
+about = "New about text."
+response_preference = "New preference."
+
+[prompt]
+about_user = "Old about text."
+response_preference = "Old preference."
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+        f.flush()
+        try:
+            config = load_user_config(f.name)
+            # [user] should take priority
+            assert config.user.name == "Erik"
+            assert config.user.about == "New about text."
+            assert config.user.response_preference == "New preference."
+        finally:
+            os.remove(f.name)
+
+
+def test_user_identity_config_defaults():
+    """Test that UserIdentityConfig has sensible defaults."""
+    identity = UserIdentityConfig()
+    assert identity.name == "User"
+    assert identity.about is None
+    assert identity.response_preference is None
+
+
+def test_user_identity_config_partial_fallback():
+    """Test that fallback works per-field."""
+    config_toml = """
+[user]
+name = "Erik"
+about = "Custom about."
+
+[prompt]
+response_preference = "Fallback preference."
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+        f.flush()
+        try:
+            config = load_user_config(f.name)
+            assert config.user.name == "Erik"
+            assert config.user.about == "Custom about."
+            assert config.user.response_preference == "Fallback preference."
+        finally:
+            os.remove(f.name)
+
+
+def test_user_config_local_toml(tmp_path):
+    """Test that config.local.toml is merged into the user config."""
+    # Create main config with preferences (committable to dotfiles)
+    main_config = tmp_path / "config.toml"
+    main_config.write_text(
+        '[prompt]\nabout_user = "I am a developer."\n\n[env]\nEDITOR = "vim"\n'
+    )
+
+    # Create local config with secrets (gitignored)
+    local_config = tmp_path / "config.local.toml"
+    local_config.write_text(
+        '[env]\nOPENAI_API_KEY = "sk-secret-123"\nEDITOR = "nvim"\n'
+    )
+
+    user_config = load_user_config(str(main_config))
+
+    # Local env values should be merged in, overriding main where they overlap
+    # (check user.env directly to avoid os.environ interference in CI)
+    assert user_config.env["OPENAI_API_KEY"] == "sk-secret-123"
+    assert user_config.env["EDITOR"] == "nvim"
+
+    # Non-overlapping values from main config should be preserved
+    assert user_config.prompt.about_user == "I am a developer."
+
+
+def test_user_config_local_toml_mcp_merge(tmp_path):
+    """Test that config.local.toml merges MCP server env vars into main config."""
+    main_config = tmp_path / "config.toml"
+    main_config.write_text(
+        "[prompt]\n\n"
+        "[mcp]\nenabled = true\nauto_start = true\n\n"
+        "[[mcp.servers]]\n"
+        'name = "my-server"\n'
+        'command = "server-cmd"\n'
+        'args = ["--arg1"]\n'
+    )
+
+    local_config = tmp_path / "config.local.toml"
+    local_config.write_text(
+        '[[mcp.servers]]\nname = "my-server"\nenv = { API_KEY = "secret-key" }\n'
+    )
+
+    config = Config(user=load_user_config(str(main_config)))
+
+    assert config.mcp.enabled is True
+    assert len(config.mcp.servers) == 1
+    server = config.mcp.servers[0]
+    assert server.name == "my-server"
+    assert server.command == "server-cmd"
+    assert server.env == {"API_KEY": "secret-key"}
+
+
+def test_user_config_no_local_toml(tmp_path):
+    """Test that missing config.local.toml doesn't cause errors."""
+    main_config = tmp_path / "config.toml"
+    main_config.write_text('[prompt]\nabout_user = "I am a developer."\n\n[env]\n')
+
+    # Should work fine without config.local.toml
+    config = Config(user=load_user_config(str(main_config)))
+    assert config.user.prompt.about_user == "I am a developer."
+
+
+def test_cli_auto_envvar_prefix():
+    """Test that the main CLI command has auto_envvar_prefix='GPTME' set."""
+    from gptme.cli.main import main
+
+    # Verify the Click command has auto_envvar_prefix configured
+    assert main.context_settings.get("auto_envvar_prefix") == "GPTME"
+
+    # Verify key options would resolve to expected GPTME_* env var names
+    params = {p.name: p for p in main.params}
+    assert "model" in params, "CLI should have --model option"
+    assert "tool_format" in params, "CLI should have --tool-format option"
+    assert "workspace" in params, "CLI should have --workspace option"
+
+
+def test_tool_exclusion_config(tmp_path):
+    """Test that '-' prefixed tool_allowlist excludes tools from defaults."""
+    from gptme.config import setup_config_from_cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    logdir = tmp_path / "logs"
+    logdir.mkdir()
+
+    # Get default tools for comparison
+    from gptme.tools import get_toolchain
+
+    default_tools = [tool.name for tool in get_toolchain(None)]
+    assert "browser" in default_tools or "shell" in default_tools, (
+        "Need at least one default tool to test exclusion"
+    )
+
+    # Pick a tool that exists in defaults to exclude
+    tool_to_exclude = default_tools[0]
+
+    config = setup_config_from_cli(
+        workspace=workspace,
+        logdir=logdir,
+        model=None,
+        tool_allowlist=f"-{tool_to_exclude}",
+        tool_format=None,
+        stream=True,
+        interactive=True,
+        agent_path=None,
+    )
+
+    assert config.chat is not None
+    assert config.chat.tools is not None
+    assert tool_to_exclude not in config.chat.tools, (
+        f"Excluded tool '{tool_to_exclude}' should not be in tools list"
+    )
+    # Other default tools should still be present (minus the excluded one)
+    remaining_defaults = [t for t in default_tools if t != tool_to_exclude]
+    for tool in remaining_defaults:
+        assert tool in config.chat.tools, (
+            f"Non-excluded default tool '{tool}' should still be present"
+        )
+
+
+def test_tool_exclusion_multiple(tmp_path):
+    """Test excluding multiple tools with '-' prefix."""
+    from gptme.config import setup_config_from_cli
+    from gptme.tools import get_toolchain
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    logdir = tmp_path / "logs"
+    logdir.mkdir()
+
+    default_tools = [tool.name for tool in get_toolchain(None)]
+    # Exclude first two tools
+    tools_to_exclude = default_tools[:2]
+
+    config = setup_config_from_cli(
+        workspace=workspace,
+        logdir=logdir,
+        model=None,
+        tool_allowlist="-" + ",".join(tools_to_exclude),
+        tool_format=None,
+        stream=True,
+        interactive=True,
+        agent_path=None,
+    )
+
+    assert config.chat is not None
+    assert config.chat.tools is not None
+    for excluded in tools_to_exclude:
+        assert excluded not in config.chat.tools, (
+            f"Excluded tool '{excluded}' should not be in tools list"
+        )
+    # Also verify the remaining default tools are still present
+    remaining_defaults = [t for t in default_tools if t not in tools_to_exclude]
+    for tool in remaining_defaults:
+        assert tool in config.chat.tools, (
+            f"Default tool '{tool}' should still be in tools list after exclusion"
+        )
+
+
+def test_set_config_value_creates_intermediate_sections(tmp_path, monkeypatch):
+    """Test that set_config_value creates missing intermediate TOML sections.
+
+    Regression test: previously d.get(key, {}) returned a detached dict,
+    so writes to non-existent sections were silently lost.
+    """
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("")  # empty config
+
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    # Suppress reload_config (imported locally from gptme.config.core)
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+
+    user_mod.set_config_value("user.name", "Alice")
+
+    result = tomlkit.loads(config_file.read_text()).unwrap()
+    assert "user" in result
+    assert result["user"]["name"] == "Alice"
+
+
+def test_get_env_required_checks_gptme_prefix(monkeypatch):
+    """Test that get_env_required checks GPTME_ prefixed env vars like get_env does."""
+    from gptme.config.models import UserConfig
+
+    config = Config(user=UserConfig())
+
+    # Set GPTME_OPENAI_API_KEY but not OPENAI_API_KEY
+    monkeypatch.setenv("GPTME_OPENAI_API_KEY", "test-key-123")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = config.get_env_required("OPENAI_API_KEY")
+    assert result == "test-key-123"

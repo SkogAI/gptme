@@ -32,8 +32,7 @@ def _get_cached_lesson(path: Path) -> Lesson | None:
         if current_mtime == cached_mtime:
             logger.debug(f"Cache hit: {path.name}")
             return cached_lesson
-        else:
-            logger.debug(f"Cache invalidated (mtime changed): {path.name}")
+        logger.debug(f"Cache invalidated (mtime changed): {path.name}")
     except FileNotFoundError:
         # File was deleted, remove from cache
         logger.debug(f"Cache invalidated (file deleted): {path.name}")
@@ -95,15 +94,33 @@ class LessonIndex:
 
     @staticmethod
     def _default_dirs() -> list[Path]:
-        """Get default lesson directories.
+        """Get default lesson and skill directories.
 
-        Searches for lessons in:
-        - User config: ~/.config/gptme/lessons
-        - Current workspace: ./lessons
-        - Project-local: ./.gptme/lessons
+        Searches for lessons/skills in:
+
+        User-level (lessons):
+        - ~/.config/gptme/lessons
+        - ~/.agents/lessons (cross-platform standard)
+
+        User-level (skills, Anthropic SKILL.md format):
+        - ~/.config/gptme/skills
+        - ~/.claude/skills (Claude CLI compatibility)
+        - ~/.agents/skills (cross-platform standard)
+
+        Workspace-level (lessons):
+        - ./lessons
+        - ./.gptme/lessons
+
+        Workspace-level (skills):
+        - ./skills
+        - ./.gptme/skills
+
+        Also:
         - Configured directories from gptme.toml
+        - .cursor/ directory (Cursor rules compatibility)
 
-        Also detects .cursorrules files and provides conversion guidance.
+        Note: Skills use the same parser as lessons but with
+        'name' and 'description' frontmatter instead of 'keywords'.
         """
         from pathlib import Path
 
@@ -111,12 +128,38 @@ class LessonIndex:
 
         dirs = []
 
-        # User config directory
+        # === User-level lessons directories ===
+
+        # gptme native config
         config_dir = Path.home() / ".config" / "gptme" / "lessons"
         if config_dir.exists():
             dirs.append(config_dir)
 
-        # Current workspace
+        # Cross-platform standard (~/.agents/lessons)
+        agents_lessons_dir = Path.home() / ".agents" / "lessons"
+        if agents_lessons_dir.exists():
+            dirs.append(agents_lessons_dir)
+
+        # === User-level skills directories ===
+
+        # gptme native skills
+        gptme_skills_dir = Path.home() / ".config" / "gptme" / "skills"
+        if gptme_skills_dir.exists():
+            dirs.append(gptme_skills_dir)
+
+        # Claude CLI compatibility (~/.claude/skills)
+        claude_skills_dir = Path.home() / ".claude" / "skills"
+        if claude_skills_dir.exists():
+            dirs.append(claude_skills_dir)
+
+        # Cross-platform standard (~/.agents/skills)
+        agents_skills_dir = Path.home() / ".agents" / "skills"
+        if agents_skills_dir.exists():
+            dirs.append(agents_skills_dir)
+
+        # === Workspace-level lessons directories ===
+
+        # Current workspace lessons
         workspace_dir = Path.cwd() / "lessons"
         if workspace_dir.exists():
             dirs.append(workspace_dir)
@@ -126,27 +169,59 @@ class LessonIndex:
         if gptme_lessons_dir.exists():
             dirs.append(gptme_lessons_dir)
 
+        # === Workspace-level skills directories ===
+
+        # Current workspace skills
+        workspace_skills_dir = Path.cwd() / "skills"
+        if workspace_skills_dir.exists():
+            dirs.append(workspace_skills_dir)
+
+        # Project-local skills (.gptme/skills/)
+        gptme_project_skills_dir = Path.cwd() / ".gptme" / "skills"
+        if gptme_project_skills_dir.exists():
+            dirs.append(gptme_project_skills_dir)
+
         # Cursor rules directory (.cursor/)
         cursor_dir = Path.cwd() / ".cursor"
         if cursor_dir.exists():
             dirs.append(cursor_dir)
-            logger.info(
-                "Found .cursor directory with Cursor rules.\n"
-                "gptme can now read and use .mdc rules files directly!\n"
-                "Cursor 'globs' will be translated to gptme 'keywords'."
-            )
+            logger.debug("Using Cursor rules from .cursor/ directory")
 
         # Check for legacy .cursorrules file and provide guidance
         cursorrules_file = Path.cwd() / ".cursorrules"
         if cursorrules_file.exists():
-            logger.info(
-                "Found .cursorrules file in project root.\n"
-                "Consider migrating to .cursor/ directory with .mdc files for better organization.\n"
-                "gptme now supports reading Cursor .mdc rules directly!"
+            logger.debug(
+                "Found .cursorrules file, consider migrating to .cursor/ directory with .mdc files"
             )
 
-        # Configured directories from gptme.toml
+        # Extra directories from environment variable (colon-separated)
+        # Useful for injecting external lesson sets (e.g., agent workspace lessons
+        # during eval runs, or shared lesson libraries across projects)
+        extra_dirs_env = os.environ.get("GPTME_LESSONS_EXTRA_DIRS", "")
+        if extra_dirs_env:
+            for dir_str in extra_dirs_env.split(":"):
+                dir_str = dir_str.strip()
+                if dir_str:
+                    extra_dir = Path(dir_str).expanduser()
+                    if extra_dir.exists():
+                        dirs.append(extra_dir)
+                        logger.debug(f"Added extra lesson dir from env: {extra_dir}")
+                    else:
+                        logger.warning(
+                            f"GPTME_LESSONS_EXTRA_DIRS: directory not found: {extra_dir}"
+                        )
+
+        # Configured directories from config
         config = get_config()
+
+        # User config lessons directories
+        if config.user and config.user.lessons and config.user.lessons.dirs:
+            for dir_str in config.user.lessons.dirs:
+                lesson_dir = Path(dir_str).expanduser()
+                if lesson_dir.exists():
+                    dirs.append(lesson_dir)
+
+        # Project config lessons directories
         if config.project and config.project.lessons.dirs:
             for dir_str in config.project.lessons.dirs:
                 lesson_dir = Path(dir_str)
@@ -191,13 +266,11 @@ class LessonIndex:
     def _index_lessons(self) -> None:
         """Discover and parse all lessons (with caching and deduplication).
 
-        Deduplication: Lessons are deduplicated by resolved path (realpath).
-        This handles:
-        - Symlinks pointing to files in other configured directories
-        - Multiple paths resolving to the same physical file
-        - Same filename in different directories (only first is used)
+        Deduplication is two-level:
+        1. By resolved path (realpath) — catches symlinks to the same file
+        2. By relative filename — catches same-named lessons across directories
 
-        Directory order determines precedence:
+        Directory order determines precedence (first directory wins):
         1. User config (~/.config/gptme/lessons)
         2. Workspace (./lessons)
         3. Configured dirs (from gptme.toml)
@@ -209,13 +282,19 @@ class LessonIndex:
         # Track seen lesson paths (resolved via realpath) for deduplication
         # This handles symlinks pointing to the same file
         seen_paths: set[str] = set()
+        # Track seen relative paths for cross-directory deduplication
+        # This handles same-named lessons in different configured directories
+        # (e.g. lessons/social/foo.md and gptme-contrib/lessons/social/foo.md)
+        seen_rel_paths: set[str] = set()
 
         for lesson_dir in self.lesson_dirs:
             if not lesson_dir.exists():
                 logger.debug(f"Lesson directory not found: {lesson_dir}")
                 continue
 
-            hits, misses, skipped = self._index_directory(lesson_dir, seen_paths)
+            hits, misses, skipped = self._index_directory(
+                lesson_dir, seen_paths, seen_rel_paths
+            )
             cache_hits += hits
             cache_misses += misses
             skipped_duplicates += skipped
@@ -224,16 +303,20 @@ class LessonIndex:
         log_parts.append(f"(cache: {cache_hits} hits, {cache_misses} misses)")
         if skipped_duplicates > 0:
             log_parts.append(f"(skipped {skipped_duplicates} duplicates)")
-        logger.info(" ".join(log_parts))
+        logger.debug(" ".join(log_parts))
 
     def _index_directory(
-        self, directory: Path, seen_paths: set[str]
+        self,
+        directory: Path,
+        seen_paths: set[str],
+        seen_rel_paths: set[str],
     ) -> tuple[int, int, int]:
         """Index all lessons in a directory (with caching and deduplication).
 
         Args:
             directory: Directory to scan for lessons
             seen_paths: Set of resolved lesson paths already indexed (for deduplication)
+            seen_rel_paths: Set of relative paths already indexed (cross-dir dedup)
 
         Returns:
             Tuple of (cache_hits, cache_misses, skipped_duplicates)
@@ -245,11 +328,21 @@ class LessonIndex:
         # Find both .md and .mdc files
         lesson_files = list(directory.rglob("*.md")) + list(directory.rglob("*.mdc"))
 
+        # Exclusion patterns for directories that shouldn't be indexed
+        # Worktrees often contain symlinked/copied lesson directories
+        excluded_patterns = ["worktree/", "/.git/"]
+
         for lesson_file in lesson_files:
             # Skip special files
             if lesson_file.name.lower() in ("readme.md", "todo.md"):
                 continue
             if "template" in lesson_file.name.lower():
+                continue
+
+            # Skip files in excluded directories (worktrees, .git, etc.)
+            lesson_path_str = lesson_file.as_posix()
+            if any(pattern in lesson_path_str for pattern in excluded_patterns):
+                logger.debug(f"Skipping lesson in excluded directory: {lesson_file}")
                 continue
 
             # Deduplication: Skip if lesson with same resolved path already indexed
@@ -262,6 +355,24 @@ class LessonIndex:
                 )
                 skipped_duplicates += 1
                 continue
+
+            # Deduplication: Skip if lesson with same relative path already indexed
+            # from a different directory. This handles the common case where workspace
+            # lessons/ and gptme-contrib/lessons/ both contain e.g. social/foo.md
+            # First directory wins (per configured order), regardless of active status.
+            relative_name = lesson_file.relative_to(directory).as_posix()
+            if relative_name in seen_rel_paths:
+                logger.debug(
+                    f"Skipping duplicate lesson: {lesson_file.relative_to(directory)} "
+                    f"(same relative path already indexed from earlier directory)"
+                )
+                skipped_duplicates += 1
+                continue
+
+            # Always mark as seen (regardless of status) to enforce "first dir wins"
+            # An inactive lesson in an earlier dir suppresses all copies in later dirs.
+            seen_paths.add(resolved_path)
+            seen_rel_paths.add(relative_name)
 
             try:
                 # Try to use cached lesson first
@@ -283,7 +394,6 @@ class LessonIndex:
                     continue
 
                 self.lessons.append(lesson)
-                seen_paths.add(resolved_path)  # Mark resolved path as seen
             except Exception as e:
                 logger.warning(f"Failed to parse lesson {lesson_file}: {e}")
 
@@ -302,8 +412,21 @@ class LessonIndex:
         results = []
 
         for lesson in self.lessons:
+            # Check skill name (metadata.name)
+            if lesson.metadata.name and query_lower in lesson.metadata.name.lower():
+                results.append(lesson)
+                continue
+
             # Check title
             if query_lower in lesson.title.lower():
+                results.append(lesson)
+                continue
+
+            # Check skill description (metadata.description)
+            if (
+                lesson.metadata.description
+                and query_lower in lesson.metadata.description.lower()
+            ):
                 results.append(lesson)
                 continue
 
@@ -316,23 +439,6 @@ class LessonIndex:
             if any(query_lower in kw.lower() for kw in lesson.metadata.keywords):
                 results.append(lesson)
                 continue
-
-        return results
-
-    def find_by_keywords(self, keywords: list[str]) -> list[Lesson]:
-        """Find lessons matching any of the given keywords.
-
-        Args:
-            keywords: List of keywords to match
-
-        Returns:
-            List of matching lessons
-        """
-        results = []
-
-        for lesson in self.lessons:
-            if any(kw in lesson.metadata.keywords for kw in keywords):
-                results.append(lesson)
 
         return results
 

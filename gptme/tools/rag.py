@@ -116,7 +116,12 @@ def _run_rag_cmd(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a gptme-rag command and handle errors."""
     start = time.monotonic()
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=60
+        )
+    except subprocess.TimeoutExpired as e:
+        logger.error("gptme-rag command timed out after 60s")
+        raise RuntimeError("gptme-rag command timed out after 60s") from e
     except subprocess.CalledProcessError as e:
         logger.error(f"gptme-rag command failed: {e.stderr}")
         raise RuntimeError(f"gptme-rag command failed: {e.stderr}") from e
@@ -210,6 +215,7 @@ def get_rag_context(
 
     # Post-process the context with an LLM (if enabled)
     if should_post_process:
+        assert rag_config.post_process_model is not None
         post_process_msgs = [
             Message(
                 role="system",
@@ -222,9 +228,9 @@ def get_rag_context(
             ),
         ]
         start = time.monotonic()
-        rag_result = _chat_complete(
+        rag_result, _metadata = _chat_complete(
             messages=post_process_msgs,
-            model=rag_config.post_process_model,  # type: ignore
+            model=rag_config.post_process_model,
             tools=[],
         )
         logger.info(f"Ran RAG post-process in {time.monotonic() - start:.2f}s")

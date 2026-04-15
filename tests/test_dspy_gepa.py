@@ -1,10 +1,13 @@
 """Test GEPA integration with gptme evaluation."""
 
 import importlib.util
+import os
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gptme.eval.types import EvalSpec
+if TYPE_CHECKING:
+    from gptme.eval.types import EvalSpec
 
 if importlib.util.find_spec("dspy") is None:
     pytest.skip("DSPy not available", allow_module_level=True)
@@ -18,6 +21,10 @@ except (ImportError, ModuleNotFoundError):
     pytest.skip("DSPy not available", allow_module_level=True)
 
 
+@pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="ANTHROPIC_API_KEY not set",
+)
 @pytest.mark.slow
 def test_gepa_integration():
     """Test that GEPA integration works with actual gptme evaluation."""
@@ -44,9 +51,9 @@ def test_gepa_integration():
     prediction = module("Write hello.py that prints Hello World", "", test_eval_spec)
 
     # Verify evaluation ran
-    assert hasattr(
-        prediction, "eval_result"
-    ), "Should have eval_result from gptme evaluation"
+    assert hasattr(prediction, "eval_result"), (
+        "Should have eval_result from gptme evaluation"
+    )
 
     # Test metric with the prediction
     example = dspy.Example(

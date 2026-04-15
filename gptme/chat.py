@@ -1,9 +1,8 @@
+import copy
 import logging
 import os
-import sys
-import termios
 import threading
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 from .commands import execute_cmd
@@ -13,7 +12,9 @@ from .constants import (
     INTERRUPT_CONTENT,
     MAX_MESSAGE_LENGTH,
     MAX_PROMPT_QUEUE_SIZE,
-    PROMPT_USER,
+)
+from .constants import (
+    prompt_user as prompt_user_styled,
 )
 from .hooks import HookType, trigger_hook
 from .init import init
@@ -23,7 +24,6 @@ from .logmanager import Log, LogManager, prepare_messages
 from .message import Message
 from .telemetry import set_conversation_context, trace_function
 from .tools import (
-    ConfirmFunc,
     ToolFormat,
     ToolUse,
     execute_msg,
@@ -31,14 +31,13 @@ from .tools import (
 )
 from .tools.complete import SessionCompleteException
 from .util import console, path_with_tilde
-from .util.ask_execute import ask_execute
-from .util.auto_naming import auto_generate_display_name
+from .util.auto_naming import MAX_ASSISTANT_MSGS_FOR_NAMING, try_auto_name
 from .util.context import include_paths
 from .util.cost import log_costs
 from .util.interrupt import clear_interruptible, set_interruptible
 from .util.prompt import add_history, get_input
 from .util.sound import print_bell
-from .util.terminal import set_current_conv_name, terminal_state_title
+from .util.terminal import flush_stdin, set_current_conv_name, terminal_state_title
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +75,13 @@ def chat(
     set_conversation_context(conversation_id=conv_name)
 
     # tool_format should already be resolved by this point
-    assert (
-        tool_format is not None
-    ), "tool_format should be resolved before calling chat()"
+    assert tool_format is not None, (
+        "tool_format should be resolved before calling chat()"
+    )
 
     # init
-    init(model, interactive, tool_allowlist, tool_format)
+    # Mode detection for confirmation hooks is now handled inside init_hooks()
+    init(model, interactive, tool_allowlist, tool_format, no_confirm)
 
     # Trigger session start hooks
     if session_start_msgs := trigger_hook(
@@ -95,8 +95,15 @@ def chat(
             initial_msgs = initial_msgs + [hook_msg]
 
     default_model = get_default_model()
-    assert default_model is not None, "No model loaded and no model specified"
-    modelmeta = get_model(model or default_model.full)
+    # Only require default_model if no explicit model was passed
+    # Use nested if/else for proper mypy type narrowing
+    if model is None:
+        if default_model is None:
+            raise ValueError("No model loaded and no model specified")
+        model_to_use = default_model.full
+    else:
+        model_to_use = model
+    modelmeta = get_model(model_to_use)
     if not modelmeta.supports_streaming and stream:
         logger.info(
             "Disabled streaming for '%s/%s' model (not supported)",
@@ -108,7 +115,7 @@ def chat(
     console.log(f"Using logdir: {path_with_tilde(logdir)}")
     manager = LogManager.load(logdir, initial_msgs=initial_msgs, create=True)
 
-    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
+    # Note: todo replay is now handled via SESSION_START hook
 
     # Initialize workspace
     console.log(f"Using workspace: {path_with_tilde(workspace)}")
@@ -118,12 +125,9 @@ def chat(
     manager.log.print(show_hidden=show_hidden)
     console.print("--- ^^^ past messages ^^^ ---")
 
-    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
-
-    def confirm_func(msg) -> bool:
-        if no_confirm:
-            return True
-        return ask_execute(msg)
+    # Note: todo replay is now handled via SESSION_START hook
+    # Note: Confirmation is now handled within ToolUse.execute() using the hook system,
+    # so we no longer need to create and pass confirm_func.
 
     # Convert prompt_msgs to a queue for unified handling
     prompt_queue = list(prompt_msgs)
@@ -136,12 +140,11 @@ def chat(
             manager,
             prompt_queue,
             stream,
-            confirm_func,
-            tool_format,
-            None,  # Pass None to allow dynamic model switching via /model command
-            interactive,
-            logdir,
-            output_schema,
+            tool_format=tool_format,
+            model=None,  # Pass None to allow dynamic model switching via /model command
+            interactive=interactive,
+            logdir=logdir,
+            output_schema=output_schema,
         )
     except SessionCompleteException as e:
         console.log(f"Autonomous mode: {e}. Exiting.")
@@ -159,11 +162,10 @@ def _run_chat_loop(
     manager,
     prompt_queue,
     stream,
-    confirm_func,
-    tool_format,
-    model,
-    interactive,
-    logdir,
+    tool_format=None,
+    model=None,
+    interactive=True,
+    logdir=None,
     output_schema=None,
 ):
     """Main chat loop - extracted to allow clean exception handling."""
@@ -179,13 +181,24 @@ def _run_chat_loop(
                 manager.append(msg)
 
                 # Handle user commands
-                if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
+                if msg.role == "user" and execute_cmd(msg, manager):
                     continue
 
                 # Process the message and get response
-                _process_message_conversation(
-                    manager, stream, confirm_func, tool_format, model, output_schema
-                )
+                try:
+                    _process_message_conversation(
+                        manager, stream, tool_format, model, output_schema
+                    )
+                except SessionCompleteException:
+                    if not prompt_queue:
+                        # No more prompts, properly exit
+                        raise
+                    # More chained prompts remain — continue processing them
+                    logger.debug(
+                        "complete called but %d chained prompts remain, continuing",
+                        len(prompt_queue),
+                    )
+                    continue
             else:
                 # Get user input or exit if non-interactive
                 if not interactive:
@@ -198,17 +211,15 @@ def _run_chat_loop(
                     if _should_prompt_for_input(manager.log):
                         # User wants to exit
                         break
-                    else:
-                        # Don't prompt for input, generate response directly (crash recovery, etc.)
-                        # Process existing log without adding new message
-                        _process_message_conversation(
-                            manager,
-                            stream,
-                            confirm_func,
-                            tool_format,
-                            model,
-                            output_schema,
-                        )
+                    # Don't prompt for input, generate response directly (crash recovery, etc.)
+                    # Process existing log without adding new message
+                    _process_message_conversation(
+                        manager,
+                        stream,
+                        tool_format,
+                        model,
+                        output_schema,
+                    )
                 else:
                     # Normal case: user provided input
                     msg = user_input
@@ -217,14 +228,13 @@ def _run_chat_loop(
                     # Reset interrupt flag since user provided new input
 
                     # Handle user commands
-                    if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
+                    if msg.role == "user" and execute_cmd(msg, manager):
                         continue
 
                     # Process the message and get response
                     _process_message_conversation(
                         manager,
                         stream,
-                        confirm_func,
                         tool_format,
                         model,
                         output_schema,
@@ -268,12 +278,24 @@ def _run_chat_loop(
 def _process_message_conversation(
     manager: LogManager,
     stream: bool,
-    confirm_func: ConfirmFunc,
     tool_format: ToolFormat,
     model: str | None,
     output_schema: type | None = None,
 ) -> None:
-    """Process a message and generate responses until no more tools to run."""
+    """Process a message and generate responses until no more tools to run.
+
+    Note: Confirmation is now handled within ToolUse.execute() using the hook system.
+    """
+    max_steps: int | None = None
+    max_steps_str = os.environ.get("GPTME_MAX_STEPS")
+    if max_steps_str:
+        try:
+            max_steps = int(max_steps_str)
+        except ValueError:
+            logger.warning(
+                f"Invalid GPTME_MAX_STEPS value: {max_steps_str!r}, ignoring"
+            )
+    step_count = 0
 
     while True:
         try:
@@ -291,7 +313,6 @@ def _process_message_conversation(
                 step(
                     manager.log,
                     stream,
-                    confirm_func,
                     tool_format=tool_format,
                     workspace=manager.workspace,
                     model=model,
@@ -308,9 +329,7 @@ def _process_message_conversation(
         for response_msg in response_msgs:
             manager.append(response_msg)
             # run any user-commands, if msg is from user
-            if response_msg.role == "user" and execute_cmd(
-                response_msg, manager, confirm_func
-            ):
+            if response_msg.role == "user" and execute_cmd(response_msg, manager):
                 return
 
         # Check if user declined execution - return to prompt without generating response
@@ -319,45 +338,34 @@ def _process_message_conversation(
             console.log("Execution declined, returning to prompt.")
             break
 
-        # Auto-generate display name after first assistant response if not already set
-        # Runs in background thread to avoid blocking the chat loop
-        # TODO: Consider implementing via hook system to streamline with server implementation
-        # See: gptme/server/api_v2_sessions.py for server's implementation
-        # Try auto-naming on first few assistant messages until we get a name
-        # This allows retry when initial context is insufficient
-        assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
-        if len(assistant_messages) <= 3:
+        # Auto-generate display name in background thread to avoid blocking.
+        # Shared logic with server in gptme/util/auto_naming.py::try_auto_name.
+        # Pre-check assistant count to avoid spawning threads + doing disk I/O
+        # after the naming window has closed (> MAX_ASSISTANT_MSGS_FOR_NAMING).
+        current_model = get_default_model()
+        assistant_count = sum(1 for m in manager.log.messages if m.role == "assistant")
+        if current_model and 1 <= assistant_count <= MAX_ASSISTANT_MSGS_FOR_NAMING:
             chat_config = ChatConfig.from_logdir(manager.logdir)
             if not chat_config.name:
-
-                def _auto_name_thread(
-                    config: ChatConfig,
-                    messages: list[Message],
-                    model_name: str,
-                ):
-                    """Background thread for auto-naming to avoid blocking chat loop."""
-                    try:
-                        display_name = auto_generate_display_name(messages, model_name)
-                        if display_name:
-                            config.name = display_name
-                            config.save()
-                            logger.info(
-                                f"Auto-generated conversation name: {display_name}"
-                            )
-                        else:
-                            logger.warning("Auto-naming failed")
-                    except Exception as e:
-                        logger.warning(f"Failed to auto-generate name: {e}")
-
-                # Start naming in background thread (daemon so it doesn't block exit)
-                # Get current model dynamically (model param may be None)
-                current_model = get_default_model()
                 thread = threading.Thread(
-                    target=_auto_name_thread,
-                    args=(chat_config, manager.log.messages.copy(), current_model),
+                    target=try_auto_name,
+                    args=(
+                        chat_config,
+                        copy.deepcopy(manager.log.messages),
+                        current_model.full,
+                    ),
                     daemon=True,
                 )
                 thread.start()
+
+        # Check step limit (GPTME_MAX_STEPS)
+        step_count += 1
+        if max_steps is not None and step_count >= max_steps:
+            console.log(f"Reached max steps limit ({max_steps}), stopping.")
+            manager.append(
+                Message("system", f"Stopped: reached max steps limit ({max_steps})")
+            )
+            break
 
         # Check if there are any runnable tools left
         last_content = next(
@@ -407,7 +415,7 @@ def _should_prompt_for_input(log: Log) -> bool:
     # - No user messages exist in the entire log
     return (
         not last_msg
-        or (last_msg.role in ["assistant"])
+        or last_msg.role == "assistant"
         or has_recent_interrupt_or_decline
         or last_msg.pinned
         or not any(role == "user" for role in [m.role for m in log])
@@ -455,16 +463,20 @@ def _get_user_input(log: Log, workspace: Path | None) -> Message | None:
 def step(
     log: Log | list[Message],
     stream: bool,
-    confirm: ConfirmFunc,
     tool_format: ToolFormat = "markdown",
     workspace: Path | None = None,
     model: str | None = None,
     output_schema: type | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> Generator[Message, None, None]:
     """Runs a single pass of the chat - generates response and executes tools."""
     default_model = get_default_model()
-    assert default_model is not None, "No model loaded and no model specified"
-    model = model or default_model.full
+    # Only require default_model if no explicit model was passed
+    # Use nested if/else for proper mypy type narrowing
+    if model is None:
+        if default_model is None:
+            raise ValueError("No model loaded and no model specified")
+        model = default_model.full
     if isinstance(log, list):
         log = Log(log)
 
@@ -482,7 +494,13 @@ def step(
         # generate response
         with terminal_state_title("🤔 generating"):
             msg_response = reply(
-                msgs, get_model(model).full, stream, tools, workspace, output_schema
+                msgs,
+                get_model(model).full,
+                stream,
+                tools,
+                workspace,
+                output_schema,
+                on_token=on_token,
             )
             if get_config().get_env_bool("GPTME_COSTS"):
                 log_costs(msgs + [msg_response])
@@ -499,7 +517,7 @@ def step(
         # log response and run tools
         if msg_response:
             yield msg_response.replace(quiet=True)
-            yield from execute_msg(msg_response, confirm, log, workspace)
+            yield from execute_msg(msg_response, log=log, workspace=workspace)
 
     finally:
         clear_interruptible()
@@ -507,22 +525,22 @@ def step(
 
 def prompt_user(value=None) -> str:  # pragma: no cover
     print_bell()
-    # Flush stdin to clear any buffered input before prompting (only if stdin is a TTY)
-    if sys.stdin.isatty():
-        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    flush_stdin()
     response = ""
+    # Get user name from config for the prompt display
+    user_name = get_config().user.user.name
+    styled_prompt = prompt_user_styled(user_name)
     with terminal_state_title("⌨️ waiting for input"):
         while not response:
             try:
                 set_interruptible()
-                response = prompt_input(PROMPT_USER, value)
+                response = prompt_input(styled_prompt, value)
                 if response:
                     add_history(response)
             except KeyboardInterrupt:
                 print("\nInterrupted. Press Ctrl-D to exit.")
             except EOFError:
-                print("\nGoodbye!")
-                sys.exit(0)
+                raise  # Let _get_user_input handle the normal exit flow
     clear_interruptible()
     return response
 

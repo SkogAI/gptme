@@ -1,3 +1,4 @@
+import re
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from xml.etree import ElementTree
@@ -13,6 +14,7 @@ class Codeblock:
     content: str
     path: str | None = None
     start: int | None = field(default=None, compare=False)
+    fence: str = field(default_factory=lambda: "```", compare=False, repr=False)
 
     def __post_init__(self):
         # init path if path is None and lang is pathy
@@ -20,19 +22,18 @@ class Codeblock:
             object.__setattr__(self, "path", self.lang)  # frozen dataclass workaround
 
     def to_markdown(self) -> str:
-        return f"```{self.lang}\n{self.content}\n```"
+        return f"{self.fence}{self.lang}\n{self.content}\n{self.fence}"
 
     def to_xml(self) -> str:
         """Converts codeblock to XML with proper escaping."""
         # Use quoteattr for attributes to handle quotes and special chars safely
         # Use xml_escape for content to handle <, >, & characters
-        return f"<codeblock lang={quoteattr(self.lang)} path={quoteattr(str(self.path))}>\n{xml_escape(self.content)}\n</codeblock>"
+        path_attr = f" path={quoteattr(self.path)}" if self.path else ""
+        return f"<codeblock lang={quoteattr(self.lang)}{path_attr}>\n{xml_escape(self.content)}\n</codeblock>"
 
     @classmethod
     @trace_function(name="codeblock.from_markdown", attributes={"component": "parser"})
     def from_markdown(cls, content: str) -> "Codeblock":
-        import re
-
         stripped = content.strip()
         fence_len = 0
 
@@ -51,7 +52,12 @@ class Codeblock:
                 stripped = stripped.strip()[:-end_fence_len]
 
         lang = stripped.splitlines()[0].strip() if stripped.strip() else ""
-        return cls(lang, stripped[len(lang) :].lstrip("\n") if lang else stripped)
+        fence = "`" * fence_len if fence_len else "```"
+        return cls(
+            lang,
+            stripped[len(lang) :].lstrip("\n") if lang else stripped,
+            fence=fence,
+        )
 
     @classmethod
     @trace_function(name="codeblock.from_xml", attributes={"component": "parser"})
@@ -63,7 +69,13 @@ class Codeblock:
           </codeblock>
         """
         root = ElementTree.fromstring(content)
-        return cls(root.attrib["lang"], root.text or "", root.attrib.get("path"))
+        # Strip leading/trailing newlines added by to_xml() formatting
+        text = (root.text or "").strip("\n")
+        return cls(
+            root.attrib.get("lang", ""),
+            text,
+            root.attrib.get("path"),
+        )
 
     @property
     def is_filename(self) -> bool:
@@ -79,9 +91,6 @@ class Codeblock:
         per conversation, creating ~97% of all trace spans (see Issue #199).
         """
         return list(_extract_codeblocks(markdown, streaming=streaming))
-
-
-import re
 
 
 def _extract_codeblocks(
@@ -106,15 +115,61 @@ def _extract_codeblocks(
     This handles nested cases where ``` appears inside string literals or other content.
     """
     # dont extract codeblocks from thinking blocks
-    # (since claude sometimes forgets to close codeblocks in its thinking)
-    think_end = markdown.find("</think>")
-    if think_end != -1:
-        # remove anything before and including </think> if it exists
-        markdown = markdown[think_end + len("</think>") :]
+    # (since claude sometimes forgets to close codeblocks in its thinking,
+    #  and gemini uses </thinking> instead of </think>)
+    # Only strip when the closing tag is genuine: the corresponding opening tag
+    # must be either (a) standalone at a line boundary, or (b) absent entirely
+    # (Gemini uses "```thinking>" with no "<" before "thinking>", so no <thinking>
+    # appears in the prefix at all).  We must NOT strip when <think> appears only
+    # concatenated with a fence closer (e.g. "```<think>") — that is handled later
+    # by the inner-loop fence-recovery logic.
+    _concatenated_end_found = False
+    _concatenated_end_pos = -1
+    for _think_end_tag in ["</thinking>", "</think>"]:
+        _think_end = markdown.find(_think_end_tag)
+        if _think_end != -1:
+            _think_start_tag = _think_end_tag.replace("/", "")  # e.g. "<think>"
+            _prefix = markdown[:_think_end]
+            _has_standalone = bool(
+                re.search(r"(?:^|\n)" + re.escape(_think_start_tag), _prefix)
+            )
+            _has_any = _think_start_tag in _prefix
+            # Strip if standalone opening exists, or if there is no opening tag at
+            # all in the prefix (covers the Gemini "```thinking>" malformed case).
+            if _has_standalone or not _has_any:
+                # remove anything before and including the closing thinking tag
+                markdown = markdown[_think_end + len(_think_end_tag) :]
+                break
+            # Found </think> but didn't strip: opening was concatenated (e.g. "```<think>").
+            # Inner-loop fence-recovery handles this; track position of the closing tag.
+            # NOTE: if both </thinking> and </think> appear concatenated in the same message,
+            # _concatenated_end_pos is overwritten by the second iteration (the later position).
+            # This means the _after_concat scan misses standalone think blocks between the two
+            # concatenated end-tags. Emitting both concatenated closers in one message is
+            # extremely unlikely in practice so this edge case is acceptable.
+            _concatenated_end_found = True
+            _concatenated_end_pos = _think_end + len(_think_end_tag)
     else:
-        # if start <think> tag but no end, early exit
-        if "<think>" in markdown:
-            return
+        # if start thinking tag but no end, early exit (only for standalone tags;
+        # concatenated occurrences like "```<think>" are handled by inner-loop logic).
+        if not _concatenated_end_found:
+            for _think_start_tag in ["<thinking>", "<think>"]:
+                if re.search(r"(?:^|\n)" + re.escape(_think_start_tag), markdown):
+                    return
+        else:
+            # A concatenated </think> was found (not stripped). Check if any standalone
+            # <think> appearing AFTER that closing tag is genuinely unclosed. If so,
+            # early-exit to avoid extracting blocks from inside an unclosed thinking section.
+            _after_concat = markdown[_concatenated_end_pos:]
+            for _think_start_tag in ["<thinking>", "<think>"]:
+                _standalone_match = re.search(
+                    r"(?:^|\n)" + re.escape(_think_start_tag), _after_concat
+                )
+                if _standalone_match:
+                    _close_tag = _think_start_tag.replace("<", "</")
+                    _rest = _after_concat[_standalone_match.start() :]
+                    if _close_tag not in _rest:
+                        return  # genuinely unclosed standalone think block
 
     # speed check (early exit): check if message contains a code block
     # Check for at least 2 fence markers (3+ backticks each)
@@ -128,6 +183,15 @@ def _extract_codeblocks(
     while i < len(lines):
         line = lines[i]
 
+        # Recover from malformed adjacent outer fences where a block closes and the
+        # next one opens on the same line, e.g. "``````patch file.py" instead of
+        # "```\n```patch file.py". ToolUse._to_markdown always emits triple fences,
+        # so six leading backticks followed immediately by a language tag is a good
+        # signal that the first three backticks belong to the previous block.
+        if re.match(r"^`{6}[^`\s]", line):
+            line = line[3:]
+            lines[i] = line
+
         # Look for code block start (3+ backticks)
         # Count the backticks at the start of the line
         fence_match = re.match(r"^(`{3,})", line)
@@ -137,6 +201,7 @@ def _extract_codeblocks(
             lang = line[fence_len:].strip()
             content_lines: list[str] = []
             i += 1
+            reprocess_current_line = False
 
             # Track nesting depth to handle nested code blocks
             nesting_depth = 1
@@ -144,6 +209,45 @@ def _extract_codeblocks(
             # Collect content until we find the matching closing ```
             while i < len(lines):
                 line = lines[i]
+
+                # Recover from malformed adjacent fences where a closing fence for the
+                # current block is directly concatenated with the opening fence of the
+                # next block, e.g. "``````shell" instead of "```\n```shell".
+                if nesting_depth == 1 and line.startswith("`" * fence_len):
+                    rest = line[fence_len:]
+                    # Only treat as adjacent fences when the remainder starts a new fence
+                    # followed immediately by a non-whitespace character (e.g. a language
+                    # tag like "shell"). The `{3,}` quantifier is greedy: it consumes all
+                    # leading backticks in `rest`, so if `rest` consists solely of backticks
+                    # (e.g. rest="```" from a content line like "``````") `\S` has no char
+                    # left to match and the guard correctly falls through. Only when the
+                    # backtick run is followed by a non-whitespace char (a language tag or
+                    # similar) does this match — preventing false splits on bare-backtick
+                    # content lines.
+                    if re.match(r"^`{3,}\S", rest):
+                        yield Codeblock(
+                            lang,
+                            "\n".join(content_lines),
+                            start=start_line,
+                            fence="`" * fence_len,
+                        )
+                        lines[i] = rest
+                        reprocess_current_line = True
+                        break
+
+                    # Some models concatenate the closing fence with a thinking tag,
+                    # e.g. "```<think>". Recover by treating the leading fence as the
+                    # closing delimiter and reprocessing the remainder on the same line.
+                    if rest.startswith(("<think>", "<thinking>")):
+                        yield Codeblock(
+                            lang,
+                            "\n".join(content_lines),
+                            start=start_line,
+                            fence="`" * fence_len,
+                        )
+                        lines[i] = rest
+                        reprocess_current_line = True
+                        break
 
                 # Check if this line starts with backticks (potential opening or closing)
                 line_fence_match = re.match(r"^(`{3,})", line)
@@ -161,6 +265,13 @@ def _extract_codeblocks(
                         has_next_line = i + 1 < len(lines)
                         next_has_content = has_next_line and lines[i + 1].strip() != ""
                         next_is_blank = has_next_line and lines[i + 1].strip() == ""
+                        # In streaming mode, a trailing empty string from split("\n")
+                        # is indistinguishable from a real blank line. When the blank
+                        # line is the last element, it's likely a split artifact from
+                        # content ending with "\n", not a real confirmation line.
+                        # Only treat it as a real blank if there's more content after.
+                        if streaming and next_is_blank and i + 1 == len(lines) - 1:
+                            next_is_blank = False
                         next_is_fence = has_next_line and bool(
                             re.match(r"^`{3,}", lines[i + 1])
                         )
@@ -187,7 +298,10 @@ def _extract_codeblocks(
                                     break
                                 # Either not streaming, or streaming with blank line - extract
                                 yield Codeblock(
-                                    lang, "\n".join(content_lines), start=start_line
+                                    lang,
+                                    "\n".join(content_lines),
+                                    start=start_line,
+                                    fence="`" * fence_len,
                                 )
                                 i += 1
                                 break
@@ -234,6 +348,14 @@ def _extract_codeblocks(
                                     # Looks like a real nested block
                                     nesting_depth += 1
                                     content_lines.append(line)
+                                elif streaming:
+                                    # In streaming mode, be conservative: treat bare fence
+                                    # followed by content as a nested block opener even without
+                                    # confirmed closing pattern. This prevents incorrectly
+                                    # extracting incomplete blocks when later bare fences
+                                    # would close this nested block but leave the outer unclosed.
+                                    nesting_depth += 1
+                                    content_lines.append(line)
                                 else:
                                     # No matching fence found, treat as literal content
                                     content_lines.append(line)
@@ -246,7 +368,10 @@ def _extract_codeblocks(
                                 nesting_depth -= 1
                                 if nesting_depth == 0:
                                     yield Codeblock(
-                                        lang, "\n".join(content_lines), start=start_line
+                                        lang,
+                                        "\n".join(content_lines),
+                                        start=start_line,
+                                        fence="`" * fence_len,
                                     )
                                     i += 1
                                     break
@@ -263,7 +388,10 @@ def _extract_codeblocks(
                             if nesting_depth == 0:
                                 # This closes our top-level block
                                 yield Codeblock(
-                                    lang, "\n".join(content_lines), start=start_line
+                                    lang,
+                                    "\n".join(content_lines),
+                                    start=start_line,
+                                    fence="`" * fence_len,
                                 )
                                 i += 1  # Move past the closing ```
                                 break
@@ -293,5 +421,7 @@ def _extract_codeblocks(
 
             # If we reached the end without completing the block, don't yield it
             # (this handles the unfinished nested test case)
+            if reprocess_current_line:
+                continue
         else:
             i += 1

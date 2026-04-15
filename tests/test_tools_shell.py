@@ -82,6 +82,7 @@ def test_cd(shell):
 
 def test_shell_cd_chdir(shell):
     # make a tmp dir
+    original_cwd = os.getcwd()
     tmpdir = tempfile.TemporaryDirectory()
     # test that running cd in the shell changes the directory
     shell.run(f"cd {tmpdir.name}")
@@ -91,6 +92,7 @@ def test_shell_cd_chdir(shell):
         assert cwd == os.path.realpath(tmpdir.name)
         assert cwd == os.path.realpath(output.strip())
     finally:
+        os.chdir(original_cwd)  # restore before cleanup to avoid broken cwd
         tmpdir.cleanup()
 
 
@@ -567,9 +569,9 @@ def test_is_denylisted_safe_commands():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe command should be allowed: {cmd}"
         assert reason is None, f"Safe command should have no reason: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Safe command should have no matched command: {cmd}"
+        assert matched_cmd is None, (
+            f"Safe command should have no matched command: {cmd}"
+        )
 
 
 def test_is_denylisted_edge_cases():
@@ -590,9 +592,9 @@ def test_is_denylisted_edge_cases():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe variation should be allowed: {cmd}"
         assert reason is None, f"Safe variation should have no reason: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Safe variation should have no matched command: {cmd}"
+        assert matched_cmd is None, (
+            f"Safe variation should have no matched command: {cmd}"
+        )
 
 
 def test_is_denylisted_quoted_content():
@@ -614,9 +616,9 @@ def test_is_denylisted_quoted_content():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Quoted dangerous pattern should be allowed: {cmd}"
         assert reason is None, f"Should have no reason for quoted content: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Should have no matched command for quoted content: {cmd}"
+        assert matched_cmd is None, (
+            f"Should have no matched command for quoted content: {cmd}"
+        )
 
 
 def test_is_denylisted_mixed_quoted_and_actual():
@@ -648,12 +650,34 @@ def test_is_denylisted_escaped_quotes():
     for cmd in safe_escaped:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Escaped quoted content should be allowed: {cmd}"
-        assert (
-            reason is None
-        ), f"Should have no reason for escaped quoted content: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Should have no matched command for escaped quoted content: {cmd}"
+        assert reason is None, (
+            f"Should have no reason for escaped quoted content: {cmd}"
+        )
+        assert matched_cmd is None, (
+            f"Should have no matched command for escaped quoted content: {cmd}"
+        )
+
+
+def test_is_denylisted_single_quote_backslash_bypass():
+    """Regression test: backslash before closing single quote must not extend the quoted region.
+
+    In POSIX shell, single quotes do not support any escape sequences --
+    a backslash inside single quotes is literal. So in:
+        echo 'foo\' ; rm -rf /
+    the single-quoted string is 'foo\', and '; rm -rf /' is unquoted
+    and must be caught by the denylist.
+    """
+    dangerous_cmds = [
+        "echo 'foo\\' ; rm -rf /",
+        "echo 'test\\' && sudo rm -rf /",
+        "echo '\\' ; chmod 777 /etc/passwd",
+    ]
+    for cmd in dangerous_cmds:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert is_denied, (
+            f"Command after single-quote-backslash should be denied: {cmd}"
+        )
+        assert matched_cmd is not None
 
 
 def test_is_denylisted_heredoc():
@@ -709,12 +733,12 @@ EOF""",
     for cmd in safe_heredoc_commands:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Heredoc content should be allowed: {cmd[:50]}..."
-        assert (
-            reason is None
-        ), f"Should have no reason for heredoc content: {cmd[:50]}..."
-        assert (
-            matched_cmd is None
-        ), f"Should have no matched command for heredoc: {cmd[:50]}..."
+        assert reason is None, (
+            f"Should have no reason for heredoc content: {cmd[:50]}..."
+        )
+        assert matched_cmd is None, (
+            f"Should have no matched command for heredoc: {cmd[:50]}..."
+        )
 
 
 def test_is_denylisted_heredoc_with_actual_command():
@@ -743,9 +767,9 @@ EOF2""",
     for cmd in dangerous_with_heredoc:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Actual dangerous command should be denied: {cmd[:50]}..."
-        assert (
-            reason is not None
-        ), f"Should have reason for dangerous command: {cmd[:50]}..."
+        assert reason is not None, (
+            f"Should have reason for dangerous command: {cmd[:50]}..."
+        )
         assert matched_cmd is not None, f"Should have matched command: {cmd[:50]}..."
 
 
@@ -789,7 +813,7 @@ try:
     devnull_stat = os.stat('/dev/null')
     is_devnull = (stdin_stat.st_dev == devnull_stat.st_dev and
                   stdin_stat.st_ino == devnull_stat.st_ino)
-except:
+except (OSError, AttributeError, ValueError):
     is_devnull = False
 
 if not is_devnull and not sys.stdin.isatty():
@@ -839,7 +863,7 @@ try:
     devnull_stat = os.stat('/dev/null')
     is_devnull = (stdin_stat.st_dev == devnull_stat.st_dev and
                   stdin_stat.st_ino == devnull_stat.st_ino)
-except:
+except (OSError, AttributeError, ValueError):
     is_devnull = False
 
 if not is_devnull and not sys.stdin.isatty():
@@ -1017,9 +1041,9 @@ def test_is_denylisted_pipe_to_shell_safe_variations():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe pipe command should be allowed: {cmd}"
         assert reason is None, f"Safe command should have no reason: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Safe command should have no matched command: {cmd}"
+        assert matched_cmd is None, (
+            f"Safe command should have no matched command: {cmd}"
+        )
 
 
 def test_is_denylisted_pipe_to_shell_in_quotes():
@@ -1036,9 +1060,9 @@ def test_is_denylisted_pipe_to_shell_in_quotes():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Quoted pipe-to-shell should be allowed: {cmd}"
         assert reason is None, f"Should have no reason for quoted content: {cmd}"
-        assert (
-            matched_cmd is None
-        ), f"Should have no matched command for quoted content: {cmd}"
+        assert matched_cmd is None, (
+            f"Should have no matched command for quoted content: {cmd}"
+        )
 
 
 def test_is_denylisted_pipe_to_shell_in_heredoc():
@@ -1056,15 +1080,15 @@ EOF""",
 
     for cmd in safe_heredoc_commands:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
-        assert (
-            not is_denied
-        ), f"Heredoc with pipe-to-shell should be allowed: {cmd[:50]}..."
-        assert (
-            reason is None
-        ), f"Should have no reason for heredoc content: {cmd[:50]}..."
-        assert (
-            matched_cmd is None
-        ), f"Should have no matched command for heredoc: {cmd[:50]}..."
+        assert not is_denied, (
+            f"Heredoc with pipe-to-shell should be allowed: {cmd[:50]}..."
+        )
+        assert reason is None, (
+            f"Should have no reason for heredoc content: {cmd[:50]}..."
+        )
+        assert matched_cmd is None, (
+            f"Should have no matched command for heredoc: {cmd[:50]}..."
+        )
 
 
 def test_is_denylisted_pipe_to_shell_with_actual_command():
@@ -1081,12 +1105,12 @@ EOF""",
 
     for cmd in dangerous_with_heredoc:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
-        assert (
-            is_denied
-        ), f"Actual dangerous pipe command should be denied: {cmd[:50]}..."
-        assert (
-            reason is not None
-        ), f"Should have reason for dangerous command: {cmd[:50]}..."
+        assert is_denied, (
+            f"Actual dangerous pipe command should be denied: {cmd[:50]}..."
+        )
+        assert reason is not None, (
+            f"Should have reason for dangerous command: {cmd[:50]}..."
+        )
         assert matched_cmd is not None, f"Should have matched command: {cmd[:50]}..."
 
 
@@ -1288,3 +1312,66 @@ def test_execute_jobs_command():
 
     job.kill()
     reset_background_jobs()
+
+
+def test_needs_tty_sudo_detection():
+    """Test that _needs_tty correctly detects sudo commands needing a TTY.
+
+    When stdin is not a TTY (e.g. in tests), _needs_tty should always return False.
+    This tests the command parsing logic itself.
+    """
+    from unittest.mock import patch
+
+    shell = ShellSession()
+    try:
+        # In non-interactive mode (stdin is not a TTY), should always return False
+        assert not shell._needs_tty("sudo apt install vim")
+        assert not shell._needs_tty("sudo echo test")
+        assert not shell._needs_tty("sudo -u root ls")
+        assert not shell._needs_tty("echo hello")
+
+        # Simulate interactive mode (stdin is a TTY)
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+
+            # Basic sudo should need TTY
+            assert shell._needs_tty("sudo apt install vim")
+            assert shell._needs_tty("sudo echo test")
+            assert shell._needs_tty("sudo -u root ls")
+
+            # sudo -S (stdin password) should NOT need TTY
+            assert not shell._needs_tty("sudo -S apt install vim")
+            assert not shell._needs_tty("sudo --stdin echo test")
+
+            # sudo -n (non-interactive) should NOT need TTY
+            assert not shell._needs_tty("sudo -n apt install vim")
+            assert not shell._needs_tty("sudo --non-interactive echo test")
+
+            # Non-sudo commands should NOT need TTY
+            assert not shell._needs_tty("echo hello")
+            assert not shell._needs_tty("ls -la")
+            assert not shell._needs_tty("apt install vim")  # without sudo
+
+            # Commands with env vars before sudo should still detect sudo
+            assert shell._needs_tty(
+                "DEBIAN_FRONTEND=noninteractive sudo apt install vim"
+            )
+    finally:
+        shell.close()
+
+
+def test_shell_cwd_parameter(tmp_path):
+    """ShellSession(cwd=...) should start in the specified directory.
+
+    This is the thread-safe way for the server to set the shell's
+    initial working directory without os.chdir().
+    """
+    target_dir = tmp_path / "workspace"
+    target_dir.mkdir()
+    shell = ShellSession(cwd=str(target_dir))
+    try:
+        ret, out, err = shell.run("pwd")
+        assert ret == 0
+        assert out.strip() == str(target_dir)
+    finally:
+        shell.close()

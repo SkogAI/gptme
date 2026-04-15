@@ -10,8 +10,9 @@ import os
 import sys
 from collections.abc import Generator
 
+from ..hooks.confirm import confirm
 from ..message import Message
-from .base import ConfirmFunc, ToolSpec
+from .base import ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -113,28 +114,7 @@ def _do_restart(conversation_name: str | None = None):
                 # Flag with inline value (--flag=value), keep it
                 # But skip if it's a persisted flag (loaded from chat config)
                 flag_name = arg.split("=")[0]
-                _PERSISTED_FLAGS_INLINE = {
-                    "--name",
-                    "--resume",
-                    "-r",
-                    "-m",
-                    "--model",
-                    "-t",
-                    "--tools",
-                    "--tool-format",
-                    "--stream",
-                    "--no-stream",
-                    "-n",
-                    "--non-interactive",
-                    "--agent-path",
-                    "-w",
-                    "--workspace",
-                    "--multi-tool",
-                    "--no-multi-tool",
-                    "--context-mode",
-                    "--context-include",
-                }
-                if flag_name not in _PERSISTED_FLAGS_INLINE:
+                if flag_name not in _PERSISTED_FLAGS:
                     filtered_args.append(arg)
             else:
                 # Boolean flag (no value), keep it
@@ -175,7 +155,6 @@ def execute_restart(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Execute restart by confirming intent.
 

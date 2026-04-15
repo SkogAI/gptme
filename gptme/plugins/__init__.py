@@ -17,12 +17,16 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from rich.console import Console
+# Use the global console from gptme.util (redirected to stderr in ACP mode)
+# instead of creating a separate instance that would default to stdout.
+from gptme.util import console
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 # Cache for discovered plugins to avoid repeated discovery
 _plugin_cache: dict[tuple[Path, ...], list[Plugin]] = {}
@@ -30,9 +34,18 @@ _plugin_cache: dict[tuple[Path, ...], list[Plugin]] = {}
 # Track which plugins have been logged as loaded (to avoid duplicate logs)
 _loaded_plugins: set[str] = set()
 
+from .plugin import GptmePlugin
+from .registry import (
+    discover_all_plugins,
+    get_all_plugins,
+)
+
 __all__ = [
+    "GptmePlugin",
     "Plugin",
+    "discover_all_plugins",
     "discover_plugins",
+    "get_all_plugins",
     "get_plugin_tool_modules",
     "register_plugin_hooks",
     "register_plugin_commands",
@@ -438,10 +451,10 @@ def get_install_instructions(plugin_path: Path, env_type: str | None = None) -> 
 
     if env_type == "pipx":
         return f"pipx inject gptme {plugin_path}"
-    elif env_type == "uvx":
+    if env_type == "uvx":
         # Note: uvx doesn't have inject yet, may need different approach
         return f"uv pip install --system -e {plugin_path}"
-    elif env_type == "venv":
+    if env_type == "venv":
         return f"pip install -e {plugin_path}"
-    else:  # system
-        return f"pip install --user -e {plugin_path}"
+    # system
+    return f"pip install --user -e {plugin_path}"

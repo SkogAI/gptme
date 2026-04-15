@@ -29,6 +29,26 @@ from .signatures import GptmeTaskSignature, PromptImprovementSignature
 logger = logging.getLogger(__name__)
 
 
+def is_quota_error(e: Exception) -> bool:
+    """Check if an exception is due to API quota exhaustion or rate limiting."""
+    try:
+        from anthropic import BadRequestError, RateLimitError
+
+        if isinstance(e, RateLimitError):
+            return True
+        if isinstance(e, BadRequestError) and "usage limits" in str(e).lower():
+            return True
+    except ImportError:
+        pass
+    # Also check by message for wrapped errors (litellm, DSPy wrappers).
+    # Use specific phrases to avoid false positives (e.g. "disk quota exceeded").
+    msg = str(e).lower()
+    return any(
+        phrase in msg
+        for phrase in ["usage limits", "api quota", "rate limit", "rate_limit"]
+    )
+
+
 class ModelNameMapper:
     """Handles mapping between gptme and DSPy model names."""
 
@@ -43,12 +63,11 @@ class ModelNameMapper:
         """Get a more powerful model for reflection tasks."""
         if base_model.startswith("anthropic/"):
             return "claude-sonnet-4-5"
-        elif base_model.startswith("openai/"):
+        if base_model.startswith("openai/"):
             return "gpt-5"
-        elif "gemini" in base_model or base_model.startswith("google/"):
+        if "gemini" in base_model or base_model.startswith("google/"):
             return "google/gemini-3-pro-preview"
-        else:
-            return ModelNameMapper.to_dspy_format(base_model)
+        return ModelNameMapper.to_dspy_format(base_model)
 
 
 class PromptDataset:
@@ -138,17 +157,14 @@ class GptmeModule(dspy.Module):
 
             # Fix #130: Enable output suppression during GEPA optimization
             # This prevents verbose gptme trajectories from cluttering logs
-            os.environ["GPTME_EVAL_SUPPRESS_OUTPUT"] = "true"
-            try:
-                eval_result = execute(
-                    test=eval_spec,
-                    agent=agent,
-                    timeout=30,
-                    parallel=False,
-                )
-            finally:
-                # Restore normal output after execution (guaranteed cleanup)
-                os.environ.pop("GPTME_EVAL_SUPPRESS_OUTPUT", None)
+            # Pass suppress_output directly to avoid os.environ race conditions
+            eval_result = execute(
+                test=eval_spec,
+                agent=agent,
+                timeout=30,
+                parallel=False,
+                suppress_output=True,
+            )
             messages = []
             if hasattr(agent, "log_dir") and agent.log_dir:
                 try:
@@ -171,8 +187,10 @@ class GptmeModule(dspy.Module):
             )
 
         except Exception as e:
+            if is_quota_error(e):
+                raise
             logger.error(f"Error in GptmeModule forward: {e}")
-            return dspy.Prediction(response=f"Error: {str(e)}", messages=[])
+            return dspy.Prediction(response=f"Error: {e!s}", messages=[])
 
 
 class PromptImprovementModule(dspy.Module):
@@ -337,6 +355,8 @@ class PromptOptimizer:
             return optimized_prompt, results
 
         except Exception as e:
+            if is_quota_error(e):
+                raise
             logger.error(f"Optimization failed: {e}")
             return base_prompt, {"error": str(e)}
 
@@ -415,14 +435,14 @@ class PromptOptimizer:
                 max_labeled_demos=self.max_demos * 2,
                 num_candidates=self.num_trials,
             )
-        elif self.optimizer_type.lower() == "bootstrap":
+        if self.optimizer_type.lower() == "bootstrap":
             metric = create_composite_metric(eval_specs=eval_specs)
             return BootstrapFewShot(
                 metric=metric,
                 max_bootstrapped_demos=self.max_demos,
                 max_rounds=self.num_trials,
             )
-        elif self.optimizer_type.lower() == "gepa":
+        if self.optimizer_type.lower() == "gepa":
             trajectory_metric = create_trajectory_feedback_metric(eval_specs=eval_specs)
             self._trajectory_metric = trajectory_metric  # Store for evaluation
             reflection_model = ModelNameMapper.get_reflection_model(self.model)
@@ -449,7 +469,7 @@ class PromptOptimizer:
                 gepa_kwargs["auto"] = "light"
 
             return GEPA(**gepa_kwargs)
-        elif self.optimizer_type.lower() == "hybrid":
+        if self.optimizer_type.lower() == "hybrid":
             # Phase 4.1: Hybrid multi-stage optimization
             composite_metric = create_composite_metric(eval_specs=eval_specs)
             trajectory_metric = create_trajectory_feedback_metric(eval_specs=eval_specs)
@@ -468,8 +488,7 @@ class PromptOptimizer:
                 num_threads=self.num_threads,
                 auto_stage=auto_stage,
             )
-        else:
-            raise ValueError(f"Unknown optimizer type: {self.optimizer_type}")
+        raise ValueError(f"Unknown optimizer type: {self.optimizer_type}")
 
     def _evaluate_prompt(self, prompt: str, val_data: PromptDataset) -> dict[str, Any]:
         """Evaluate a prompt against validation data with individual metric breakdowns."""
@@ -494,11 +513,20 @@ class PromptOptimizer:
         module = GptmeModule(prompt, self.model)
 
         for example in val_data:
-            pred = module(
-                task_description=example.task_description,
-                context=example.context,
-                eval_spec=example.eval_spec,
-            )
+            try:
+                pred = module(
+                    task_description=example.task_description,
+                    context=example.context,
+                    eval_spec=example.eval_spec,
+                )
+            except Exception as e:
+                if is_quota_error(e):
+                    raise
+                logger.warning(f"Example evaluation failed, scoring as 0: {e}")
+                task_scores.append(0.0)
+                tool_scores.append(0.0)
+                judge_scores.append(0.0)
+                continue
 
             # Run individual metrics once - no duplication
             task_scores.append(task_metric(example, pred, None))
@@ -586,8 +614,5 @@ class PromptOptimizer:
 def get_current_gptme_prompt(interactive: bool, model: str) -> str:
     """Get the current gptme system prompt."""
     messages = list(prompt_gptme(interactive, model))
-    prompt_parts = []
-    for msg in messages:
-        if msg.role == "system":
-            prompt_parts.append(msg.content)
+    prompt_parts = [msg.content for msg in messages if msg.role == "system"]
     return "\n\n".join(prompt_parts)

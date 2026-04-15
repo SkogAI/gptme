@@ -1,5 +1,3 @@
-import pytest
-
 from gptme.codeblock import Codeblock, _extract_codeblocks
 
 
@@ -156,6 +154,19 @@ echo "second"
     assert codeblocks[1].start == 3
 
 
+def test_extract_codeblocks_concatenated_adjacent_fences():
+    """Recover when a closing fence and the next opening fence are concatenated."""
+    markdown = """```shell
+pwd && ls -la
+``````shell
+find /tmp/x -maxdepth 2 -type f | sort
+```"""
+    codeblocks = Codeblock.iter_from_markdown(markdown)
+    assert len(codeblocks) == 2
+    assert codeblocks[0] == Codeblock("shell", "pwd && ls -la")
+    assert codeblocks[1] == Codeblock("shell", "find /tmp/x -maxdepth 2 -type f | sort")
+
+
 def test_extract_codeblocks_streaming_interrupted():
     """
     Test case based on real interruption during streaming.
@@ -220,9 +231,9 @@ Done!
     content = blocks[0].content
     assert "**Output Format:**" in content
     assert "key: value" in content
-    assert (
-        "Done!" in content
-    ), "Content was cut off prematurely - nested block was treated as closing delimiter"
+    assert "Done!" in content, (
+        "Content was cut off prematurely - nested block was treated as closing delimiter"
+    )
 
 
 def test_extract_codeblocks_incomplete_streaming():
@@ -283,9 +294,9 @@ echo "hello"
 echo "hello"
 {fence}"""
     blocks = list(_extract_codeblocks(markdown_without_blank, streaming=True))
-    assert (
-        len(blocks) == 0
-    ), "Should NOT extract block when streaming=True without blank line"
+    assert len(blocks) == 0, (
+        "Should NOT extract block when streaming=True without blank line"
+    )
 
     # Case 3: Streaming=False, WITH blank line (positive case)
     # Should extract normally
@@ -296,9 +307,9 @@ echo "hello"
     # Case 4: Streaming=False, WITHOUT blank line (positive case)
     # Should extract because message is complete (not streaming)
     blocks = list(_extract_codeblocks(markdown_without_blank, streaming=False))
-    assert (
-        len(blocks) == 1
-    ), "Should extract block when streaming=False even without blank line"
+    assert len(blocks) == 1, (
+        "Should extract block when streaming=False even without blank line"
+    )
     assert blocks[0].lang == "shell"
     assert blocks[0].content == 'echo "hello"'
 
@@ -326,9 +337,9 @@ Done!
 
     # During streaming: should NOT extract without blank line
     blocks = list(_extract_codeblocks(nested_markdown, streaming=True))
-    assert (
-        len(blocks) == 0
-    ), "Should NOT extract nested block during streaming without blank line"
+    assert len(blocks) == 0, (
+        "Should NOT extract nested block during streaming without blank line"
+    )
 
     # After completion: should extract
     blocks = list(_extract_codeblocks(nested_markdown, streaming=False))
@@ -352,9 +363,9 @@ Done!
 """
 
     blocks = list(_extract_codeblocks(nested_with_blank, streaming=True))
-    assert (
-        len(blocks) == 1
-    ), "Should extract nested block with blank line during streaming"
+    assert len(blocks) == 1, (
+        "Should extract nested block with blank line during streaming"
+    )
     assert "npm install" in blocks[0].content
     assert "Done!" in blocks[0].content
 
@@ -371,16 +382,18 @@ def test_extract_patch_codeblock_with_nested_backticks():
     with open(f"{script_dir}/data/example-patch-codeblock.txt") as f:
         content = f.read()
 
-    # The file has a blank line after the closing ```, so it should extract in streaming mode
-    blocks = list(_extract_codeblocks(content, streaming=True))
-    assert (
-        len(blocks) == 1
-    ), f"Expected 1 patch block in streaming mode, got {len(blocks)}"
+    # Add a blank line after the closing ``` to confirm block closure in streaming mode.
+    # (end-of-file-fixer strips trailing blank lines from the file, so we add it here)
+    content_with_blank = content + "\n"
+    blocks = list(_extract_codeblocks(content_with_blank, streaming=True))
+    assert len(blocks) == 1, (
+        f"Expected 1 patch block in streaming mode, got {len(blocks)}"
+    )
 
     block = blocks[0]
-    assert block.lang.startswith(
-        "patch "
-    ), f"Expected patch block, got lang='{block.lang}'"
+    assert block.lang.startswith("patch "), (
+        f"Expected patch block, got lang='{block.lang}'"
+    )
 
     # The content should include all the patch markers and nested code blocks
     assert "<<<<<<< ORIGINAL" in block.content
@@ -393,15 +406,15 @@ def test_extract_patch_codeblock_with_nested_backticks():
     # Test without blank line - should NOT extract in streaming mode
     content_no_blank = content.rstrip()  # Remove trailing whitespace
     blocks = list(_extract_codeblocks(content_no_blank, streaming=True))
-    assert (
-        len(blocks) == 0
-    ), f"Should not extract during streaming without blank line, got {len(blocks)} blocks"
+    assert len(blocks) == 0, (
+        f"Should not extract during streaming without blank line, got {len(blocks)} blocks"
+    )
 
     # But should extract in non-streaming mode
     blocks = list(_extract_codeblocks(content_no_blank, streaming=False))
-    assert (
-        len(blocks) == 1
-    ), f"Expected 1 patch block in non-streaming mode, got {len(blocks)}"
+    assert len(blocks) == 1, (
+        f"Expected 1 patch block in non-streaming mode, got {len(blocks)}"
+    )
 
 
 def test_multiple_sequential_nested_blocks():
@@ -845,11 +858,6 @@ Even more content here.
     assert "Even more content here" in content
 
 
-@pytest.mark.xfail(
-    reason="Streaming implementation doesn't match spec: should not extract incomplete blocks when fences don't match. "
-    "The fence after 'Structure:' opens a new block (not closes save block), and final fence closes that block, "
-    "leaving the save block unclosed. Current implementation incorrectly extracts 1 block. See PR #721 review."
-)
 def test_save_with_structure_header_and_bare_backticks_streaming():
     """
     Streaming mode variant of test_save_with_structure_header_and_bare_backticks.
@@ -917,10 +925,6 @@ More content that gets lost.
     assert "More content that gets lost" in content
 
 
-@pytest.mark.xfail(
-    reason="Streaming implementation doesn't match spec: should not extract incomplete blocks when fences don't match. "
-    "Opening markdown fence never gets closed. See PR #721 review."
-)
 def test_append_with_markdown_header_and_bare_backticks_streaming():
     """
     Streaming mode variant of test_append_with_markdown_header_and_bare_backticks.
@@ -989,11 +993,6 @@ Final content.
     assert "Final content" in content
 
 
-@pytest.mark.xfail(
-    reason="Streaming implementation doesn't match spec: should not extract incomplete blocks when fences don't match. "
-    "Per Erik's review: 1. save (open), 2. no langtag (open), 3. python (open), "
-    "4. no langtag (closes 3), 5. no langtag (closes 2), but no 6th fence to close 1. See PR #721 review."
-)
 def test_save_with_bold_text_and_bare_backticks_streaming():
     """
     Streaming mode variant of test_save_with_bold_text_and_bare_backticks.
@@ -1034,6 +1033,182 @@ Final content.
     assert len(blocks) == 0, "Should not extract incomplete block in streaming mode"
 
 
+def test_save_with_nested_bare_backtick_block():
+    """
+    Test from PR #1429 review: a save block containing a bare backtick block
+    (like a tree listing or ascii diagram) nested inside it.
+
+    The parser should treat the bare backtick fences as a nested block,
+    keeping the outer save block open until the final closing fence.
+
+    Fence structure:
+    1. ```save filename.txt   (opens outer block, depth=1)
+    2. ```                     (opens nested block, depth=2)
+    3. ```                     (closes nested, depth=1)
+    4. ```                     (closes outer, depth=0)
+    """
+    fence = "```"
+    markdown = f"""\
+Let's call save:
+
+{fence}save filename.txt
+# Title
+
+Blah
+
+## Structure
+
+{fence}
+[tree-like listing or ascii-diagram - typical non-langtag block]
+{fence}
+
+## Last section
+That's all
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+    content = blocks[0].content
+    assert blocks[0].lang == "save filename.txt"
+    assert "# Title" in content
+    assert "Blah" in content
+    assert "## Structure" in content
+    assert "tree-like listing" in content
+    assert "## Last section" in content
+    assert "That's all" in content
+
+
+def test_save_with_nested_bare_backtick_block_streaming():
+    """
+    Streaming mode variant of test_save_with_nested_bare_backtick_block.
+
+    Tests that the streaming parser correctly handles a save block containing
+    a bare backtick block (tree listing, ascii diagram) inside it, with
+    content continuing after the nested block closes.
+
+    With blank line after final fence, streaming should extract the block.
+    Without blank line, it should remain open (incomplete).
+    """
+    fence = "```"
+
+    # Complete version (blank line after final fence confirms completion)
+    markdown_complete = f"""\
+Let's call save:
+
+{fence}save filename.txt
+# Title
+
+Blah
+
+## Structure
+
+{fence}
+[tree-like listing or ascii-diagram - typical non-langtag block]
+{fence}
+
+## Last section
+That's all
+{fence}
+
+"""
+
+    blocks = list(_extract_codeblocks(markdown_complete, streaming=True))
+    assert len(blocks) == 1
+    content = blocks[0].content
+    assert blocks[0].lang == "save filename.txt"
+    assert "# Title" in content
+    assert "tree-like listing" in content
+    assert "## Last section" in content
+    assert "That's all" in content
+
+    # Incomplete version (no blank line - block still streaming)
+    markdown_incomplete = f"""\
+Let's call save:
+
+{fence}save filename.txt
+# Title
+
+Blah
+
+## Structure
+
+{fence}
+[tree-like listing or ascii-diagram - typical non-langtag block]
+{fence}
+
+## Last section
+That's all
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown_incomplete, streaming=True))
+    assert len(blocks) == 0, "Should not extract block without trailing blank line"
+
+
+def test_save_with_bare_backticks_incremental_streaming():
+    """
+    Simulates real LLM streaming where content arrives line-by-line.
+
+    The parser is called repeatedly with accumulated content as new lines arrive.
+    At certain intermediate states — specifically when a bare ``` fence is the
+    last line received — the parser may prematurely extract the block because
+    ``split("\\n")`` on ``"```\\n"`` produces ``["```", ""]``, and the empty
+    trailing element is indistinguishable from a real blank line that confirms
+    block closure in streaming mode.
+
+    This test verifies that NO premature block extraction happens at any
+    intermediate step. The block should only be extractable after the true
+    closing fence AND its confirming blank line have both arrived.
+    """
+    fence = "```"
+
+    # Full content that should parse correctly when complete
+    lines = [
+        "Let's call save:\n",
+        "\n",
+        f"{fence}save filename.txt\n",
+        "# Title\n",
+        "\n",
+        "Blah\n",
+        "\n",
+        "## Structure\n",
+        "\n",
+        f"{fence}\n",  # bare fence - opens nested block
+        "tree-like listing\n",
+        f"{fence}\n",  # bare fence - closes nested block
+        "\n",
+        "## Last section\n",
+        "That's all\n",
+        f"{fence}\n",  # closes outer save block
+        "\n",  # blank line confirming closure
+    ]
+
+    # Simulate incremental streaming: feed content line-by-line
+    # (as the real llm/__init__.py streaming loop does)
+    content_so_far = ""
+    premature_extractions = []
+    for step, line in enumerate(lines):
+        content_so_far += line
+        blocks = list(_extract_codeblocks(content_so_far, streaming=True))
+        if blocks and step < len(lines) - 1:
+            # Block extracted before all content arrived — premature!
+            premature_extractions.append(
+                (step, line.rstrip(), len(blocks), blocks[0].lang)
+            )
+
+    # No premature extraction should happen at intermediate steps
+    assert not premature_extractions, (
+        f"Premature block extraction at steps: {premature_extractions}. "
+        f"The parser should not extract blocks until all content has arrived."
+    )
+
+    # Final state should have exactly 1 complete block
+    final_blocks = list(_extract_codeblocks(content_so_far, streaming=True))
+    assert len(final_blocks) == 1
+    assert final_blocks[0].lang == "save filename.txt"
+    assert "tree-like listing" in final_blocks[0].content
+    assert "Last section" in final_blocks[0].content
+
+
 # Tests for quad+ backtick support (Issue #1005)
 def test_quad_backticks_contain_triple():
     """Quad backticks should allow triple backticks inside without closing."""
@@ -1072,7 +1247,7 @@ def test_quintuple_backticks_contain_quad():
 
 def test_quad_backticks_not_closed_by_triple():
     """Quad backticks should not be closed by triple backticks."""
-    markdown = "````text\n" "line 1\n" "```\n" "line 2\n" "````"
+    markdown = "````text\nline 1\n```\nline 2\n````"
     blocks = Codeblock.iter_from_markdown(markdown)
     assert len(blocks) == 1
     assert blocks[0].lang == "text"
@@ -1103,3 +1278,203 @@ def test_mismatched_fence_lengths():
     markdown3 = "```text\nline 1\n````"
     blocks3 = Codeblock.iter_from_markdown(markdown3)
     assert len(blocks3) == 0
+
+
+def test_thinking_block_with_closing_thinking_tag():
+    """
+    Gemini uses </thinking> (not </think>) to close thinking blocks.
+    _extract_codeblocks should handle both tags so that save/execute blocks
+    after the thinking block are not swallowed by an unclosed nesting level.
+
+    Regression test for: autoresearch practical5 plateau where gemini-2.0-flash-001
+    wraps reasoning in ```thinking>...</thinking> and the save block after it was
+    never executed because </thinking> was not stripped.
+    """
+    markdown = "```thinking>\nsome model reasoning here\n</thinking>\n```save pipeline.py\nprint('hello')\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    # The save block after </thinking> should be extracted
+    assert len(blocks) == 1
+    assert blocks[0].lang.startswith("save")
+    assert "print('hello')" in blocks[0].content
+
+
+def test_thinking_tag_concatenated_to_closing_fence():
+    """A closing fence concatenated with <think> should not swallow later tool blocks."""
+    markdown = "```shell\npwd\n```<think>\nbrief reasoning\n</think>\n```save pipeline.py\nprint('hello')\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 2
+    assert blocks[0].lang == "shell"
+    assert blocks[0].content == "pwd"
+    assert blocks[1].lang.startswith("save")
+    assert "print('hello')" in blocks[1].content
+
+
+def test_adjacent_outer_fences_split_tool_blocks():
+    """Inner-loop recovery: 6-backtick line inside an open block yields both blocks.
+
+    This exercises the pre-existing inner-loop guard (nesting_depth==1 path),
+    NOT the new outer-loop guard added in this commit. The ``````lang line appears
+    before block 1's closing fence, so the inner loop rewrites it and reprocesses.
+    """
+    # Inner-loop case: 6-backtick line appears inside block 1 (no closing fence before it)
+    markdown = (
+        "```patch /tmp/file1.py\n"
+        "<<<<<<< ORIGINAL\nold\n=======\nnew\n>>>>>>> UPDATED\n"
+        "``````patch /tmp/file2.py\n"
+        "<<<<<<< ORIGINAL\nold2\n=======\nnew2\n>>>>>>> UPDATED\n"
+        "```"
+    )
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 2
+    assert blocks[0].lang == "patch /tmp/file1.py"
+    assert blocks[1].lang == "patch /tmp/file2.py"
+    assert "old2" in blocks[1].content
+
+
+def test_adjacent_outer_fences_outer_level():
+    """Outer-loop case: 6-backtick line at outer level (after a properly-closed block)."""
+    # Block 1 is properly closed with ```, then "``````patch" appears at the outer loop level.
+    # Without the fix, fence_len=6 would cause the inner loop to search for a 6-backtick
+    # closing fence, never find one, and silently drop block 2.
+    markdown = (
+        "```patch /tmp/file1.py\n"
+        "<<<<<<< ORIGINAL\nold\n=======\nnew\n>>>>>>> UPDATED\n"
+        "```\n"
+        "``````patch /tmp/file2.py\n"
+        "<<<<<<< ORIGINAL\nold2\n=======\nnew2\n>>>>>>> UPDATED\n"
+        "```"
+    )
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 2
+    assert blocks[0].lang == "patch /tmp/file1.py"
+    assert "old" in blocks[0].content
+    assert blocks[1].lang == "patch /tmp/file2.py"
+    assert "old2" in blocks[1].content
+
+
+def test_thinking_tag_concatenated_then_standalone_closed():
+    """Concatenated <think> followed by a standalone closed <think> block should yield all tool blocks."""
+    # Edge case: first block closes with ```<think> (concatenated, handled by inner-loop),
+    # followed by a properly-closed standalone <think>...</think>, then another tool block.
+    # The for-else early-exit must NOT fire here — standalone <think> is closed.
+    markdown = "```shell\npwd\n```<think>\nbrief reasoning\n</think>\n<think>\nmore thinking\n</think>\n```save pipeline.py\nprint('hello')\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 2
+    assert blocks[0].lang == "shell"
+    assert blocks[0].content == "pwd"
+    assert blocks[1].lang.startswith("save")
+    assert "print('hello')" in blocks[1].content
+
+
+def test_thinking_block_with_closing_think_tag():
+    """Existing </think> tag variant still works after refactor."""
+    markdown = "<think>\nsome thinking\n</think>\n```save result.py\nx = 1\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+    assert blocks[0].lang.startswith("save")
+    assert "x = 1" in blocks[0].content
+
+
+def test_thinking_block_unclosed_thinking_tag_early_exit():
+    """Unclosed <thinking> tag (no </thinking>) should cause early exit — no blocks extracted."""
+    markdown = "<thinking>\nmodel is still reasoning...\n```save pipeline.py\nprint('hello')\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 0
+
+
+def test_thinking_tag_concatenated_then_unclosed_standalone():
+    """Concatenated <think> followed by a genuinely unclosed standalone <think> should early-exit."""
+    # After the concatenated closing (```<think>...</think>), a new standalone <think>
+    # block is opened but never closed — no tool blocks should be extracted.
+    markdown = "```shell\npwd\n```<think>\nbrief reasoning\n</think>\n<think>\nstill thinking...\n```save pipeline.py\nprint('hello')\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 0
+
+
+def test_adjacent_fences_bare_multifence_content_line():
+    """A content line of bare 6 backticks inside a block must NOT trigger adjacent-fence recovery."""
+    # "``````" (6 backticks) is a valid content line, not a pair of adjacent fences.
+    # With fence_len=3, the adjacent-fence guard must require a non-backtick char after
+    # the fence prefix; otherwise it incorrectly splits the block.
+    markdown = "```shell\nsome code\n``````\nmore code\n```"
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+    assert blocks[0].lang == "shell"
+    assert "``````" in blocks[0].content
+    assert "more code" in blocks[0].content
+
+
+def test_fence_preserved_in_extraction():
+    """Codeblock.fence should reflect the original fence length (3+)."""
+    # Triple backticks (default)
+    blocks = list(_extract_codeblocks("```python\ncode\n```"))
+    assert len(blocks) == 1
+    assert blocks[0].fence == "```"
+
+    # Quadruple backticks (used by md_codeblock() to wrap content with triple fences)
+    blocks = list(_extract_codeblocks("````python\ncode\n````"))
+    assert len(blocks) == 1
+    assert blocks[0].fence == "````"
+
+    # Quintuple backticks
+    blocks = list(_extract_codeblocks("`````txt\ncode\n`````"))
+    assert len(blocks) == 1
+    assert blocks[0].fence == "`````"
+
+    # to_markdown() should use the original fence
+    assert blocks[0].to_markdown().startswith("`````txt")
+
+
+# --- XML round-trip and edge-case tests ---
+
+
+def test_from_xml_basic():
+    """from_xml should parse a well-formed codeblock element."""
+    xml = '<codeblock lang="python">print("hello")</codeblock>'
+    cb = Codeblock.from_xml(xml)
+    assert cb.lang == "python"
+    assert cb.content == 'print("hello")'
+    assert cb.path is None
+
+
+def test_from_xml_with_path():
+    """from_xml should parse optional path attribute."""
+    xml = '<codeblock lang="python" path="main.py">code</codeblock>'
+    cb = Codeblock.from_xml(xml)
+    assert cb.lang == "python"
+    assert cb.content == "code"
+    assert cb.path == "main.py"
+
+
+def test_from_xml_missing_lang():
+    """from_xml should not crash when lang attribute is missing."""
+    xml = "<codeblock>some content</codeblock>"
+    cb = Codeblock.from_xml(xml)
+    assert cb.lang == ""
+    assert cb.content == "some content"
+
+
+def test_from_xml_empty_content():
+    """from_xml should handle empty content gracefully."""
+    xml = '<codeblock lang="txt"></codeblock>'
+    cb = Codeblock.from_xml(xml)
+    assert cb.lang == "txt"
+    assert cb.content == ""
+
+
+def test_xml_roundtrip():
+    """to_xml -> from_xml should preserve content."""
+    original = Codeblock("python", "x = 1 + 2\nprint(x)", "test.py")
+    xml = original.to_xml()
+    restored = Codeblock.from_xml(xml)
+    assert restored.lang == original.lang
+    assert restored.content == original.content
+    assert restored.path == original.path
+
+
+def test_xml_roundtrip_special_chars():
+    """XML round-trip should handle special characters."""
+    original = Codeblock("python", 'if x < 10 & y > 5:\n    print("ok")')
+    xml = original.to_xml()
+    restored = Codeblock.from_xml(xml)
+    assert restored.content == original.content

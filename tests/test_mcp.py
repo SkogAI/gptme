@@ -10,17 +10,25 @@ import tomlkit
 from gptme.config import MCPConfig, MCPServerConfig, UserConfig
 
 
-def test_mcp_cli_commands():
-    """Test MCP CLI command logic"""
+def test_mcp_cli_commands(monkeypatch):
+    """Test MCP CLI command logic without hitting the live registry."""
     from click.testing import CliRunner
 
-    from gptme.util.cli import mcp_info
+    from gptme.cli.cmd_mcp import mcp_info
+    from gptme.mcp.registry import MCPRegistry
+
+    monkeypatch.setattr(
+        MCPRegistry,
+        "get_server_details",
+        lambda self, server_name: None,
+    )
 
     # Test with mock data - this would normally use the config system
     runner = CliRunner()
 
     # Test info command with non-existent server
     result = runner.invoke(mcp_info, ["nonexistent"])
+    assert result.exit_code == 0
     # Updated to match improved error message that searches registries
     assert "not configured locally" in result.output
     assert "not found in registries either" in result.output
@@ -232,3 +240,127 @@ def test_memory_operations(mcp_client):
     # Search nodes
     search_result = mcp_client.call_tool("search_nodes", {"query": "Python"})
     assert "test_user" in str(search_result)
+
+
+def test_mcp_roots_management():
+    """Test MCP roots management methods"""
+    import mcp.types as types
+
+    from gptme.mcp.client import MCPClient
+
+    # Create client without connecting to any server
+    client = MCPClient()
+
+    # Test initial state - no roots
+    assert client.get_roots() == []
+
+    # Test add_root (no session, so no notification sent)
+    result = client.add_root("file:///test/path", "Test Root")
+    assert result is True
+    roots = client.get_roots()
+    assert len(roots) == 1
+    assert str(roots[0].uri) == "file:///test/path"
+    assert roots[0].name == "Test Root"
+
+    # Test add another root
+    result = client.add_root("file:///another/path", "Another Root")
+    assert result is True
+    roots = client.get_roots()
+    assert len(roots) == 2
+
+    # Test adding duplicate root returns False
+    result = client.add_root("file:///test/path", "Duplicate Root")
+    assert result is False
+    roots = client.get_roots()
+    assert len(roots) == 2  # Should not have added the duplicate
+
+    # Test remove_root
+    removed = client.remove_root("file:///test/path")
+    assert removed is True
+    roots = client.get_roots()
+    assert len(roots) == 1
+    assert str(roots[0].uri) == "file:///another/path"
+
+    # Test remove non-existent root
+    removed = client.remove_root("file:///nonexistent")
+    assert removed is False
+
+    # Test set_roots
+    new_roots = [
+        types.Root(uri=types.FileUrl("file:///new/path1"), name="New Root 1"),
+        types.Root(uri=types.FileUrl("file:///new/path2"), name="New Root 2"),
+    ]
+    client.set_roots(new_roots)
+    roots = client.get_roots()
+    assert len(roots) == 2
+    assert str(roots[0].uri) == "file:///new/path1"
+    assert roots[0].name == "New Root 1"
+
+
+def test_mcp_roots_adapter_functions():
+    """Test MCP roots adapter functions"""
+    from gptme.tools.mcp_adapter import add_mcp_root, list_mcp_roots, remove_mcp_root
+
+    # Test list_mcp_roots with no servers loaded
+    result = list_mcp_roots()
+    assert "No MCP servers loaded" in result
+
+    # Test list_mcp_roots for non-existent server
+    result = list_mcp_roots("nonexistent")
+    assert "not loaded" in result
+
+    # Test add_mcp_root for non-existent server
+    result = add_mcp_root("nonexistent", "file:///test", "Test")
+    assert "not loaded" in result
+
+    # Test remove_mcp_root for non-existent server
+    result = remove_mcp_root("nonexistent", "file:///test")
+    assert "not loaded" in result
+
+
+def test_mcp_client_event_loop_isolation():
+    """Test that creating multiple MCPClient instances doesn't pollute the global event loop.
+
+    Previously, MCPClient.__init__ called asyncio.set_event_loop(self.loop),
+    which meant each new client would overwrite the thread-global event loop.
+    With multiple MCP servers configured, this caused the last-created client's
+    loop to become the global one, potentially breaking async operations on
+    earlier clients or other code that relies on the global event loop.
+    """
+    import asyncio
+
+    from gptme.mcp.client import MCPClient
+
+    # Save whatever the current event loop policy gives us
+    original_loop = None
+    try:
+        original_loop = asyncio.get_event_loop_policy().get_event_loop()
+    except RuntimeError:
+        # No current event loop — that's fine
+        pass
+
+    # Create multiple clients (simulating multiple MCP servers)
+    client_a = MCPClient()
+    client_b = MCPClient()
+    client_c = MCPClient()
+
+    # Each client should have its own distinct event loop
+    assert client_a.loop is not client_b.loop
+    assert client_b.loop is not client_c.loop
+    assert client_a.loop is not client_c.loop
+
+    # The global event loop should NOT have been changed by creating clients
+    try:
+        current_loop = asyncio.get_event_loop_policy().get_event_loop()
+        if original_loop is not None:
+            assert current_loop is original_loop, (
+                "MCPClient.__init__ should not change the thread-global event loop"
+            )
+    except RuntimeError:
+        # No event loop set — also acceptable if there wasn't one before
+        assert original_loop is None
+
+    # Clean up
+    client_a.loop.close()
+    client_b.loop.close()
+    client_c.loop.close()

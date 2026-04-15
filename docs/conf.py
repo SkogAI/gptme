@@ -6,12 +6,12 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 import re
-from datetime import date
+from datetime import datetime, timezone
 
 from docutils import nodes
 from docutils.parsers.rst import Directive
 
-year = date.today().year
+year = datetime.now(tz=timezone.utc).year
 project = "gptme"
 copyright = f"{year}, Erik Bjäreholt"
 author = "Erik Bjäreholt"
@@ -63,13 +63,18 @@ class ChatDirective(Directive):
         # set up table
         src = f'''
 <table style="width: 100%; margin-bottom: 1em">
-  {"".join(f"""
+  {
+            "".join(
+                f"""
 <tr>
   <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; {msg["role_style"]}">{msg["role"]}</td>
   <td>
     <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">{msg["content"]}</pre>
   </td>
-</tr>""" for msg in msgs)}
+</tr>"""
+                for msg in msgs
+            )
+        }
 </table>
 '''.strip()
 
@@ -143,12 +148,18 @@ nitpick_ignore = [
     ("py:class", "ToolFormat"),
     ("py:class", "ConfirmFunc"),
     ("py:class", "Path"),
+    ("py:class", "PIL.Image.Image"),
     ("py:class", "gptme.tools.subagent.SubtaskDef"),
     ("py:class", "gptme.tools.shell.BackgroundJob"),
     ("py:class", "gptme.tools.shell.ShellSession"),
     # Phase 1 async subagent types
     ("py:class", "gptme.tools.subagent.ReturnType"),
     ("py:class", "gptme.tools.subagent.BatchJob"),
+    ("py:class", "gptme.tools.subagent.types.SubtaskDef"),
+    ("py:class", "gptme.tools.subagent.batch.BatchJob"),
+    # Hook confirmation system types
+    ("py:class", "gptme.hooks.confirm.ToolConfirmHook"),
+    ("py:class", "gptme.hooks.elicitation.ElicitationHook"),
 ]
 
 # -- Options for HTML output -------------------------------------------------

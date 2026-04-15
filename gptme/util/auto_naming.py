@@ -1,17 +1,27 @@
 """Unified auto-naming system for conversations."""
 
+from __future__ import annotations
+
 import logging
-from datetime import datetime
-from pathlib import Path
-from typing import Literal
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal
 
 from ..message import Message
 from ..telemetry import trace_function
 from .generate_name import generate_name
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ..config import ChatConfig
+
 logger = logging.getLogger(__name__)
 
 NamingStrategy = Literal["random", "llm", "auto"]
+
+# Maximum number of assistant messages after which auto-naming is skipped.
+# Exported so callers can pre-check before spawning threads / doing I/O.
+MAX_ASSISTANT_MSGS_FOR_NAMING = 3
 
 
 def generate_conversation_name(
@@ -53,13 +63,13 @@ def generate_conversation_name(
         logger.debug(f"Name '{name}' exists, retrying (attempt {attempt + 1})")
 
     # Final fallback with timestamp
-    timestamp = datetime.now().strftime("%H%M%S")
+    timestamp = datetime.now(tz=timezone.utc).strftime("%H%M%S")
     return f"{name}-{timestamp}"
 
 
 def generate_conversation_id(name: str | None, logs_dir: Path) -> str:
     """Generate a conversation ID for CLI usage with date prefix."""
-    datestr = datetime.now().strftime("%Y-%m-%d")
+    datestr = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
     if name == "random":
         name = None
@@ -81,7 +91,7 @@ def generate_conversation_id(name: str | None, logs_dir: Path) -> str:
         full_id = f"{datestr}-{name}-{attempt}"
         attempt += 1
         if attempt > 100:  # Safety valve
-            timestamp = datetime.now().strftime("%H%M%S")
+            timestamp = datetime.now(tz=timezone.utc).strftime("%H%M%S")
             full_id = f"{datestr}-{name}-{timestamp}"
             break
 
@@ -280,16 +290,13 @@ def _is_invalid_title(name: str) -> bool:
             return True
 
     # Reject if it's too long to be a proper title (likely an explanation)
-    if len(name.split()) > 8:
-        return True
-
-    return False
+    return len(name.split()) > 8
 
 
 def _starts_with_date(name: str) -> bool:
     """Check if name starts with a date in YYYY-MM-DD format."""
     try:
-        datetime.strptime(name[:10], "%Y-%m-%d")
+        datetime.strptime(name[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         return True
     except (ValueError, IndexError):
         return False
@@ -299,6 +306,41 @@ def _starts_with_date(name: str) -> bool:
 def auto_generate_display_name(messages: list[Message], model: str) -> str | None:
     """Generate a display name for the conversation based on the messages."""
     return generate_conversation_name(strategy="llm", messages=messages, model=model)
+
+
+def try_auto_name(
+    config: ChatConfig,
+    messages: list[Message],
+    model: str,
+    max_assistant_msgs: int = MAX_ASSISTANT_MSGS_FOR_NAMING,
+) -> str | None:
+    """Try to auto-generate a conversation name, updating config on success.
+
+    Checks conditions (assistant message count, no existing name) before
+    calling the LLM. Returns the generated name or None.
+
+    Used by both CLI (chat.py, in background thread) and server
+    (api_v2_sessions.py, synchronously) to avoid duplicating naming logic.
+    """
+    if config.name:
+        return None
+
+    assistant_count = sum(1 for m in messages if m.role == "assistant")
+    if assistant_count < 1 or assistant_count > max_assistant_msgs:
+        return None
+
+    try:
+        display_name = auto_generate_display_name(messages, model)
+        if display_name:
+            config.name = display_name
+            config.save()
+            logger.info(f"Auto-generated conversation name: {display_name}")
+            return display_name
+        logger.info("Auto-naming returned no result, will retry on next message")
+        return None
+    except Exception:
+        logger.warning("Failed to auto-generate name", exc_info=True)
+        return None
 
 
 @trace_function(

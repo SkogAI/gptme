@@ -1,19 +1,23 @@
+import importlib
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Generator, Iterable
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import requests
 from openai import NOT_GIVEN
+from typing_extensions import NotRequired
 
 from ..config import Config, get_config
 from ..constants import TEMPERATURE, TOP_P
-from ..message import Message, MessageMetadata, msgs2dicts
+from ..message import Message, MessageMetadata, UsageData, msgs2dicts
 from ..telemetry import _calculate_llm_cost, record_llm_request
 from ..tools import ToolSpec
+from .constants import _MIN_RESPONSE_TOKENS
 from .models import (
     CustomProvider,
     ModelMeta,
@@ -32,11 +36,68 @@ if TYPE_CHECKING:
     from openai import OpenAI  # fmt: skip
     from openai.types.chat import ChatCompletionToolParam  # fmt: skip
 
-    from . import is_custom_provider  # fmt: skip
 
 # Dictionary to store clients for each provider (includes custom providers)
 clients: dict[Provider, "OpenAI"] = {}
 logger = logging.getLogger(__name__)
+
+
+# Type definitions for message dictionaries used in API transformations
+class ContentPart(TypedDict):
+    """A content part in a multimodal message."""
+
+    type: str  # "text", "image_url", etc. - always required
+    text: NotRequired[str]  # For text parts
+    image_url: NotRequired[dict[str, str]]  # For image parts: {"url": "data:..."}
+
+
+# Type alias for message content (can be string, list of parts, or None)
+MessageContent = str | list[ContentPart | str] | None
+
+
+class ToolCallFunction(TypedDict):
+    """Function details in a tool call."""
+
+    name: str
+    arguments: str
+
+
+class ToolCall(TypedDict):
+    """A tool call in an assistant message."""
+
+    id: str
+    type: str  # "function"
+    function: ToolCallFunction
+
+
+class MessageDict(TypedDict):
+    """
+    Dictionary representation of a chat message for API calls.
+
+    This type covers the internal message format used when preparing
+    messages for various LLM providers. Not all fields are present
+    in all messages - the required fields vary by role.
+    """
+
+    # Core fields (always required)
+    role: str  # "system", "user", "assistant", "tool"
+    content: MessageContent
+
+    # Tool-related fields (optional)
+    tool_calls: NotRequired[list[ToolCall]]  # For assistant messages that call tools
+    tool_call_id: NotRequired[str]  # For tool response messages
+    call_id: NotRequired[
+        str
+    ]  # Legacy field for tool responses (converted to tool_call_id)
+
+    # Reasoning/thinking fields (for models with thinking/reasoning support)
+    reasoning_content: NotRequired[str]
+
+    # Multimodal fields
+    files: NotRequired[
+        list[str]
+    ]  # Image/file attachments as file paths (processed before API call)
+
 
 # Shows in rankings on openrouter.ai
 OPENROUTER_APP_HEADERS = {
@@ -96,25 +157,25 @@ def _record_usage(usage, model: str) -> MessageMetadata | None:
         cache_read_tokens=cache_read_tokens,
     )
 
+    # Build nested usage data
+    usage_data: UsageData = {}
+    if input_tokens is not None:
+        usage_data["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        usage_data["output_tokens"] = output_tokens
+    if cache_read_tokens is not None:
+        usage_data["cache_read_tokens"] = cache_read_tokens
+
     # Return MessageMetadata for attachment to Message
     metadata: MessageMetadata = {"model": model}
-    if input_tokens is not None:
-        metadata["input_tokens"] = input_tokens
-    if output_tokens is not None:
-        metadata["output_tokens"] = output_tokens
-    if cache_read_tokens is not None:
-        metadata["cache_read_tokens"] = cache_read_tokens
+    if usage_data:
+        metadata["usage"] = usage_data
     if cost > 0:
         metadata["cost"] = cost
     return metadata
 
 
-# TODO: improve provider routing for openrouter: https://openrouter.ai/docs/provider-routing
-# TODO: set required-parameters: https://openrouter.ai/docs/provider-routing#required-parameters-_beta_
-# TODO: set quantization: https://openrouter.ai/docs/provider-routing#quantization
-
-
-ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif"]
+ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"]
 
 
 def _make_response_format(output_schema):
@@ -124,11 +185,11 @@ def _make_response_format(output_schema):
         output_schema: Optional Pydantic BaseModel class
 
     Returns:
-        OpenAI response_format dict or NOT_GIVEN if no schema
+        OpenAI response_format dict or None if no schema
     """
 
     if output_schema is None:
-        return NOT_GIVEN
+        return None
 
     # Get the JSON schema from Pydantic model
     json_schema = output_schema.model_json_schema()
@@ -151,12 +212,11 @@ def init(provider: Provider, config: Config):
 
     # Set the proxy URL to the unified messages endpoint if not already set
     if proxy_url and not proxy_url.endswith("/messages"):
-        proxy_url = proxy_url + "/messages" if proxy_url else None
+        proxy_url = proxy_url + "/messages"
 
     # Get configurable API timeout (default: client's own default of 10 minutes)
     # If not set explicitly via LLM_API_TIMEOUT, we use NOT_GIVEN to let the
     # client use its own default behavior, which may evolve with future versions.
-    from openai import NOT_GIVEN  # fmt: skip
 
     timeout_str = config.get_env("LLM_API_TIMEOUT")
     try:
@@ -187,6 +247,16 @@ def init(provider: Provider, config: Config):
         clients[provider] = OpenAI(
             api_key=api_key,
             base_url=proxy_url or "https://openrouter.ai/api/v1",
+            timeout=timeout,
+        )
+    elif provider == "gptme":
+        from .llm_gptme import get_api_key, get_base_url
+
+        api_key = proxy_key or get_api_key(config)
+        base_url = proxy_url or get_base_url(config)
+        clients[provider] = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
             timeout=timeout,
         )
     elif provider == "gemini":
@@ -227,7 +297,7 @@ def init(provider: Provider, config: Config):
         api_key = config.get_env("OPENAI_API_KEY") or "ollama"
         clients[provider] = OpenAI(api_key=api_key, base_url=api_base, timeout=timeout)
     else:
-        # Check if this is a custom provider
+        # Check if this is a custom provider (config-file based)
         custom_provider = next(
             (p for p in config.user.providers if p.name == provider), None
         )
@@ -239,7 +309,24 @@ def init(provider: Provider, config: Config):
                 timeout=timeout,
             )
         else:
-            raise ValueError(f"Unknown provider: {provider}")
+            # Check if this is a plugin provider (entry-point based)
+            from .provider_plugins import get_provider_plugin  # fmt: skip
+
+            plugin = get_provider_plugin(str(provider))
+            if plugin:
+                api_key = config.get_env(plugin.api_key_env) or ""
+                if not api_key:
+                    raise KeyError(
+                        f"Missing environment variable {plugin.api_key_env} "
+                        f"required by provider plugin {plugin.name!r}"
+                    )
+                clients[provider] = OpenAI(
+                    api_key=api_key,
+                    base_url=plugin.base_url,
+                    timeout=timeout,
+                )
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
 
     assert clients[provider], f"Provider {provider} not initialized"
 
@@ -249,6 +336,11 @@ def get_client(provider: Provider) -> "OpenAI":
     if provider not in clients:
         init(provider, get_config())
     return clients[provider]
+
+
+def has_client(provider: Provider) -> bool:
+    """Return whether a client already exists without triggering lazy init."""
+    return provider in clients
 
 
 def _prep_o1(msgs: Iterable[Message]) -> Generator[Message, None, None]:
@@ -273,9 +365,7 @@ def _merge_consecutive(msgs: Iterable[Message]) -> Generator[Message, None, None
             continue
 
         if last_message.role == msg.role:
-            last_message = last_message.replace(
-                content=f"{last_message.content}\n\n{msg.content}"
-            )
+            last_message = last_message.concat(msg)
             continue
         else:
             yield last_message
@@ -307,14 +397,26 @@ def _handle_openai_transient_error(e, attempt, max_retries, base_delay):
     - 5xx server errors (500-599): Internal errors, bad gateway, service unavailable, etc.
     - 429 rate limit errors: Should back off and retry
     - Connection errors: Network issues, timeouts
+    - httpx transport/protocol errors: Incomplete reads, server disconnects mid-stream
     """
     from openai import APIConnectionError, APIStatusError, RateLimitError  # fmt: skip
+
+    try:
+        httpx = importlib.import_module("httpx")
+    except ImportError:
+        httpx = None
 
     # Allow tests to override max_retries via environment variable
     # This breaks out of the retry loop early to prevent test timeouts
     test_max_retries_str = os.environ.get("GPTME_TEST_MAX_RETRIES")
     if test_max_retries_str:
-        test_max_retries = int(test_max_retries_str)
+        try:
+            test_max_retries = int(test_max_retries_str)
+        except ValueError as parse_err:
+            raise ValueError(
+                f"Invalid GPTME_TEST_MAX_RETRIES value: {test_max_retries_str!r}. "
+                "Must be a valid integer."
+            ) from parse_err
         if attempt >= test_max_retries - 1:
             logger.warning(
                 f"Test max_retries={test_max_retries} reached (attempt {attempt + 1}), not retrying"
@@ -330,15 +432,32 @@ def _handle_openai_transient_error(e, attempt, max_retries, base_delay):
     elif isinstance(e, APIConnectionError):
         # Connection errors are transient
         should_retry = True
+    elif httpx is not None and isinstance(e, httpx.NetworkError | httpx.ProtocolError):
+        # httpx transport/protocol errors (server disconnects mid-stream, incomplete reads)
+        should_retry = True
     elif isinstance(e, APIStatusError):
         # Retry on all 5xx server errors (transient)
         if 500 <= e.status_code < 600:
             should_retry = True
-        # Also check error message for known transient issues
-        elif hasattr(e, "message"):
-            error_msg = str(e.message).lower()
+        else:
+            # Check for known transient issues in error message, body, or string repr
+            # This catches OpenRouter proxying Anthropic's "Overloaded" errors
+            error_texts = []
+            if hasattr(e, "message"):
+                error_texts.append(str(e.message))
+            if hasattr(e, "body") and e.body:
+                # Body can be dict with 'error' key or other formats
+                if isinstance(e.body, dict):
+                    error_texts.append(str(e.body.get("error", "")))
+                    error_texts.append(str(e.body.get("message", "")))
+                error_texts.append(str(e.body))
+            # Also check string representation as fallback
+            error_texts.append(str(e))
+
+            combined_error = " ".join(error_texts).lower()
             if any(
-                keyword in error_msg for keyword in ["overload", "internal", "timeout"]
+                keyword in combined_error
+                for keyword in ["overload", "internal", "timeout"]
             ):
                 should_retry = True
 
@@ -369,6 +488,9 @@ def retry_on_openai_error(max_retries: int = 5, base_delay: float = 1.0):
                     return func(*args, **kwargs)
                 except Exception as e:
                     _handle_openai_transient_error(e, attempt, max_retries, base_delay)
+            # _handle_openai_transient_error raises on last attempt,
+            # but guard against silent None return if logic changes
+            raise RuntimeError("retry exhausted without raising")  # pragma: no cover
 
         return wrapper
 
@@ -406,6 +528,9 @@ def retry_generator_on_openai_error(max_retries: int = 5, base_delay: float = 1.
                         # Can't retry after streaming has started - would cause duplicates
                         raise
                     _handle_openai_transient_error(e, attempt, max_retries, base_delay)
+            # _handle_openai_transient_error raises on last attempt,
+            # but guard against silent None return if logic changes
+            raise RuntimeError("retry exhausted without raising")  # pragma: no cover
 
         return wrapper
 
@@ -418,6 +543,7 @@ def chat(
     model: str,
     tools: list[ToolSpec] | None,
     output_schema=None,
+    max_tokens: int | None = None,
 ) -> tuple[str, MessageMetadata | None]:
     # This will generate code and such, so we need appropriate temperature and top_p params
     # top_p controls diversity, temperature controls randomness
@@ -436,23 +562,33 @@ def chat(
     # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
     api_model = model if is_proxy else base_model
 
-    from openai import NOT_GIVEN  # fmt: skip
     from openai.types.chat import ChatCompletionMessageToolCall  # fmt: skip
 
     messages_dicts, tools_dict = _prepare_messages_for_api(messages, model, tools)
     response_format = _make_response_format(output_schema)
 
+    # Build optional kwargs to avoid NOT_GIVEN/Omit type mismatch
+    optional_kwargs: dict[str, Any] = {}
+    if not is_reasoner:
+        optional_kwargs["temperature"] = TEMPERATURE
+        optional_kwargs["top_p"] = TOP_P
+    if tools_dict:
+        optional_kwargs["tools"] = tools_dict
+    if response_format is not None:
+        optional_kwargs["response_format"] = response_format
+    if max_tokens is not None:
+        optional_kwargs["max_tokens"] = max_tokens
+
     response = client.chat.completions.create(
-        model=api_model,
-        messages=messages_dicts,  # type: ignore
-        temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
-        top_p=TOP_P if not is_reasoner else NOT_GIVEN,
-        tools=tools_dict if tools_dict else NOT_GIVEN,
-        response_format=response_format,
+        model=api_model.split("@")[0],
+        messages=cast(list, messages_dicts),
         extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider, model_meta),
+        extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
+        **optional_kwargs,
     )
     metadata = _record_usage(response.usage, model)
+    if not response.choices:
+        raise ValueError("OpenAI API returned empty choices list")
     choice = response.choices[0]
     result = []
     if choice.finish_reason == "tool_calls":
@@ -486,7 +622,13 @@ def extra_headers(provider: Provider) -> dict[str, str]:
     return headers
 
 
-def extra_body(provider: Provider, model_meta: ModelMeta) -> dict[str, Any]:
+_OPENROUTER_REASONING_DEFAULT = 20000
+_VALID_QUANTIZATIONS = {"fp16", "bf16", "fp8", "int8", "int4", "unknown"}
+
+
+def extra_body(
+    provider: Provider, model_meta: ModelMeta, max_tokens: int | None = None
+) -> dict[str, Any]:
     """Return extra body for the OpenAI API based on the model."""
     body: dict[str, Any] = {}
     if provider == "openrouter":
@@ -494,13 +636,79 @@ def extra_body(provider: Provider, model_meta: ModelMeta) -> dict[str, Any]:
         # See: https://openrouter.ai/docs/guides/usage-accounting
         body["usage"] = {"include": True}
         if model_meta.supports_reasoning:
-            body["reasoning"] = {"enabled": True, "max_tokens": 20000}
+            reasoning_budget = _OPENROUTER_REASONING_DEFAULT
+            if max_tokens is not None:
+                available = max_tokens - _MIN_RESPONSE_TOKENS
+                if available <= 0:
+                    # Not enough room for reasoning AND a useful response
+                    logger.warning(
+                        "max_tokens=%d is too small to accommodate reasoning tokens "
+                        "and a useful response (min %d tokens); "
+                        "disabling OpenRouter extended reasoning.",
+                        max_tokens,
+                        _MIN_RESPONSE_TOKENS,
+                    )
+                    reasoning_budget = 0
+                elif available < reasoning_budget:
+                    logger.warning(
+                        "max_tokens=%d cannot accommodate reasoning_budget=%d; "
+                        "reducing to %d (reserving %d tokens for response).",
+                        max_tokens,
+                        reasoning_budget,
+                        available,
+                        _MIN_RESPONSE_TOKENS,
+                    )
+                    reasoning_budget = available
+            if reasoning_budget > 0:
+                body["reasoning"] = {"enabled": True, "max_tokens": reasoning_budget}
+        # Provider routing preferences
+        # See: https://openrouter.ai/docs/provider-routing
+        provider_prefs: dict[str, Any] = {}
+
         if "@" in model_meta.model:
             provider_override = model_meta.model.split("@")[1]
-            body["provider"] = {
-                "order": [provider_override],
-                "allow_fallbacks": False,
-            }
+            provider_prefs["order"] = [provider_override]
+            provider_prefs["allow_fallbacks"] = False
+
+        # Ensure routed provider supports all request parameters (tools,
+        # response_format, etc.) — prevents silent failures when OpenRouter
+        # falls back to a provider that doesn't support function calling.
+        # NOTE: only set when reasoning is NOT enabled, because the
+        # combination of require_parameters=True + reasoning extension can
+        # eliminate all available providers (the reasoning body parameter
+        # is not universally supported).
+        if "reasoning" not in body:
+            provider_prefs["require_parameters"] = True
+
+        # Privacy: default to "deny" for non-reasoning models to preserve
+        # user privacy. For reasoning models, skip the default — the triple
+        # constraint (require_parameters + reasoning + data_collection="deny")
+        # eliminates all available providers and causes 400 errors.
+        if "reasoning" not in body:
+            data_collection = get_config().get_env("OPENROUTER_DATA_COLLECTION", "deny")
+        else:
+            data_collection = get_config().get_env("OPENROUTER_DATA_COLLECTION")
+        if data_collection:
+            provider_prefs["data_collection"] = data_collection
+
+        # Quantization preferences: restrict to specific precision levels.
+        # Useful for controlling quality (fp16) or cost (int4/int8).
+        # Set via OPENROUTER_QUANTIZATION env var as comma-separated values.
+        # See: https://openrouter.ai/docs/provider-routing#quantization
+        quantization = get_config().get_env("OPENROUTER_QUANTIZATION")
+        if quantization:
+            parsed = [q.strip() for q in quantization.split(",") if q.strip()]
+            if parsed:
+                invalid = [q for q in parsed if q not in _VALID_QUANTIZATIONS]
+                if invalid:
+                    logger.warning(
+                        "Unknown OPENROUTER_QUANTIZATION value(s): %s. Valid values are: %s",
+                        ", ".join(invalid),
+                        ", ".join(sorted(_VALID_QUANTIZATIONS)),
+                    )
+                provider_prefs["quantizations"] = parsed
+
+        body["provider"] = provider_prefs
     return body
 
 
@@ -510,6 +718,7 @@ def stream(
     model: str,
     tools: list[ToolSpec] | None,
     output_schema=None,
+    max_tokens: int | None = None,
 ) -> Generator[str, None, MessageMetadata | None]:
     from . import _get_base_model, get_provider_from_model  # fmt: skip
     from .models import get_model  # fmt: skip
@@ -528,24 +737,31 @@ def stream(
     # make the model name prefix with the provider if using LLM_PROXY, to make proxy aware of the provider
     api_model = model if is_proxy else base_model
 
-    from openai import NOT_GIVEN  # fmt: skip
-
     messages_dicts, tools_dict = _prepare_messages_for_api(messages, model, tools)
     response_format = _make_response_format(output_schema)
     in_reasoning_block = False
     stop_reason = None
 
+    # Build optional kwargs to avoid NOT_GIVEN/Omit type mismatch
+    optional_kwargs: dict[str, Any] = {}
+    if not is_reasoner:
+        optional_kwargs["temperature"] = TEMPERATURE
+        optional_kwargs["top_p"] = TOP_P
+    if tools_dict:
+        optional_kwargs["tools"] = tools_dict
+    if response_format is not None:
+        optional_kwargs["response_format"] = response_format
+    if max_tokens is not None:
+        optional_kwargs["max_tokens"] = max_tokens
+
     for chunk_raw in client.chat.completions.create(
         model=api_model.split("@")[0],
-        messages=messages_dicts,  # type: ignore
-        temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
-        top_p=TOP_P if not is_reasoner else NOT_GIVEN,
+        messages=cast(list, messages_dicts),
         stream=True,
-        tools=tools_dict if tools_dict else NOT_GIVEN,
-        response_format=response_format,
         extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider, model_meta),
+        extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
         stream_options={"include_usage": True},
+        **optional_kwargs,
     ):
         from openai.types.chat import ChatCompletionChunk  # fmt: skip
         from openai.types.chat.chat_completion_chunk import (  # fmt: skip
@@ -618,6 +834,7 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
     for message in message_dicts:
         # Format tool result as expected by the model
         if message["role"] == "system" and "call_id" in message:
+            # Convert system+call_id to tool message (conforms to MessageDict)
             modified_message = dict(message)
             modified_message["role"] = "tool"
             modified_message["tool_call_id"] = modified_message.pop("call_id")
@@ -630,19 +847,24 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
                 message["content"], tool_format_override="tool"
             )
 
-            # Format tool uses for OpenAI API
-            tool_calls = []
-            for tooluse in tool_uses:
-                tool_calls.append(
+            # Format tool uses for OpenAI API with explicit typing
+            tool_calls: list[ToolCall] = [
+                cast(
+                    ToolCall,
                     {
                         "id": tooluse.call_id or "",
                         "type": "function",
-                        "function": {
-                            "name": tooluse.tool,
-                            "arguments": json.dumps(tooluse.kwargs or {}),
-                        },
-                    }
+                        "function": cast(
+                            ToolCallFunction,
+                            {
+                                "name": tooluse.tool,
+                                "arguments": json.dumps(tooluse.kwargs or {}),
+                            },
+                        ),
+                    },
                 )
+                for tooluse in tool_uses
+            ]
 
             if content:
                 modified_message["content"] = content
@@ -659,36 +881,39 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
 
 
 def _merge_tool_results_with_same_call_id(
-    messages_dicts: Iterable[dict],
-) -> list[dict]:
+    messages_dicts: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
     When we call a tool, this tool can potentially yield multiple messages. However
     the API expect to have only one tool result per tool call. This function tries
     to merge subsequent tool results with the same call ID as expected by
     the API.
+
+    Note: Internally uses MessageDict casts for type clarity during processing.
     """
-    messages_new: list[dict] = []
+    messages_new: list[dict[str, Any]] = []
 
     for message in messages_dicts:
         if messages_new and (
             message["role"] == "tool"
             and messages_new[-1]["role"] == "tool"
-            and message["tool_call_id"] == messages_new[-1]["tool_call_id"]
+            and message.get("tool_call_id") == messages_new[-1].get("tool_call_id")
         ):
             prev_msg = messages_new[-1]
-            prev_content = prev_msg["content"]
-            current_content = message["content"]
+            prev_content = prev_msg.get("content")
+            current_content = message.get("content")
 
             # Ensure both contents are lists of content parts
             if not isinstance(prev_content, list):
-                prev_content = [{"type": "text", "text": prev_content}]
+                prev_content = [{"type": "text", "text": prev_content or ""}]
             if not isinstance(current_content, list):
-                current_content = [{"type": "text", "text": current_content}]
+                current_content = [{"type": "text", "text": current_content or ""}]
 
+            # Create merged message (conforms to MessageDict structure)
             messages_new[-1] = {
                 "role": "tool",
                 "content": prev_content + current_content,
-                "tool_call_id": prev_msg["tool_call_id"],
+                "tool_call_id": prev_msg.get("tool_call_id"),
             }
         else:
             messages_new.append(message)
@@ -696,14 +921,31 @@ def _merge_tool_results_with_same_call_id(
     return messages_new
 
 
-def _process_file(msg: dict, model: ModelMeta) -> dict:
-    message_content = msg["content"]
+def _process_file(msg: dict[str, Any], model: ModelMeta) -> dict[str, Any]:
+    """Process remaining file attachments (images only) for non-tool-response messages.
+
+    Text files are already embedded by embed_attached_file_content() in
+    prepare_messages(). Only non-text files (images, binaries) remain here.
+
+    For tool response messages (call_id), use _process_msgs which handles
+    image forwarding via follow-up user messages.
+
+    Args:
+        msg: A message dict (expected to conform to MessageDict structure)
+        model: Model metadata for checking vision support
+
+    Returns:
+        The processed message dict with files converted to content parts.
+        The returned dict conforms to MessageDict structure.
+    """
+    message_content = msg.get("content")
 
     # combines a content message with a list of files
+    # Note: don't add empty text items — some providers (e.g. Z.AI/GLM) reject them
     content: list[dict[str, Any]] = (
         message_content
         if isinstance(message_content, list)
-        else [{"type": "text", "text": message_content}]
+        else ([{"type": "text", "text": message_content}] if message_content else [])
     )
 
     has_images = False
@@ -745,15 +987,79 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
     if msg["role"] == "system" and has_images:
         msg["role"] = "user"
 
-    return msg
+    return msg  # Conforms to MessageDict structure
+
+
+def _process_msgs(
+    msgs: Iterable[dict[str, Any]], model: ModelMeta
+) -> Iterable[dict[str, Any]]:
+    """Process all message file attachments, routing by message type.
+
+    For regular messages: delegates to _process_file to embed images in content.
+    For tool response messages (call_id): processes text content normally, then
+    forwards any images as a follow-up user message (since OpenAI tool messages
+    only support text content, but the model may still benefit from seeing images
+    produced by tools like screenshot).
+
+    Args:
+        msgs: Iterable of message dicts
+        model: Model metadata for checking vision support
+
+    Yields:
+        Processed message dicts, with possible extra follow-up user messages.
+    """
+    for msg in msgs:
+        if "call_id" in msg:
+            # Extract files before yielding the tool response
+            files = msg.pop("files", None) or []
+            text = msg.get("content")
+            if not isinstance(text, list):
+                msg["content"] = [{"type": "text", "text": text}]
+            yield msg
+
+            # Forward any images as a follow-up user message
+            if files and model.supports_vision:
+                followup_content: list[dict[str, Any]] = []
+                for f in files:
+                    result = process_image_file(
+                        f,
+                        followup_content,
+                        max_size_mb=20,
+                        expand_user=False,
+                        check_vision_support=lambda: model.supports_vision,
+                    )
+                    if result is not None:
+                        data, media_type = result
+                        followup_content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{data}"
+                                },
+                            }
+                        )
+
+                if followup_content:
+                    yield {"role": "user", "content": followup_content}
+        else:
+            yield _process_file(msg, model)
 
 
 def _transform_msgs_for_special_provider(
-    messages_dicts: Iterable[dict], model: ModelMeta
-):
+    messages_dicts: Iterable[dict[str, Any]], model: ModelMeta
+) -> Iterable[MessageDict]:
+    """Transform message dicts for provider-specific requirements.
+
+    Args:
+        messages_dicts: Iterable of message dicts (expected MessageDict structure)
+        model: Model metadata for determining transformation rules
+
+    Returns:
+        Transformed message dicts conforming to MessageDict type
+    """
     # groq and deepseek needs message.content to be a string
     if model.provider == "groq" or model.provider == "deepseek":
-        result = []
+        result: list[MessageDict] = []
         for msg in messages_dicts:
             content = msg.get("content")
             # Handle messages without content (e.g., tool call messages)
@@ -765,9 +1071,9 @@ def _transform_msgs_for_special_provider(
                     and msg.get("role") == "assistant"
                     and msg.get("tool_calls")
                 ):
-                    result.append({**msg, "reasoning_content": ""})
+                    result.append(cast(MessageDict, {**msg, "reasoning_content": ""}))
                 else:
-                    result.append(msg)
+                    result.append(cast(MessageDict, msg))
                 continue
             # Handle list content (multi-modal messages)
             if isinstance(content, list):
@@ -780,12 +1086,91 @@ def _transform_msgs_for_special_provider(
                 transformed = (
                     "\n\n".join(text_parts) if text_parts else "[non-text content]"
                 )
-                result.append({**msg, "content": transformed})
+                result.append(cast(MessageDict, {**msg, "content": transformed}))
             else:
-                result.append(msg)
+                result.append(cast(MessageDict, msg))
         return result
 
-    return messages_dicts
+    # OpenRouter reasoning models (e.g., Moonshot AI Kimi) need reasoning_content
+    # for assistant messages with tool_calls when thinking mode is enabled
+    # This prevents: "thinking is enabled but reasoning_content is missing in assistant tool call message"
+    if model.provider == "openrouter" and model.supports_reasoning:
+
+        def _extract_and_strip_reasoning(
+            content: str | None,
+        ) -> tuple[str, str]:
+            """Extract reasoning from <think>/<thinking> tags and return cleaned content.
+
+            Returns:
+                Tuple of (reasoning_content, cleaned_content_without_think_tags)
+            """
+            if not content:
+                return "", ""
+
+            # Extract content from <think>...</think> and <thinking>...</thinking> blocks
+            think_matches = re.findall(
+                r"<think>(.*?)</think>", content, flags=re.DOTALL
+            )
+            thinking_matches = re.findall(
+                r"<thinking>(.*?)</thinking>", content, flags=re.DOTALL
+            )
+            all_reasoning = think_matches + thinking_matches
+            reasoning = (
+                "\n".join(r.strip() for r in all_reasoning if r.strip())
+                if all_reasoning
+                else ""
+            )
+
+            # Remove <think> and <thinking> tags from content to prevent duplication
+            cleaned_content = re.sub(
+                r"<think>.*?</think>\s*", "", content, flags=re.DOTALL
+            )
+            cleaned_content = re.sub(
+                r"<thinking>.*?</thinking>\s*", "", cleaned_content, flags=re.DOTALL
+            )
+            cleaned_content = cleaned_content.strip()
+
+            return reasoning, cleaned_content
+
+        openrouter_result: list[MessageDict] = []
+        for msg in messages_dicts:
+            if (
+                msg.get("role") == "assistant"
+                and msg.get("tool_calls")
+                and "reasoning_content" not in msg
+            ):
+                # Extract reasoning and clean content to prevent context duplication
+                content = msg.get("content", "")
+
+                # Handle list content (multi-modal messages)
+                if isinstance(content, list):
+                    # Extract text from list items
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, str):
+                            text_parts.append(item)
+                        elif isinstance(item, dict) and item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+                    content = "\n".join(text_parts)
+
+                reasoning, cleaned_content = _extract_and_strip_reasoning(content)
+                result_msg: dict[str, Any] = {
+                    **msg,
+                    "reasoning_content": reasoning,
+                }
+                if cleaned_content:
+                    result_msg["content"] = cleaned_content
+                else:
+                    # Remove empty content to avoid provider errors (e.g. Z.AI/GLM
+                    # rejects messages with empty text content)
+                    result_msg.pop("content", None)
+                openrouter_result.append(cast(MessageDict, result_msg))
+            else:
+                openrouter_result.append(cast(MessageDict, msg))
+        return openrouter_result
+
+    # Return as-is with cast for type safety
+    return cast(Iterable[MessageDict], messages_dicts)
 
 
 def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
@@ -793,7 +1178,7 @@ def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
     if spec.block_types:
         name = spec.block_types[0]
 
-    description = spec.get_instructions("tool")
+    description = spec.get_instructions("tool") or spec.desc or ""
     if len(description) > 1024:
         logger.warning(
             "Description for tool `%s` is too long ( %d > 1024 chars). Truncating...",
@@ -809,7 +1194,7 @@ def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
         "openrouter",
         "deepseek",
         "local",
-    ] or is_custom_provider(model.model):
+    ] or is_custom_provider(model.model.split("/")[0]):
         return {
             "type": "function",
             "function": {
@@ -819,8 +1204,7 @@ def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
                 # "strict": False,  # not supported by OpenRouter
             },
         }
-    else:
-        raise ValueError("Provider doesn't support tools API")
+    raise ValueError("Provider doesn't support tools API")
 
 
 @lru_cache(maxsize=1)
@@ -945,7 +1329,16 @@ def openrouter_model_to_modelmeta(model_data: dict) -> ModelMeta:
     pricing = model_data.get("pricing", {})
     price_input = float(pricing.get("prompt", 0)) * 1_000_000
     price_output = float(pricing.get("completion", 0)) * 1_000_000
-    vision = "vision" in model_data.get("architecture", {}).get("modality", "")
+    # Check for vision support: look for "image" in input modalities
+    # OpenRouter uses modalities like "text+image->text" (not "vision")
+    architecture = model_data.get("architecture", {})
+    input_modalities = architecture.get("input_modalities", [])
+    vision = "image" in input_modalities
+    if not vision and not input_modalities:
+        # Fallback: parse input side of modality string (before "->")
+        modality = architecture.get("modality", "")
+        input_side = modality.split("->")[0] if "->" in modality else ""
+        vision = "image" in input_side
     reasoning = "reasoning" in model_data.get("supported_parameters", [])
     include_reasoning = "include_reasoning" in model_data.get(
         "supported_parameters", []
@@ -968,7 +1361,12 @@ def _prepare_messages_for_api(
     messages: list[Message],
     model: str,
     tools: list[ToolSpec] | None,
-) -> tuple[Iterable[dict], Iterable["ChatCompletionToolParam"] | None]:
+) -> tuple[list[MessageDict], list["ChatCompletionToolParam"] | None]:
+    """Prepare messages for API call, handling model-specific transformations.
+
+    Returns:
+        Tuple of (messages as MessageDict list, tools if provided)
+    """
     from .models import get_model  # fmt: skip
 
     model_meta = get_model(model)
@@ -993,8 +1391,10 @@ def _prepare_messages_for_api(
     ):
         messages = list(_prep_deepseek_reasoner(messages))
 
-    messages_dicts: Iterable[dict] = (
-        _process_file(msg, model_meta) for msg in msgs2dicts(messages)
+    # Process message dicts - _process_msgs handles both regular and tool response messages
+    # For tool responses with images, it emits a follow-up user message
+    messages_dicts: Iterable[dict[str, Any]] = _process_msgs(
+        msgs2dicts(messages), model_meta
     )
 
     tools_dict = [_spec2tool(tool, model_meta) for tool in tools] if tools else None
@@ -1004,12 +1404,15 @@ def _prepare_messages_for_api(
             _handle_tools(messages_dicts)
         )
 
-    messages_dicts = _transform_msgs_for_special_provider(messages_dicts, model_meta)
+    # Transform returns MessageDict-typed messages
+    typed_messages = _transform_msgs_for_special_provider(messages_dicts, model_meta)
 
-    messages_list = list(messages_dicts)
+    messages_list: list[MessageDict] = list(typed_messages)
 
     # Apply cache control for Anthropic models on OpenRouter
     if model.startswith("openrouter/anthropic/"):
-        messages_list, _ = apply_cache_control(messages_list)
+        # apply_cache_control uses dict[Any, Any] internally, cast at boundary
+        cache_result, _ = apply_cache_control(cast(list[dict[str, Any]], messages_list))
+        messages_list = cast(list[MessageDict], cache_result)
 
     return messages_list, tools_dict

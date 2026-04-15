@@ -55,11 +55,7 @@ class TelemetryConnectionErrorFilter(logging.Filter):
             return True
 
         # Check if this is a connection error
-        if (
-            record.levelno == logging.ERROR
-            and hasattr(record, "exc_info")
-            and record.exc_info
-        ):
+        if record.levelno == logging.ERROR and record.exc_info:
             exc_type, exc_value, _ = record.exc_info
             # Check if it's a connection-related error
             if exc_type and (
@@ -95,9 +91,8 @@ class TelemetryConnectionErrorFilter(logging.Filter):
                             f"({count} occurrences): {exc_value}"
                         )
                     return True
-                else:
-                    # Suppress duplicate within cooldown period
-                    return False
+                # Suppress duplicate within cooldown period
+                return False
 
         return True
 
@@ -117,15 +112,13 @@ class NotGivenAttributeFilter(logging.Filter):
         Returns False to drop the record, True to allow it through.
         """
         # Check if this is a NotGiven type warning
-        if (
+        # Suppress this specific warning - it's noise from sentinel values
+        return not (
             record.name.startswith("opentelemetry.")
             and record.levelno == logging.WARNING
             and "NotGiven" in record.getMessage()
             and "Invalid type" in record.getMessage()
-        ):
-            # Suppress this specific warning - it's noise from sentinel values
-            return False
-        return True
+        )
 
 
 # Global variables to track telemetry state
@@ -375,6 +368,13 @@ def init_telemetry(
             if not interactive:
                 logger.debug("Running in autonomous mode")
 
+        # Add run type from environment (e.g., "autonomous", "monitoring", "manual")
+        # This allows distinguishing different types of non-interactive runs
+        run_type = os.getenv("GPTME_RUN_TYPE")
+        if run_type:
+            resource_attrs["agent.run_type"] = run_type
+            logger.debug(f"Adding agent.run_type to resource: {run_type}")
+
         resource = Resource.create(resource_attrs)
         trace.set_tracer_provider(TracerProvider(resource=resource))
         _tracer = trace.get_tracer(service_name)
@@ -401,7 +401,7 @@ def init_telemetry(
         )
         tracer_provider = trace.get_tracer_provider()
         if hasattr(tracer_provider, "add_span_processor"):
-            tracer_provider.add_span_processor(span_processor)  # type: ignore
+            tracer_provider.add_span_processor(span_processor)
 
         # Use OTLP for metrics (same endpoint as traces)
         try:

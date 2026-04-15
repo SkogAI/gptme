@@ -15,31 +15,58 @@ import os
 import re
 import select
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Generator
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import bashlex
 
 from ..message import Message
 from ..util import get_installed_programs
 from ..util.ask_execute import execute_with_confirmation
+from ..util.context import md_codeblock
 from ..util.output_storage import save_large_output
 from ..util.tokens import get_tokenizer
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
 )
+from .shell_background import (
+    execute_bg_command,
+    execute_jobs_command,
+    execute_kill_command,
+    execute_output_command,
+    get_background_job,
+)
+from .shell_background import (
+    list_background_jobs as list_background_jobs,
+)
+from .shell_background import (
+    reset_background_jobs as reset_background_jobs,
+)
+from .shell_background import (
+    start_background_job as start_background_job,
+)
+from .shell_validation import (
+    _find_first_unquoted_pipe,
+    check_with_shellcheck,
+    is_allowlisted,
+    is_denylisted,
+    shell_allowlist_hook,
+)
+
+if TYPE_CHECKING:
+    from ..hooks import StopPropagation
+    from ..logmanager import LogManager
+
+_is_windows = os.name == "nt"
 
 # ANSI escape sequence pattern for stripping terminal formatting
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -52,269 +79,6 @@ def strip_ansi_codes(text: str) -> str:
 
 logger = logging.getLogger(__name__)
 
-
-# Background job management for long-running commands (Issue #576)
-# Maximum buffer size to prevent memory issues (1MB per buffer)
-_MAX_BUFFER_SIZE = 1024 * 1024
-
-
-@dataclass
-class BackgroundJob:
-    """Tracks a background process with its output."""
-
-    id: int
-    command: str
-    process: subprocess.Popen
-    start_time: float
-    stdout_buffer: list[str] = field(default_factory=list)
-    stderr_buffer: list[str] = field(default_factory=list)
-    _reader_thread: threading.Thread | None = field(default=None, repr=False)
-    _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    _buffer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-    def start_reader(self) -> None:
-        """Start background thread to read output."""
-        self._reader_thread = threading.Thread(target=self._read_output, daemon=True)
-        self._reader_thread.start()
-
-    def _read_output(self) -> None:
-        """Read stdout/stderr in background thread."""
-        stdout_fd = self.process.stdout.fileno() if self.process.stdout else -1
-        stderr_fd = self.process.stderr.fileno() if self.process.stderr else -1
-        fds = [fd for fd in [stdout_fd, stderr_fd] if fd >= 0]
-
-        while not self._stop_event.is_set() and self.process.poll() is None:
-            try:
-                readable, _, _ = select.select(fds, [], [], 0.1)
-                for fd in readable:
-                    data = os.read(fd, 4096).decode("utf-8", errors="replace")
-                    if data:
-                        with self._buffer_lock:
-                            if fd == stdout_fd:
-                                self._append_to_buffer(self.stdout_buffer, data)
-                            else:
-                                self._append_to_buffer(self.stderr_buffer, data)
-            except (OSError, ValueError):
-                break
-
-        # Final read after process exits
-        if self.process.stdout:
-            try:
-                remaining = self.process.stdout.read()
-                if remaining:
-                    with self._buffer_lock:
-                        self._append_to_buffer(self.stdout_buffer, remaining)
-            except (OSError, ValueError):
-                pass
-        if self.process.stderr:
-            try:
-                remaining = self.process.stderr.read()
-                if remaining:
-                    with self._buffer_lock:
-                        self._append_to_buffer(self.stderr_buffer, remaining)
-            except (OSError, ValueError):
-                pass
-
-    def _append_to_buffer(self, buffer: list[str], data: str) -> None:
-        """Append data to buffer, enforcing size limit."""
-        buffer.append(data)
-        # Check total size and truncate from front if needed
-        total_size = sum(len(s) for s in buffer)
-        while total_size > _MAX_BUFFER_SIZE and len(buffer) > 1:
-            removed = buffer.pop(0)
-            total_size -= len(removed)
-
-    def get_output(self) -> tuple[str, str]:
-        """Get accumulated stdout and stderr."""
-        with self._buffer_lock:
-            return "".join(self.stdout_buffer), "".join(self.stderr_buffer)
-
-    def is_running(self) -> bool:
-        """Check if process is still running."""
-        return self.process.poll() is None
-
-    def elapsed_time(self) -> float:
-        """Get elapsed time in seconds."""
-        return time.time() - self.start_time
-
-    def kill(self) -> None:
-        """Terminate the background job."""
-        self._stop_event.set()
-        try:
-            self.process.terminate()
-            self.process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-        # Join reader thread to ensure clean shutdown
-        if self._reader_thread and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=1.0)
-
-
-# Global storage for background jobs
-_background_jobs: dict[int, BackgroundJob] = {}
-_next_job_id: int = 1
-_job_lock: threading.Lock = threading.Lock()
-
-
-def _get_next_job_id() -> int:
-    """Get next available job ID (thread-safe)."""
-    global _next_job_id
-    with _job_lock:
-        job_id = _next_job_id
-        _next_job_id += 1
-        return job_id
-
-
-def start_background_job(command: str) -> BackgroundJob:
-    """Start a command as a background job (thread-safe)."""
-    # Proactively clean up finished jobs to prevent memory accumulation
-    cleanup_finished_jobs()
-
-    job_id = _get_next_job_id()
-
-    # Start process with separate stdout/stderr pipes
-    process = subprocess.Popen(
-        ["bash", "-c", command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    job = BackgroundJob(
-        id=job_id,
-        command=command,
-        process=process,
-        start_time=time.time(),
-    )
-    job.start_reader()
-
-    with _job_lock:
-        _background_jobs[job_id] = job
-
-    return job
-
-
-def get_background_job(job_id: int) -> BackgroundJob | None:
-    """Get a background job by ID."""
-    with _job_lock:
-        return _background_jobs.get(job_id)
-
-
-def list_background_jobs() -> list[BackgroundJob]:
-    """List all background jobs, cleaning up finished ones first."""
-    cleanup_finished_jobs()
-    with _job_lock:
-        return list(_background_jobs.values())
-
-
-def cleanup_finished_jobs() -> None:
-    """Remove finished jobs from tracking (thread-safe)."""
-    with _job_lock:
-        finished = [
-            job_id for job_id, job in _background_jobs.items() if not job.is_running()
-        ]
-        for job_id in finished:
-            del _background_jobs[job_id]
-
-
-def reset_background_jobs() -> None:
-    """Stop and clean up all background jobs. Called on exit and for testing."""
-    global _next_job_id
-    with _job_lock:
-        # Kill any running jobs
-        for job in _background_jobs.values():
-            if job.is_running():
-                job.kill()
-        _background_jobs.clear()
-        _next_job_id = 1
-
-
-# Register cleanup handler to prevent orphaned bg jobs when gptme exits (Issue #993)
-atexit.register(reset_background_jobs)
-
-
-allowlist_commands = [
-    "ls",
-    "stat",
-    "cd",
-    "cat",
-    "pwd",
-    "echo",
-    "head",
-    "find",
-    "rg",
-    "ag",
-    "tail",
-    "grep",
-    "wc",
-    "sort",
-    "uniq",
-    "cut",
-    "file",
-    "which",
-    "type",
-    "tree",
-    "du",
-    "df",
-]
-
-# Commands that should be denied without user confirmation due to their dangerous nature
-# Define deny groups with shared reasons
-deny_groups = [
-    (
-        [
-            r"git\s+add\s+\.(?:\s|$)",  # Match 'git add .' but not '.gitignore'
-            r"git\s+add\s+-A",
-            r"git\s+add\s+--all",
-            r"git\s+commit\s+-a",
-            r"git\s+commit\s+--all",
-        ],
-        "Instead of bulk git operations, use selective commands: `git add <specific-files>` to stage only intended files, then `git commit`.",
-    ),
-    (
-        [
-            r"git\s+reset\s+--hard",
-            r"git\s+clean\s+-[fFdDxX]+",
-            r"git\s+push\s+(-f|--force)(?!-)",  # Allow --force-with-lease
-            r"git\s+reflog\s+expire",
-            r"git\s+filter-branch",
-        ],
-        "Destructive git operations are blocked. Use safer alternatives: `git stash` to save changes, `git reset --soft` to uncommit without losing changes, `git push --force-with-lease` for safer force pushes.",
-    ),
-    (
-        [
-            r"rm\s+-rf\s+/",
-            r"sudo\s+rm\s+-rf\s+/",
-            r"rm\s+-rf\s+\*",
-        ],
-        "Destructive file operations are blocked. Specify exact paths and avoid operations that could delete system files or entire directories.",
-    ),
-    (
-        [
-            r"chmod\s+-R\s+777",
-            r"chmod\s+777",
-        ],
-        "Overly permissive chmod operations are blocked. Use safer permissions like `chmod 755` or `chmod 644` and be specific about target files.",
-    ),
-    (
-        [
-            r"pkill\s",
-            r"killall\s",
-        ],
-        "Killing processes indiscriminately is blocked. Use `ps aux | grep <process-name>` to find specific PIDs and `kill <PID>` to terminate them safely.",
-    ),
-    (
-        [
-            # Pipe to shell interpreters (bash, sh, and their variants with paths)
-            r"\|\s*(bash|sh|/bin/bash|/bin/sh)(?:\s|$)",
-            # Pipe to script interpreters
-            r"\|\s*(python|python3|perl|ruby|node)(?:\s|$)",
-        ],
-        "Piping to shell interpreters or script execution is blocked. This pattern can execute arbitrary code and is a security risk.",
-    ),
-]
 
 candidates = (
     # platform-specific
@@ -347,7 +111,7 @@ The shell tool will respond with the output of the execution.
 These programs are available, among others:
 {shell_programs_str}
 
-## Background Jobs
+### Background Jobs
 
 For long-running commands (dev servers, builds, etc.), use background jobs:
 - `bg <command>` - Start command in background, returns job ID
@@ -362,15 +126,15 @@ instructions_format: dict[str, str] = {}
 
 
 def examples(tool_format):
+    ls_output = "file1.txt\nfile2.txt"
+    ls_files_output = "README.md\nmain.py"
+    vue_output = "> npx\n> create-vue\n\nVue.js - The Progressive JavaScript Framework\n\nScaffolding project in ./fancy-project..."
     return f"""
 > User: list the current directory
 > Assistant: To list the files in the current directory, use `ls`:
 {ToolUse("shell", [], "ls").to_output(tool_format)}
 > System: Ran command: `ls`
-{ToolUse("shell", [], '''
-file1.txt
-file2.txt
-'''.strip()).to_output()}
+{md_codeblock("stdout", ls_output)}
 
 #### The assistant can learn context by exploring the filesystem
 
@@ -378,18 +142,15 @@ file2.txt
 > Assistant: Lets start by checking the files
 {ToolUse("shell", [], "git ls-files").to_output(tool_format)}
 > System:
-{ToolUse("stdout", [], '''
-README.md
-main.py
-'''.strip()).to_output()}
+{md_codeblock("stdout", ls_files_output)}
 > Assistant: Now lets check the README
 {ToolUse("shell", [], "cat README.md").to_output(tool_format)}
 > System:
-{ToolUse("stdout", [], "(contents of README.md)").to_output()}
+{md_codeblock("stdout", "(contents of README.md)")}
 > Assistant: Now we check main.py
 {ToolUse("shell", [], "cat main.py").to_output(tool_format)}
 > System:
-{ToolUse("stdout", [], "(contents of main.py)").to_output()}
+{md_codeblock("stdout", "(contents of main.py)")}
 > Assistant: The project is...
 
 
@@ -397,25 +158,27 @@ main.py
 
 > User: Create a new vue project with typescript and pinia named fancy-project
 > Assistant: Sure! Let's create a new vue project with TypeScript and Pinia named fancy-project:
-{ToolUse("shell",
-    [],
-    "npm init vue@latest fancy-project --yes -- --typescript --pinia"
-).to_output()}
+{
+        ToolUse(
+            "shell",
+            [],
+            "npm init vue@latest fancy-project --yes -- --typescript --pinia",
+        ).to_output(tool_format)
+    }
 > System:
-{ToolUse("stdout", [], '''
-> npx
-> create-vue
-
-Vue.js - The Progressive JavaScript Framework
-
-Scaffolding project in ./fancy-project...
-'''.strip()).to_output()}
+{md_codeblock("stdout", vue_output)}
 
 #### Proper quoting for complex content
 
 > User: add a comment with backticks and special characters
 > Assistant: When passing complex content with special characters, use single quotes to prevent shell interpretation:
-{ToolUse("shell", [], "echo 'Content with `backticks` and $variables that should not be interpreted' > example.txt").to_output(tool_format)}
+{
+        ToolUse(
+            "shell",
+            [],
+            "echo 'Content with `backticks` and $variables that should not be interpreted' > example.txt",
+        ).to_output(tool_format)
+    }
 
 #### Background jobs for long-running commands
 
@@ -457,25 +220,39 @@ class ShellSession:
     stderr_fd: int
     delimiter: str
     start_marker: str  # Fix for Issue #408: Add start marker to prevent output mixing
+    _cwd: str | None  # Workspace directory for this session (thread-safe)
 
-    def __init__(self) -> None:
+    def __init__(self, cwd: str | None = None) -> None:
+        self._cwd = cwd
         self._init()
 
         # close on exit
         atexit.register(self.close)
 
     def _init(self):
+        # Choose shell and process group settings based on platform
+        if _is_windows:
+            shell_cmd = ["bash"]  # Expect MSYS2/Git Bash on Windows
+            popen_kwargs: dict = {}  # No start_new_session on Windows
+        else:
+            shell_cmd = ["bash"]
+            popen_kwargs = {
+                "start_new_session": True,  # Create new process group for proper signal handling
+            }
         self.process = subprocess.Popen(
-            ["bash"],
+            shell_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,  # Unbuffered
             universal_newlines=True,
-            start_new_session=True,  # Create new process group for proper signal handling
+            cwd=self._cwd,  # Use explicit workspace dir (thread-safe)
+            **popen_kwargs,
         )
-        self.stdout_fd = self.process.stdout.fileno()  # type: ignore
-        self.stderr_fd = self.process.stderr.fileno()  # type: ignore
+        assert self.process.stdout is not None
+        assert self.process.stderr is not None
+        self.stdout_fd = self.process.stdout.fileno()
+        self.stderr_fd = self.process.stderr.fileno()
         self.delimiter = "END_OF_COMMAND_OUTPUT"
         self.start_marker = "START_OF_COMMAND_OUTPUT"
 
@@ -506,7 +283,111 @@ class ShellSession:
                 return res_code, res_stdout, res_stderr
         return res_code, res_stdout, res_stderr
 
+    def _needs_tty(self, command: str) -> bool:
+        """Check if a command needs a TTY (e.g. sudo password prompt) and we're interactive."""
+        if _is_windows:
+            return False  # No /dev/tty on Windows
+        if not sys.stdin.isatty():
+            return False
+        # Check for sudo without -S (stdin password) or -n (non-interactive)
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        # Find sudo in the command (may be preceded by env vars)
+        for i, part in enumerate(parts):
+            if "=" in part:
+                continue  # Skip env var assignments
+            if part == "sudo":
+                # Check if -S or -n flags are present (they disable TTY need)
+                # Also handle combined short flags like -Sn, -nS, -uS
+                remaining = parts[i + 1 :]
+                flags = [p for p in remaining if p.startswith("-")]
+                for flag in flags:
+                    if flag in ("--stdin", "--non-interactive"):
+                        return False
+                    # Check combined short flags (e.g. -Sn, -nS, -uS)
+                    if flag.startswith("-") and not flag.startswith("--"):
+                        chars = flag[1:]
+                        if "S" in chars or "n" in chars:
+                            return False
+                return True
+            break  # First non-env-var token is not sudo
+        return False
+
+    def _run_with_tty(
+        self, command: str, output: bool = True, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
+        """Run a command with /dev/tty as stdin for interactive password prompts (e.g. sudo).
+
+        Used for commands like sudo that need a real terminal to prompt for passwords.
+        Runs as a separate subprocess in the current working directory.
+        """
+        logger.debug(f"Shell: Running with TTY stdin: {command[:200]}")
+        try:
+            tty_stdin = open("/dev/tty", "rb")
+        except OSError:
+            logger.warning("Could not open /dev/tty, falling back to normal run")
+            return self._run_pipe(command, output=output, timeout=timeout)
+
+        try:
+            # Inherit session env overrides so sudo commands behave consistently
+            # (e.g. no pager, consistent EDITOR) with commands run via _run_pipe
+            session_env = os.environ.copy()
+            session_env.update(
+                {
+                    "PAGER": "",
+                    "GH_PAGER": "",
+                    "GIT_PAGER": "cat",
+                    "EDITOR": "true",
+                    "GIT_EDITOR": "true",
+                    "VISUAL": "true",
+                    "PYTHONUNBUFFERED": "1",
+                }
+            )
+            proc = subprocess.Popen(
+                ["bash", "-c", command],
+                stdin=tty_stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                # Don't use start_new_session=True here - we need to inherit the
+                # controlling terminal so sudo can prompt for passwords
+                cwd=self._cwd or os.getcwd(),
+                env=session_env,
+            )
+            try:
+                stdout_data, stderr_data = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout_data, stderr_data = proc.communicate()
+                stdout_str = stdout_data.decode("utf-8", errors="replace").strip()
+                stderr_str = stderr_data.decode("utf-8", errors="replace").strip()
+                return -124, stdout_str, stderr_str
+            except KeyboardInterrupt:
+                proc.kill()
+                proc.communicate()
+                raise
+        finally:
+            tty_stdin.close()
+
+        stdout_str = stdout_data.decode("utf-8", errors="replace").strip()
+        stderr_str = stderr_data.decode("utf-8", errors="replace").strip()
+        if output:
+            if stdout_str:
+                print(stdout_str, file=sys.stdout)
+            if stderr_str:
+                print(stderr_str, file=sys.stderr)
+        return proc.returncode, stdout_str, stderr_str
+
     def _run(
+        self, command: str, output=True, tries=0, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
+        # Use TTY-based execution for interactive sudo commands
+        if self._needs_tty(command):
+            return self._run_with_tty(command, output=output, timeout=timeout)
+        return self._run_pipe(command, output=output, tries=tries, timeout=timeout)
+
+    def _run_pipe(
         self, command: str, output=True, tries=0, timeout: float | None = None
     ) -> tuple[int | None, str, str]:
         assert self.process.stdin
@@ -548,18 +429,42 @@ class ShellSession:
 
         # Issue #408: Drain any leftover stderr from previous commands BEFORE sending new command
         # This ensures we don't mix stderr from previous commands with the current one
-        while True:
-            pre_drain_rlist, _, _ = select.select([self.stderr_fd], [], [], 0.05)
-            if not pre_drain_rlist:
-                break
-            pre_drain_data = os.read(self.stderr_fd, 2**16).decode(
-                "utf-8", errors="replace"
-            )
-            if not pre_drain_data:
-                break
-            # Discard leftover stderr from previous commands
-            if pre_drain_data.strip():
-                logger.debug(f"Shell: Pre-command stderr drain: {pre_drain_data[:80]}")
+        if _is_windows:
+            # Windows: use non-blocking read to drain stderr
+            try:
+                os.set_blocking(self.stderr_fd, False)
+                while True:
+                    try:
+                        pre_drain_data = os.read(self.stderr_fd, 2**16).decode(
+                            "utf-8", errors="replace"
+                        )
+                        if not pre_drain_data:
+                            break
+                        if pre_drain_data.strip():
+                            logger.debug(
+                                f"Shell: Pre-command stderr drain: {pre_drain_data[:80]}"
+                            )
+                    except BlockingIOError:
+                        break
+                os.set_blocking(self.stderr_fd, True)
+            except OSError:
+                pass
+        else:
+            assert select is not None
+            while True:
+                pre_drain_rlist, _, _ = select.select([self.stderr_fd], [], [], 0.05)
+                if not pre_drain_rlist:
+                    break
+                pre_drain_data = os.read(self.stderr_fd, 2**16).decode(
+                    "utf-8", errors="replace"
+                )
+                if not pre_drain_data:
+                    break
+                # Discard leftover stderr from previous commands
+                if pre_drain_data.strip():
+                    logger.debug(
+                        f"Shell: Pre-command stderr drain: {pre_drain_data[:80]}"
+                    )
 
         # Generate unique command ID to prevent output mixing (Issue #408)
         cmd_id = f"{time.time_ns()}"
@@ -576,11 +481,10 @@ class ShellSession:
                 # log warning and restart, once
                 logger.warning("Warning: shell process died, restarting")
                 self.restart()
-                return self._run(
+                return self._run_pipe(
                     command, output=output, tries=tries + 1, timeout=timeout
                 )
-            else:
-                raise
+            raise
 
         self.process.stdin.flush()
 
@@ -592,6 +496,203 @@ class ShellSession:
         return_code: int | None = None
         start_time = time.time() if timeout else None
 
+        if _is_windows:
+            return self._read_output_windows(
+                command,
+                output,
+                stdout,
+                stderr,
+                return_code,
+                seen_start_marker,
+                start_marker_pattern,
+                start_time,
+                timeout,
+            )
+        return self._read_output_unix(
+            command,
+            output,
+            stdout,
+            stderr,
+            return_code,
+            seen_start_marker,
+            start_marker_pattern,
+            start_time,
+            timeout,
+        )
+
+    def _read_output_windows(
+        self,
+        command: str,
+        output: bool,
+        stdout: list[str],
+        stderr: list[str],
+        return_code: int | None,
+        seen_start_marker: bool,
+        start_marker_pattern: str,
+        start_time: float | None,
+        timeout: float | None,
+    ) -> tuple[int | None, str, str]:
+        """Read command output on Windows using threads with non-blocking I/O."""
+        from queue import Empty, Queue
+
+        stdout_queue: Queue[str] = Queue()
+        stderr_queue: Queue[str] = Queue()
+        stop_event = threading.Event()
+
+        def read_stream(fd: int, queue: Queue[str]) -> None:
+            try:
+                os.set_blocking(fd, False)
+            except OSError:
+                pass
+            while not stop_event.is_set():
+                try:
+                    data = os.read(fd, 2**16).decode("utf-8", errors="replace")
+                    if not data:
+                        break
+                    queue.put(data)
+                except BlockingIOError:
+                    time.sleep(0.01)
+                except OSError:
+                    break
+
+        t_stdout = threading.Thread(
+            target=read_stream, args=(self.stdout_fd, stdout_queue), daemon=True
+        )
+        t_stderr = threading.Thread(
+            target=read_stream, args=(self.stderr_fd, stderr_queue), daemon=True
+        )
+        t_stdout.start()
+        t_stderr.start()
+
+        re_returncode = re.compile(r"ReturnCode:(\d+)")
+
+        try:
+            while not stop_event.is_set():
+                # Check timeout
+                if timeout and start_time:
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout:
+                        logger.info(f"Command timed out after {timeout} seconds")
+                        self._terminate_process()
+                        stop_event.set()
+                        return (
+                            -124,
+                            "".join(stdout).strip(),
+                            "".join(stderr).strip(),
+                        )
+
+                # Drain stdout queue
+                try:
+                    data = stdout_queue.get(timeout=0.1)
+                    lines = data.splitlines(keepends=True)
+                    for line in lines:
+                        if not seen_start_marker:
+                            if start_marker_pattern in line:
+                                seen_start_marker = True
+                                logger.debug(
+                                    f"Shell: Start marker detected: {start_marker_pattern[:50]}"
+                                )
+                            else:
+                                if line.strip():
+                                    logger.debug(
+                                        f"Shell: Discarding pre-marker output: {line[:80]}"
+                                    )
+                            continue
+
+                        if "ReturnCode:" in line and self.delimiter in line:
+                            # Extract any command output that precedes the
+                            # delimiter on the same line.  This happens when
+                            # command output lacks a trailing newline (e.g.
+                            # printf "yes", echo -n "data").
+                            # Use rfind to get the LAST "ReturnCode:" occurrence,
+                            # which is always the shell-injected marker (not
+                            # command output that itself contains "ReturnCode:").
+                            rc_pos = line.rfind("ReturnCode:")
+                            if rc_pos > 0:
+                                prefix = line[:rc_pos]
+                                stdout.append(prefix)
+                                if output:
+                                    print(prefix, end="", file=sys.stdout)
+
+                            logger.debug(
+                                f"Shell: Delimiter detected in line: {line.strip()[:200]}"
+                            )
+                            # Use findall+last to avoid matching "ReturnCode:N"
+                            # in command output that precedes the marker.
+                            rc_matches = re_returncode.findall(line)
+                            if rc_matches:
+                                return_code = int(rc_matches[-1])
+                            if command.startswith("cd ") and return_code == 0:
+                                ex, pwd, _ = self._run("pwd", output=False)
+                                if ex == 0:
+                                    os.chdir(pwd.strip())
+
+                            # Drain remaining stderr
+                            stop_event.set()
+                            time.sleep(0.05)
+                            while not stderr_queue.empty():
+                                try:
+                                    err_data = stderr_queue.get_nowait()
+                                    stderr.append(err_data)
+                                    if output:
+                                        print(err_data, end="", file=sys.stderr)
+                                except Empty:
+                                    break
+                            return (
+                                return_code,
+                                "".join(stdout).strip(),
+                                "".join(stderr).strip(),
+                            )
+
+                        stdout.append(line)
+                        if output:
+                            print(line, end="", file=sys.stdout)
+                except Empty:
+                    pass
+
+                # Drain stderr queue
+                try:
+                    data = stderr_queue.get_nowait()
+                    lines = data.splitlines(keepends=True)
+                    for line in lines:
+                        stderr.append(line)
+                        if output:
+                            print(line, end="", file=sys.stderr)
+                except Empty:
+                    pass
+
+                # If both reader threads are dead, stop
+                if not t_stdout.is_alive() and not t_stderr.is_alive():
+                    break
+
+        except KeyboardInterrupt:
+            print()
+            logger.info("Process interrupted during output reading")
+            partial_stdout = "".join(stdout).strip()
+            partial_stderr = "".join(stderr).strip()
+            raise KeyboardInterrupt((partial_stdout, partial_stderr)) from None
+        finally:
+            stop_event.set()
+            t_stdout.join(timeout=0.5)
+            t_stderr.join(timeout=0.5)
+
+        # Fallback: if we get here without finding delimiter, return what we have
+        return (return_code, "".join(stdout).strip(), "".join(stderr).strip())
+
+    def _read_output_unix(
+        self,
+        command: str,
+        output: bool,
+        stdout: list[str],
+        stderr: list[str],
+        return_code: int | None,
+        seen_start_marker: bool,
+        start_marker_pattern: str,
+        start_time: float | None,
+        timeout: float | None,
+    ) -> tuple[int | None, str, str]:
+        """Read command output on Unix using select()."""
+        assert select is not None
         try:
             while True:
                 # Calculate remaining timeout
@@ -633,7 +734,8 @@ class ShellSession:
 
                 for fd in rlist:
                     assert fd in [self.stdout_fd, self.stderr_fd]
-                    # We use a higher value, because there is a bug which leads to spaces at the boundary
+                    # We use a higher value, because there is a bug which leads to
+                    # spaces at the boundary
                     # 2**12 = 4096
                     # 2**16 = 65536
                     data = os.read(fd, 2**16).decode("utf-8", errors="replace")
@@ -646,47 +748,70 @@ class ShellSession:
                             if start_marker_pattern in line:
                                 seen_start_marker = True
                                 logger.debug(
-                                    f"Shell: Start marker detected: {start_marker_pattern[:50]}"
+                                    f"Shell: Start marker detected: "
+                                    f"{start_marker_pattern[:50]}"
                                 )
                             else:
-                                # Discard output before start marker (leftover from previous commands)
+                                # Discard output before start marker (leftover
+                                # from previous commands)
                                 if line.strip():  # Only log non-empty lines
                                     logger.debug(
-                                        f"Shell: Discarding pre-marker output: {line[:80]}"
+                                        f"Shell: Discarding pre-marker output: "
+                                        f"{line[:80]}"
                                     )
                             continue
 
                         if "ReturnCode:" in line and self.delimiter in line:
-                            # Diagnostic logging for Issue #408: Log delimiter detection
+                            # Extract any command output that precedes the
+                            # delimiter on the same line.  This happens when
+                            # command output lacks a trailing newline (e.g.
+                            # printf "yes", echo -n "data").
+                            # Use rfind to get the LAST "ReturnCode:" occurrence,
+                            # which is always the shell-injected marker (not
+                            # command output that itself contains "ReturnCode:").
+                            rc_pos = line.rfind("ReturnCode:")
+                            if rc_pos > 0:
+                                prefix = line[:rc_pos]
+                                stdout.append(prefix)
+                                if output:
+                                    print(prefix, end="", file=sys.stdout)
+
+                            # Diagnostic logging for Issue #408
                             logger.debug(
-                                f"Shell: Delimiter detected in line: {line.strip()[:200]}"
+                                f"Shell: Delimiter detected in line: "
+                                f"{line.strip()[:200]}"
                             )
 
-                            # Capture last stdout before delimiter to detect unexpected content
+                            # Capture last stdout before delimiter
                             if stdout:
-                                # Get last 3 lines or all if fewer
                                 last_lines = stdout[-3:] if len(stdout) >= 3 else stdout
                                 last_stdout = "".join(last_lines).strip()[:300]
                                 logger.debug(
-                                    f"Shell: Last stdout before delimiter: {last_stdout}"
+                                    f"Shell: Last stdout before delimiter: "
+                                    f"{last_stdout}"
                                 )
 
-                            if match := re_returncode.search(line):
-                                return_code = int(match.group(1))
-                            # if command is cd and successful, we need to change the directory
+                            # Use findall+last to avoid matching "ReturnCode:N"
+                            # in command output that precedes the marker.
+                            rc_matches = re_returncode.findall(line)
+                            if rc_matches:
+                                return_code = int(rc_matches[-1])
+                            # if command is cd, update working directory
                             if command.startswith("cd ") and return_code == 0:
                                 ex, pwd, _ = self._run("pwd", output=False)
-                                assert ex == 0
-                                os.chdir(pwd.strip())
+                                if ex != 0:
+                                    logger.warning(
+                                        "pwd failed after cd, cannot update "
+                                        "working directory"
+                                    )
+                                else:
+                                    os.chdir(pwd.strip())
 
-                            # Issue #408: Drain any remaining stderr before returning
-                            # This prevents stderr from leaking to the next command
-                            # Use multiple attempts with longer initial timeout to ensure
-                            # stderr has time to arrive from bash
+                            # Issue #408: Drain any remaining stderr before
+                            # returning. Use multiple attempts to ensure stderr
+                            # has time to arrive from bash.
                             drain_empty_count = 0
-                            while (
-                                drain_empty_count < 2
-                            ):  # Require 2 empty reads to be sure
+                            while drain_empty_count < 2:
                                 drain_rlist, _, _ = select.select(
                                     [self.stderr_fd], [], [], 0.1
                                 )
@@ -699,7 +824,6 @@ class ShellSession:
                                 if not drain_data:
                                     drain_empty_count += 1
                                     continue
-                                # Reset counter when we get data
                                 drain_empty_count = 0
                                 stderr.append(drain_data)
                                 if output:
@@ -722,26 +846,44 @@ class ShellSession:
             print()
             # Handle interrupt at the source - return partial output and re-raise
             logger.info("Process interrupted during output reading")
-            # Return partial output with a special return code to indicate interruption
             partial_stdout = "".join(stdout).strip()
             partial_stderr = "".join(stderr).strip()
-            # Use -999 as a special code to indicate interruption
             raise KeyboardInterrupt((partial_stdout, partial_stderr)) from None
 
-    def close(self):
-        assert self.process.stdin
-        self.process.stdin.close()
+    def _terminate_process(self) -> None:
+        """Terminate the shell process, platform-aware."""
         try:
-            pgid = os.getpgid(self.process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-            self.process.wait(timeout=0.2)
-            if self.process.poll() is None:
-                os.killpg(pgid, signal.SIGKILL)
+            if _is_windows:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=1.0)
+            else:
+                pgid = os.getpgid(self.process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                time.sleep(0.1)
+                if self.process.poll() is None:
+                    os.killpg(pgid, signal.SIGKILL)
         except ProcessLookupError:
-            # Process already exited; this can happen due to cleanup races.
             pass
         except Exception as e:
-            logger.warning(f"Error terminating process during close: {e}")
+            logger.warning(f"Error terminating process: {e}")
+
+    def close(self):
+        # Close stdin to signal no more input
+        if self.process.stdin:
+            self.process.stdin.close()
+
+        # Terminate the process
+        self._terminate_process()
+
+        # Close stdout/stderr AFTER process is terminated to prevent broken pipes
+        if self.process.stdout:
+            self.process.stdout.close()
+        if self.process.stderr:
+            self.process.stderr.close()
 
     def restart(self):
         self.close()
@@ -749,6 +891,28 @@ class ShellSession:
 
 
 _shell_var: ContextVar[ShellSession | None] = ContextVar("shell", default=None)
+_workspace_cwd: ContextVar[str | None] = ContextVar("workspace_cwd", default=None)
+
+# Conversation-level shell registry for server-side cleanup.
+# Maps conversation_id -> ShellSession so SESSION_END hooks can find and close
+# shells that would otherwise leak when their thread's ContextVar goes out of scope.
+_conversation_shells: dict[str, ShellSession] = {}
+_conv_shell_lock: threading.Lock = threading.Lock()
+
+
+def set_workspace_cwd(cwd: str) -> None:
+    """Set the workspace directory for the current context (thread-safe).
+
+    Call this before any shell creation to ensure the shell subprocess
+    starts in the correct directory, even with concurrent sessions.
+    This is the thread-safe replacement for os.chdir() in server contexts.
+    """
+    _workspace_cwd.set(cwd)
+
+
+def get_workspace_cwd() -> str | None:
+    """Get the workspace directory for the current context, if set."""
+    return _workspace_cwd.get()
 
 
 def get_shell() -> ShellSession:
@@ -756,11 +920,18 @@ def get_shell() -> ShellSession:
 
     Uses ContextVar to provide context-local state, allowing each conversation
     to have its own shell session with independent working directory.
+
+    In server contexts (where current_conversation_id is set), also registers
+    the shell in a conversation-level registry for cleanup via SESSION_END hooks.
     """
     shell = _shell_var.get()
     if shell is None:
-        shell = ShellSession()
+        # Use workspace from ContextVar for thread-safe cwd
+        workspace = _workspace_cwd.get()
+        shell = ShellSession(cwd=workspace)
         _shell_var.set(shell)
+        # Register for conversation-level cleanup if in a server context
+        _register_conversation_shell(shell)
     return shell
 
 
@@ -769,8 +940,59 @@ def set_shell(shell: ShellSession) -> None:
     _shell_var.set(shell)
 
 
-# NOTE: This does not handle control flow words like if, for, while.
-cmd_regex = re.compile(r"(?:^|[|&;]|\|\||&&|\n)\s*([^\s|&;]+)")
+def _register_conversation_shell(shell: ShellSession) -> None:
+    """Register a shell in the conversation-level registry if a conversation context exists."""
+    try:
+        from ..hooks import current_conversation_id
+
+        conv_id = current_conversation_id.get()
+        if conv_id is not None:
+            with _conv_shell_lock:
+                # Close any existing shell for this conversation before replacing
+                old_shell = _conversation_shells.get(conv_id)
+                if old_shell is not None and old_shell is not shell:
+                    try:
+                        old_shell.close()
+                    except Exception as e:
+                        logger.warning(
+                            f"Error closing old shell for conversation {conv_id}: {e}"
+                        )
+                _conversation_shells[conv_id] = shell
+    except ImportError:
+        pass  # hooks module not available (e.g., during testing)
+
+
+def close_conversation_shell(conversation_id: str) -> None:
+    """Close and remove the shell session for a conversation.
+
+    Called by the SESSION_END hook to clean up shell file descriptors
+    when a conversation's last session is removed.
+    """
+    with _conv_shell_lock:
+        shell = _conversation_shells.pop(conversation_id, None)
+    if shell is not None:
+        try:
+            shell.close()
+            logger.debug(f"Closed shell session for conversation {conversation_id}")
+        except Exception as e:
+            logger.warning(
+                f"Error closing shell for conversation {conversation_id}: {e}"
+            )
+
+
+def _session_end_shell_cleanup(
+    manager: "LogManager", **kwargs
+) -> "Generator[Message | StopPropagation, None, None]":
+    """Close shell session for a conversation to prevent file descriptor leaks.
+
+    Registered as a SESSION_END hook via ToolSpec.hooks so it's only loaded
+    when the shell tool is active.
+    """
+    conversation_id = manager.logdir.name if manager.logdir else None
+    if conversation_id:
+        close_conversation_shell(conversation_id)
+
+    yield from ()
 
 
 def get_shell_command(
@@ -780,8 +1002,7 @@ def get_shell_command(
     if code is not None and args is not None:
         assert not args
         cmd = code.strip()
-        if cmd.startswith("$ "):
-            cmd = cmd[len("$ ") :]
+        cmd = cmd.removeprefix("$ ")
     elif kwargs is not None:
         cmd = kwargs.get("command", "")
     else:
@@ -792,210 +1013,6 @@ def get_shell_command(
 def preview_shell(cmd: str, _: Path | None) -> str:
     """Prepare preview for shell command."""
     return cmd
-
-
-def _has_file_redirection(cmd: str) -> bool:
-    """Check if command contains file output redirection (> or >>).
-
-    Returns True if the command contains > or >> outside of quoted strings.
-    Ignores heredoc operators (<< and <<-).
-    """
-    quoted_regions = _find_quotes(cmd)
-
-    # Look for > or >> that are not in quotes and not part of heredoc
-    i = 0
-    while i < len(cmd):
-        # Skip if we're in a quoted region
-        if _is_in_quoted_region(i, quoted_regions):
-            i += 1
-            continue
-
-        # Check for >>
-        if i < len(cmd) - 1 and cmd[i : i + 2] == ">>":
-            return True
-
-        # Check for > but not << (heredoc)
-        if cmd[i] == ">":
-            # Make sure it's not part of << or <<-
-            if i > 0 and cmd[i - 1] == "<":
-                i += 1
-                continue
-            return True
-
-        i += 1
-
-    return False
-
-
-def is_allowlisted(cmd: str) -> bool:
-    # Check if all commands in the pipeline are allowlisted
-    for match in cmd_regex.finditer(cmd):
-        for group in match.groups():
-            if group and group not in allowlist_commands:
-                return False
-
-    # Check for file redirections (>, >>)
-    # File redirections with allowlisted commands can be used to write malicious content
-    # Example: echo "malicious_code" > /tmp/exploit.sh
-    if _has_file_redirection(cmd):
-        return False
-
-    return True
-
-
-def _find_quotes(cmd: str) -> list[tuple[int, int]]:
-    """Find all quoted regions in a command string.
-
-    Returns a list of (start, end) tuples for each quoted region.
-    """
-    quoted_regions = []
-    in_single = False
-    in_double = False
-    start = -1
-
-    i = 0
-    while i < len(cmd):
-        c = cmd[i]
-
-        # Handle escape sequences
-        if c == "\\" and i + 1 < len(cmd):
-            i += 2
-            continue
-
-        # Handle single quotes
-        if c == "'" and not in_double:
-            if not in_single:
-                start = i
-                in_single = True
-            else:
-                quoted_regions.append((start, i + 1))
-                in_single = False
-
-        # Handle double quotes
-        elif c == '"' and not in_single:
-            if not in_double:
-                start = i
-                in_double = True
-            else:
-                quoted_regions.append((start, i + 1))
-                in_double = False
-
-        i += 1
-
-    return quoted_regions
-
-
-def _find_heredoc_regions(cmd: str) -> list[tuple[int, int]]:
-    """Find all heredoc regions in a command string.
-
-    Heredoc syntax: << DELIMITER or <<- DELIMITER
-    The delimiter can be quoted: << 'EOF' or << "EOF"
-
-    Returns a list of (start, end) tuples for each heredoc content region.
-    """
-    heredoc_regions = []
-
-    # Pattern to match heredoc operators with optional quotes around delimiter
-    # Matches: << or <<- followed by optional whitespace and delimiter (with optional quotes)
-    heredoc_pattern = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
-
-    for match in heredoc_pattern.finditer(cmd):
-        delimiter = match.group(2)
-
-        # Find where the content starts (after the first newline after the marker)
-        search_start = match.end()
-        newline_idx = cmd.find("\n", search_start)
-        if newline_idx == -1:
-            continue  # No content
-
-        content_start = newline_idx + 1
-
-        # Find the line with just the delimiter
-        pos = content_start
-        while True:
-            newline_idx = cmd.find("\n", pos)
-            if newline_idx == -1:
-                # Check if remaining text is the delimiter
-                if cmd[pos:].strip() == delimiter:
-                    heredoc_regions.append((content_start, pos))
-                break
-
-            # Check if the line from pos to newline_idx is just the delimiter
-            line = cmd[pos:newline_idx]
-            if line.strip() == delimiter:
-                heredoc_regions.append((content_start, pos))
-                break
-
-            pos = newline_idx + 1
-
-    return heredoc_regions
-
-
-def _is_in_quoted_region(pos: int, quoted_regions: list[tuple[int, int]]) -> bool:
-    """Check if a position is within any quoted region."""
-    for start, end in quoted_regions:
-        if start <= pos < end:
-            return True
-    return False
-
-
-def _find_first_unquoted_pipe(command: str) -> int | None:
-    """Find the position of the first pipe operator that's not in quotes.
-
-    Returns None if no unquoted pipe is found.
-    Skips logical OR operators (||).
-    """
-    quoted_regions = _find_quotes(command)
-
-    pos = 0
-    while True:
-        pipe_pos = command.find("|", pos)
-        if pipe_pos == -1:
-            return None
-
-        # Check if this pipe is inside quotes
-        if not _is_in_quoted_region(pipe_pos, quoted_regions):
-            # Check if this is part of || (logical OR)
-            if pipe_pos + 1 < len(command) and command[pipe_pos + 1] == "|":
-                # Skip the || operator
-                pos = pipe_pos + 2
-                continue
-
-            return pipe_pos
-
-        # Try next pipe
-        pos = pipe_pos + 1
-
-
-def is_denylisted(cmd: str) -> tuple[bool, str | None, str | None]:
-    """Check if a command contains dangerous patterns that should be denied.
-
-    Only checks actual commands, not content in quoted strings or heredocs.
-
-    Returns:
-        tuple[bool, str | None, str | None]: (is_denied, reason_if_denied, matched_command)
-    """
-    # Find both quoted regions and heredoc regions in the original command
-    # (heredocs require newlines to be detected properly)
-    quoted_regions = _find_quotes(cmd)
-    heredoc_regions = _find_heredoc_regions(cmd)
-
-    # Combine all safe regions
-    safe_regions = quoted_regions + heredoc_regions
-
-    # Check deny groups against the original command
-    # We don't normalize because it would break heredoc detection
-    for patterns, reason in deny_groups:
-        for pattern in patterns:
-            match = re.search(pattern, cmd, re.IGNORECASE)
-            if match:
-                # Check if the match is within a safe region (quoted or heredoc)
-                match_start = match.start()
-                if not _is_in_quoted_region(match_start, safe_regions):
-                    # Return the matched text to show in error message
-                    return True, reason, match.group(0)
-
-    return False, None, None
 
 
 def _format_shell_output(
@@ -1072,131 +1089,8 @@ def _format_shell_output(
     return msg
 
 
-# Background command handlers
-def execute_bg_command(command: str) -> Generator[Message, None, None]:
-    """Start a command as a background job."""
-    if not command.strip():
-        yield Message("system", "Usage: `bg <command>`\n\nExample: `bg npm run dev`")
-        return
-
-    # Check if command is denylisted - blocked even for background jobs
-    is_denied, deny_reason, matched_cmd = is_denylisted(command)
-    if is_denied:
-        yield Message(
-            "system", f"Background command denied: `{matched_cmd}`\n\n{deny_reason}"
-        )
-        return
-
-    job = start_background_job(command)
-    yield Message(
-        "system",
-        f"Started background job **#{job.id}**: `{command}`\n\n"
-        f"Use these commands to manage it:\n"
-        f"- `jobs` - List all background jobs\n"
-        f"- `output {job.id}` - Show output from job #{job.id}\n"
-        f"- `kill {job.id}` - Terminate job #{job.id}",
-    )
-
-
-def execute_jobs_command() -> Generator[Message, None, None]:
-    """List all background jobs."""
-    jobs = list_background_jobs()
-    if not jobs:
-        yield Message("system", "No background jobs running.")
-        return
-
-    lines = ["**Background Jobs:**\n"]
-    for job in jobs:
-        status = "🟢 Running" if job.is_running() else "⚫ Finished"
-        elapsed = job.elapsed_time()
-        if elapsed < 60:
-            time_str = f"{elapsed:.1f}s"
-        else:
-            time_str = f"{elapsed / 60:.1f}m"
-        lines.append(
-            f"- **#{job.id}** [{status}] ({time_str}): `{job.command[:50]}{'...' if len(job.command) > 50 else ''}`"
-        )
-
-    yield Message("system", "\n".join(lines))
-
-
-def execute_output_command(job_id_str: str) -> Generator[Message, None, None]:
-    """Show output from a background job."""
-    try:
-        job_id = int(job_id_str)
-    except ValueError:
-        yield Message(
-            "system", f"Invalid job ID: `{job_id_str}`. Use `jobs` to list active jobs."
-        )
-        return
-
-    job = get_background_job(job_id)
-    if not job:
-        yield Message(
-            "system", f"No job with ID #{job_id}. Use `jobs` to list active jobs."
-        )
-        return
-
-    stdout, stderr = job.get_output()
-    status = (
-        "Running"
-        if job.is_running()
-        else f"Finished (exit code: {job.process.returncode})"
-    )
-    elapsed = job.elapsed_time()
-
-    msg = f"**Job #{job_id}** - {status} ({elapsed:.1f}s)\n"
-    msg += f"Command: `{job.command}`\n\n"
-
-    if stdout:
-        # Truncate if too long
-        if len(stdout) > 8000:
-            stdout = stdout[-8000:]
-            msg += "```stdout\n...(truncated)...\n" + stdout + "\n```\n\n"
-        else:
-            msg += f"```stdout\n{stdout}\n```\n\n"
-    if stderr:
-        if len(stderr) > 2000:
-            stderr = stderr[-2000:]
-            msg += "```stderr\n...(truncated)...\n" + stderr + "\n```\n\n"
-        else:
-            msg += f"```stderr\n{stderr}\n```\n\n"
-    if not stdout and not stderr:
-        msg += "No output yet.\n"
-
-    yield Message("system", msg)
-
-
-def execute_kill_command(job_id_str: str) -> Generator[Message, None, None]:
-    """Terminate a background job."""
-    try:
-        job_id = int(job_id_str)
-    except ValueError:
-        yield Message(
-            "system", f"Invalid job ID: `{job_id_str}`. Use `jobs` to list active jobs."
-        )
-        return
-
-    job = get_background_job(job_id)
-    if not job:
-        yield Message(
-            "system", f"No job with ID #{job_id}. Use `jobs` to list active jobs."
-        )
-        return
-
-    if not job.is_running():
-        yield Message(
-            "system",
-            f"Job #{job_id} is already finished (exit code: {job.process.returncode}).",
-        )
-        return
-
-    job.kill()
-    yield Message("system", f"Terminated job #{job_id}: `{job.command}`")
-
-
 def execute_shell_impl(
-    cmd: str, logdir: Path | None, confirm: ConfirmFunc, timeout: float | None = None
+    cmd: str, logdir: Path | None, timeout: float | None = None
 ) -> Generator[Message, None, None]:
     """Execute shell command and format output."""
     shell = get_shell()
@@ -1215,13 +1109,23 @@ def execute_shell_impl(
         # Terminate subprocess gracefully
         logger.info("Shell command interrupted, sending SIGINT to subprocess")
         try:
-            pgid = os.getpgid(shell.process.pid)
-            os.killpg(pgid, signal.SIGINT)
-            shell.process.wait(timeout=2.0)
+            if _is_windows:
+                shell.process.terminate()
+                shell.process.wait(timeout=2.0)
+            else:
+                pgid = os.getpgid(shell.process.pid)
+                os.killpg(pgid, signal.SIGINT)
+                shell.process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             logger.info("Process didn't exit gracefully, terminating")
-            pgid = os.getpgid(shell.process.pid)
-            os.killpg(pgid, signal.SIGTERM)
+            try:
+                if _is_windows:
+                    shell.process.kill()
+                else:
+                    pgid = os.getpgid(shell.process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Error terminating interrupted process: {e}")
 
@@ -1246,128 +1150,15 @@ def execute_shell_impl(
     yield Message("system", msg)
 
     if interrupted:
-        raise KeyboardInterrupt() from None
+        raise KeyboardInterrupt from None
 
 
 def get_path_fn(*args, **kwargs) -> Path | None:
     return None
 
 
-def check_with_shellcheck(cmd: str) -> tuple[bool, bool, str]:
-    """
-    Run shellcheck on command if available.
-
-    Returns: Tuple of (has_issues: bool, should_block: bool, message: str)
-    - has_issues: True if any shellcheck issues found
-    - should_block: True if critical error codes found that should prevent execution
-    - message: Description of issues found
-
-    Note:
-        - Requires shellcheck (sudo apt install shellcheck)
-        - Can be disabled with GPTME_SHELLCHECK=off
-        - Non-blocking if shellcheck unavailable
-        - SC2164 (cd error handling) excluded by default
-        - Custom excludes via GPTME_SHELLCHECK_EXCLUDE (comma-separated codes)
-        - Error codes via GPTME_SHELLCHECK_ERROR_CODES (comma-separated, default: SC2006)
-        - Error codes block execution, other codes show warnings only
-    """
-    # Check if disabled via environment variable
-    if os.environ.get("GPTME_SHELLCHECK", "").lower() in ("off", "false", "0"):
-        return False, False, ""
-
-    # Check if shellcheck is available
-    if not shutil.which("shellcheck"):
-        return False, False, ""
-
-    # Default excluded codes
-    # SC2002: Useless cat. Consider 'cmd < file | ..' or 'cmd file | ..' instead
-    # SC2016: Expressions don't expand in single quotes, use double quotes for that.
-    # SC2164: Use 'cd ... || exit' in case cd fails (too noisy for interactive commands)
-    default_excludes = ["SC2002", "SC2016", "SC2164"]
-
-    # Get custom excludes from environment variable
-    custom_excludes = os.environ.get("GPTME_SHELLCHECK_EXCLUDE", "").split(",")
-    custom_excludes = [code.strip() for code in custom_excludes if code.strip()]
-
-    # Combine default and custom excludes
-    all_excludes = default_excludes + custom_excludes
-    exclude_str = ",".join(all_excludes)
-
-    # Default error codes (should block execution)
-    # SC1011: This apostrophe terminated the single quoted string!
-    # SC1073: Couldn't parse this single quoted string. Fix to allow more checks.
-    # SC2006: Use $(...) notation instead of legacy backticks (causes formatting issues in commits/PRs)
-    default_error_codes = ["SC1011", "SC1073", "SC2006"]
-
-    # Get custom error codes from environment variable
-    custom_error_codes_str = os.environ.get("GPTME_SHELLCHECK_ERROR_CODES", "")
-    if custom_error_codes_str:
-        custom_error_codes = [
-            code.strip() for code in custom_error_codes_str.split(",") if code.strip()
-        ]
-        error_codes = list(set(default_error_codes + custom_error_codes))
-    else:
-        error_codes = default_error_codes
-
-    # Write command to temp file
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
-        f.write("#!/bin/bash\n")
-        f.write(cmd)
-        temp_path = f.name
-
-    try:
-        shellcheck_cmd = ["shellcheck", "-f", "gcc"]
-        if exclude_str:
-            shellcheck_cmd.extend(["--exclude", exclude_str])
-        shellcheck_cmd.append(temp_path)
-
-        result = subprocess.run(
-            shellcheck_cmd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-        if result.returncode != 0 and result.stdout:
-            output = result.stdout.replace(temp_path, "<command>")
-
-            # Extract error codes from shellcheck output
-
-            triggered_codes = set()
-            for line in output.splitlines():
-                # Match shellcheck error codes (e.g., SC2006, SC2086)
-                match = re.search(r"\[SC\d+\]", line)
-                if match:
-                    # Extract just the code (e.g., "SC2006")
-                    code = match.group().strip("[]")
-                    triggered_codes.add(code)
-
-            # Check if any triggered codes are error codes (should block)
-            blocking_codes = triggered_codes.intersection(set(error_codes))
-
-            if blocking_codes:
-                # Critical issues that should block execution
-                codes_str = ", ".join(sorted(blocking_codes))
-                message = f"Shellcheck found critical issues that prevent execution:\n```\n{output}```\n\nBlocking codes: {codes_str}"
-                return True, True, message
-            else:
-                # Non-critical warnings
-                message = f"Shellcheck found potential issues:\n```\n{output}```"
-                return True, False, message
-
-        return False, False, ""
-    except (subprocess.TimeoutExpired, Exception):
-        return False, False, ""
-    finally:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-
-
 def _execute_preceding_commands(
-    cmds: str, confirm: ConfirmFunc
+    cmds: str,
 ) -> Generator[Message, None, None]:
     """Execute commands that precede a bg command.
 
@@ -1389,9 +1180,9 @@ def _execute_preceding_commands(
         # Only report output if there is any
         output_parts = []
         if stdout and stdout.strip():
-            output_parts.append(f"```stdout\n{stdout.strip()}\n```")
+            output_parts.append(md_codeblock("stdout", stdout.strip()))
         if stderr and stderr.strip():
-            output_parts.append(f"```stderr\n{stderr.strip()}\n```")
+            output_parts.append(md_codeblock("stderr", stderr.strip()))
 
         if output_parts:
             yield Message(
@@ -1412,7 +1203,6 @@ def execute_shell(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Executes a shell command and returns the output."""
     cmd = get_shell_command(code, args, kwargs)
@@ -1444,7 +1234,7 @@ def execute_shell(
             preceding_cmds = "\n".join(lines[:bg_line_idx])
             if preceding_cmds.strip():
                 # Execute preceding commands (they modify shell state like cd)
-                yield from _execute_preceding_commands(preceding_cmds, confirm)
+                yield from _execute_preceding_commands(preceding_cmds)
             # Now execute the bg command
             bg_line = lines[bg_line_idx].strip()
             bg_cmd = bg_line[3:].strip()  # Remove "bg " prefix
@@ -1453,7 +1243,7 @@ def execute_shell(
             if bg_line_idx < len(lines) - 1:
                 remaining_cmds = "\n".join(lines[bg_line_idx + 1 :])
                 if remaining_cmds.strip():
-                    yield from execute_shell(remaining_cmds, None, None, confirm)
+                    yield from execute_shell(remaining_cmds, None, None)
             return
         else:
             # bg is first line but there are more lines after it
@@ -1463,7 +1253,7 @@ def execute_shell(
             yield from execute_bg_command(bg_cmd)
             remaining_cmds = "\n".join(lines[1:])
             if remaining_cmds.strip():
-                yield from execute_shell(remaining_cmds, None, None, confirm)
+                yield from execute_shell(remaining_cmds, None, None)
             return
 
     if cmd_lower == "jobs":
@@ -1517,20 +1307,20 @@ def execute_shell(
 
     # Skip confirmation for allowlisted commands
     if is_allowlisted(cmd):
+        logger.debug(f"Command allowlisted, skipping confirmation: {cmd[:80]}")
         logdir = get_path_fn()
-        yield from execute_shell_impl(cmd, logdir, lambda _: True, timeout=timeout)
+        yield from execute_shell_impl(cmd, logdir, timeout=timeout)
     else:
+        logger.debug(f"Command not allowlisted, requiring confirmation: {cmd[:80]}")
+
         # Create a wrapper function that passes timeout to execute_shell_impl
-        def execute_fn(
-            cmd: str, path: Path | None, confirm: ConfirmFunc
-        ) -> Generator[Message, None, None]:
-            return execute_shell_impl(cmd, path, confirm, timeout=timeout)
+        def execute_fn(cmd: str, path: Path | None) -> Generator[Message, None, None]:
+            return execute_shell_impl(cmd, path, timeout=timeout)
 
         yield from execute_with_confirmation(
             cmd,
             args,
             kwargs,
-            confirm,
             execute_fn=execute_fn,
             get_path_fn=get_path_fn,
             preview_fn=preview_shell,
@@ -1572,16 +1362,27 @@ def _shorten_stdout(
         and len(lines) > pre_lines + post_lines
     )
     will_truncate_by_tokens = False
+    tokenizer = None
+    tokens: list[int] = []
     if pre_tokens is not None and post_tokens is not None:
-        tokenizer = get_tokenizer("gpt-4")
-        tokens = tokenizer.encode(stdout)
-        will_truncate_by_tokens = len(tokens) > pre_tokens + post_tokens
+        from ..llm.models import get_default_model  # fmt: skip
+
+        model = get_default_model()
+        tokenizer = get_tokenizer(model.model if model else "gpt-4")
+        if tokenizer is not None:
+            tokens = tokenizer.encode(stdout)
+            will_truncate_by_tokens = len(tokens) > pre_tokens + post_tokens
+        else:
+            # Char-based approximation (~4 chars/token) when tokenizer unavailable
+            will_truncate_by_tokens = len(stdout) > (pre_tokens + post_tokens) * 4
 
     # If truncation will happen, save full output to file
     saved_path = None
     if (will_truncate_by_lines or will_truncate_by_tokens) and logdir:
         command_info = f"Command: {cmd}" if cmd else None
-        original_tokens = len(tokens) if will_truncate_by_tokens else None
+        original_tokens = (
+            len(tokens) if (will_truncate_by_tokens and tokenizer is not None) else None
+        )
         _, saved_path = save_large_output(
             content=stdout,
             logdir=logdir,
@@ -1628,9 +1429,13 @@ def _shorten_stdout(
     assert (pre_tokens is None) == (post_tokens is None)
     if pre_tokens is not None and post_tokens is not None:
         if not will_truncate_by_tokens:
-            tokenizer = get_tokenizer("gpt-4")  # TODO: use sane default
-            tokens = tokenizer.encode(stdout)
-        if len(tokens) > pre_tokens + post_tokens:
+            from ..llm.models import get_default_model  # fmt: skip
+
+            model = get_default_model()
+            tokenizer = get_tokenizer(model.model if model else "gpt-4")
+            if tokenizer is not None:
+                tokens = tokenizer.encode(stdout)
+        if tokenizer is not None and len(tokens) > pre_tokens + post_tokens:
             truncation_msg = "... (output truncated"
             if saved_path:
                 truncation_msg += f", full output saved to {saved_path}"
@@ -1640,6 +1445,15 @@ def _shorten_stdout(
                 + [truncation_msg]
                 + [tokenizer.decode(tokens[-post_tokens:])]
             )
+        elif tokenizer is None and will_truncate_by_tokens:
+            # Char-based fallback when tokenizer unavailable (~4 chars/token)
+            pre_chars = pre_tokens * 4
+            post_chars = post_tokens * 4
+            truncation_msg = "... (output truncated"
+            if saved_path:
+                truncation_msg += f", full output saved to {saved_path}"
+            truncation_msg += ") ..."
+            lines = [stdout[:pre_chars]] + [truncation_msg] + [stdout[-post_chars:]]
 
     return "\n".join(lines)
 
@@ -1670,8 +1484,6 @@ def _find_max_heredoc_pos(node, current_max: int = 0) -> int:
 
 
 def split_commands(script: str) -> list[str]:
-    # TODO: write proper tests
-
     # Preprocess script to handle quoted heredoc delimiters that bashlex can't parse
     processed_script = _preprocess_quoted_heredocs(script)
 
@@ -1766,5 +1578,11 @@ tool = ToolSpec(
             required=True,
         ),
     ],
+    # Register shell allowlist hook with high priority (10)
+    # This auto-confirms allowlisted commands before CLI/server hooks (priority 0)
+    hooks={
+        "allowlist": ("tool.confirm", shell_allowlist_hook, 10),
+        "session_end": ("session.end", _session_end_shell_cleanup, 0),
+    },
 )
 __doc__ = tool.get_doc(__doc__)

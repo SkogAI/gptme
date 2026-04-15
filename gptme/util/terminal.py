@@ -1,7 +1,33 @@
 """Utilities for terminal manipulation."""
 
+import importlib
+import os
 import sys
 from contextlib import contextmanager
+from typing import Any
+
+# Platform-specific imports for stdin flushing
+try:
+    termios: Any = importlib.import_module("termios")
+except ImportError:
+    termios = None
+
+_msvcrt: Any = None
+if os.name == "nt":
+    try:
+        import msvcrt as _msvcrt
+    except ImportError:
+        pass
+
+
+def flush_stdin() -> None:
+    """Flush stdin to clear any buffered input before prompting."""
+    if termios and sys.stdin.isatty():
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    elif _msvcrt:
+        while _msvcrt.kbhit():
+            _msvcrt.getch()
+
 
 # Global state for conversation name
 _current_conv_name: str | None = None

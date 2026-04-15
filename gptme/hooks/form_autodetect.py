@@ -77,10 +77,7 @@ Output ONLY valid JSON, no explanation."""
 
 def _detect_options_heuristic(content: str) -> bool:
     """Use heuristics to detect if message might contain selectable options."""
-    for pattern in COMPILED_PATTERNS:
-        if pattern.search(content):
-            return True
-    return False
+    return any(pattern.search(content) for pattern in COMPILED_PATTERNS)
 
 
 def _parse_options_with_llm(content: str) -> dict | None:
@@ -96,7 +93,7 @@ def _parse_options_with_llm(content: str) -> dict | None:
     fast_models = [
         "anthropic/claude-haiku-4-5",  # ~0.25s response
         "openai/gpt-4o-mini",  # ~0.3s response
-        "anthropic/claude-3-haiku-20240307",  # fallback
+        "anthropic/claude-3-5-haiku-20241022",  # fallback
     ]
 
     # Try to find an available fast model

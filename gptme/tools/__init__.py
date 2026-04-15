@@ -5,7 +5,6 @@ import inspect
 import logging
 import pkgutil
 import threading
-from collections.abc import Generator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,7 +16,6 @@ from ..telemetry import trace_function
 from ..util.interrupt import clear_interruptible
 from ..util.terminal import terminal_state_title
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolFormat,
     ToolSpec,
@@ -27,6 +25,8 @@ from .base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from ..logmanager import Log
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,6 @@ __all__ = [
     "ToolUse",
     "ToolFormat",
     "Parameter",
-    "ConfirmFunc",
     # functions
     "get_tool_format",
     "set_tool_format",
@@ -118,6 +117,18 @@ def _discover_tools(module_names: list[str]) -> list[ToolSpec]:
 _tools_init_lock = threading.Lock()
 
 
+def _init_single_tool(tool: ToolSpec) -> ToolSpec:
+    """Initialize a single tool: run its init(), register hooks and commands.
+
+    Caller is responsible for acquiring _tools_init_lock if needed.
+    """
+    if tool.init:
+        tool = tool.init()
+    tool.register_hooks()
+    tool.register_commands()
+    return tool
+
+
 def init_tools(
     allowlist: list[str] | None = None,
 ) -> list[ToolSpec]:
@@ -128,6 +139,9 @@ def init_tools(
 
     If allowlist is not provided, it will be loaded from the environment variable
     TOOL_ALLOWLIST or the chat config (if set).
+
+    Items in allowlist can be tool names (e.g. "shell") or paths to .py files
+    containing ToolSpec definitions (e.g. "path/to/mytool.py").
     """
     from ..config import get_config  # fmt: skip
 
@@ -142,19 +156,37 @@ def init_tools(
             elif config.chat and config.chat.tools:
                 allowlist = config.chat.tools
 
-        for tool in get_toolchain(allowlist):
+        # Partition allowlist into file paths and tool names
+        file_paths: list[str] = []
+        tool_names: list[str] = []
+        for item in allowlist or []:
+            if item.endswith(".py") or "/" in item or "\\" in item:
+                file_paths.append(item)
+            else:
+                tool_names.append(item)
+
+        # Load tools from file paths first
+        if file_paths:
+            from .base import load_from_file
+
+            for file_path in file_paths:
+                path = Path(file_path).expanduser()
+                for tool in load_from_file(path):
+                    if not has_tool(tool.name):
+                        tool = _init_single_tool(tool)
+                        loaded_tools.append(tool)
+
+        # Load built-in tools by name
+        # When file paths are present, only load explicitly named built-in tools
+        # (file_paths + no names = only file tools; file_paths + names = both)
+        name_allowlist = tool_names if (tool_names or file_paths) else allowlist
+        for tool in get_toolchain(name_allowlist):
             if has_tool(tool.name):
                 continue
-            if tool.init:
-                tool = tool.init()
-
-            # Register tool's hooks and commands
-            tool.register_hooks()
-            tool.register_commands()
-
+            tool = _init_single_tool(tool)
             loaded_tools.append(tool)
 
-        for tool_name in allowlist or []:
+        for tool_name in tool_names:
             if not has_tool(tool_name):
                 # if the tool is found but unavailable, we log a warning
                 if tool_name in [tool.name for tool in get_available_tools()]:
@@ -165,25 +197,38 @@ def init_tools(
         return loaded_tools
 
 
-def get_toolchain(allowlist: list[str] | None) -> list[ToolSpec]:
+def get_toolchain(
+    allowlist: list[str] | None, *, strict: bool = True
+) -> list[ToolSpec]:
     # Validate allowlist if provided
-    # TODO: maybe check in CLI init instead, as this might hard error in the server when loading conversations where tools are not available
+    # When strict=False, warn about missing/unavailable tools instead of raising.
+    # Server contexts use strict=False since conversations may reference tools
+    # that are no longer available.
     if allowlist is not None:
         available_tools = get_available_tools()
         available_tool_names = [tool.name for tool in available_tools]
 
         for tool_name in allowlist:
             if tool_name not in available_tool_names:
-                raise ValueError(
-                    f"Tool '{tool_name}' not found. Available tools: {', '.join(sorted(available_tool_names))}"
-                )
+                if strict:
+                    raise ValueError(
+                        f"Tool '{tool_name}' not found. Available tools: {', '.join(sorted(available_tool_names))}"
+                    )
+                logger.warning("Tool '%s' in allowlist not found, skipping", tool_name)
+                continue
 
             # Check if tool is available
             tool_obj = next(tool for tool in available_tools if tool.name == tool_name)
             if not tool_obj.is_available:
-                raise ValueError(
-                    f"Tool '{tool_name}' is unavailable (likely missing dependencies)"
+                if strict:
+                    raise ValueError(
+                        f"Tool '{tool_name}' is unavailable (likely missing dependencies)"
+                    )
+                logger.warning(
+                    "Tool '%s' is unavailable (missing dependencies), skipping",
+                    tool_name,
                 )
+                continue
 
     tools = []
     for tool in get_available_tools():
@@ -201,17 +246,10 @@ def get_toolchain(allowlist: list[str] | None) -> list[ToolSpec]:
 @trace_function(name="tools.execute_msg", attributes={"component": "tools"})
 def execute_msg(
     msg: Message,
-    confirm: ConfirmFunc,
     log: Log | None = None,
     workspace: Path | None = None,
 ) -> Generator[Message, None, None]:
-    """Uses any tools called in a message and returns the response.
-
-    If GPTME_TOOLUSE_PARALLEL is enabled, executes independent tool calls
-    in parallel using threads.
-    """
-    from .parallel import execute_tools_parallel, is_parallel_enabled
-
+    """Uses any tools called in a message and returns the response."""
     assert msg.role == "assistant", "Only assistant messages can be executed"
 
     # Collect all runnable tool uses
@@ -222,30 +260,19 @@ def execute_msg(
     if not runnable_tools:
         return
 
-    # Check if parallel execution is enabled and we have multiple tools
-    if is_parallel_enabled() and len(runnable_tools) > 1:
-        logger.info(f"Executing {len(runnable_tools)} tools in parallel")
-        try:
-            results = execute_tools_parallel(runnable_tools, confirm, log, workspace)
-            yield from results
-        except KeyboardInterrupt:
-            clear_interruptible()
-            yield Message("system", INTERRUPT_CONTENT)
-    else:
-        # Sequential execution (default behavior)
-        for tooluse in runnable_tools:
-            with terminal_state_title(f"🛠️ running {tooluse.tool}"):
-                try:
-                    for tool_response in tooluse.execute(confirm, log, workspace):
-                        yield tool_response.replace(call_id=tooluse.call_id)
-                except KeyboardInterrupt:
-                    clear_interruptible()
-                    yield Message(
-                        "system",
-                        INTERRUPT_CONTENT,
-                        call_id=tooluse.call_id,
-                    )
-                    break
+    for tooluse in runnable_tools:
+        with terminal_state_title(f"🛠️ running {tooluse.tool}"):
+            try:
+                for tool_response in tooluse.execute(log=log, workspace=workspace):
+                    yield tool_response.replace(call_id=tooluse.call_id)
+            except KeyboardInterrupt:
+                clear_interruptible()
+                yield Message(
+                    "system",
+                    INTERRUPT_CONTENT,
+                    call_id=tooluse.call_id,
+                )
+                break
 
 
 def get_tool_for_langtag(lang: str) -> ToolSpec | None:
@@ -276,7 +303,7 @@ def get_available_tools(include_mcp: bool = True) -> list[ToolSpec]:
         # We need to load tools first
         config = get_config()
 
-        tool_modules: list[str] = list()
+        tool_modules: list[str] = []
         env_tool_modules = config.get_env("TOOL_MODULES", "gptme.tools")
 
         if env_tool_modules:
@@ -302,7 +329,23 @@ def get_available_tools(include_mcp: bool = True) -> list[ToolSpec]:
             )
             tool_modules.extend(plugin_tool_modules)
 
-        available_tools = sorted(_discover_tools(tool_modules))
+        # Add tool modules from unified plugins (entry-point plugins)
+        from ..plugins.registry import get_all_plugins
+
+        all_plugins = get_all_plugins()
+        for plugin in all_plugins:
+            for mod in plugin.tool_modules:
+                if mod not in tool_modules:
+                    tool_modules.append(mod)
+
+        available_tools = list(_discover_tools(tool_modules))
+
+        # Add direct ToolSpec instances from unified plugins, then sort everything together
+        for plugin in all_plugins:
+            available_tools.extend(plugin.tools)
+
+        available_tools.sort()
+
         if include_mcp:
             available_tools.extend(create_mcp_tools(config))
             # Only cache if we included MCP tools
@@ -325,6 +368,15 @@ def get_tools() -> list[ToolSpec]:
     return _get_loaded_tools()
 
 
+def set_tools(tools: list[ToolSpec]) -> None:
+    """Set the loaded tools for the current context.
+
+    Useful for restoring tools in a new asyncio task context where
+    ContextVars from the parent context aren't visible.
+    """
+    _loaded_tools_var.set(tools)
+
+
 def get_tool(tool_name: str) -> ToolSpec | None:
     """Returns a loaded tool by name or block type."""
     loaded_tools = _get_loaded_tools()
@@ -341,7 +393,41 @@ def get_tool(tool_name: str) -> ToolSpec | None:
 
 def has_tool(tool_name: str) -> bool:
     """Returns True if a tool is loaded."""
-    for tool in _get_loaded_tools():
-        if tool.name == tool_name:
-            return True
-    return False
+    return any(tool.name == tool_name for tool in _get_loaded_tools())
+
+
+def load_tool(tool_name: str) -> ToolSpec:
+    """Load a single tool by name mid-conversation.
+
+    Finds the tool in available tools, initializes it, registers hooks/commands,
+    and adds it to the loaded tools list.
+
+    Thread-safe: uses _tools_init_lock to match init_tools() behavior.
+
+    Raises:
+        ValueError: If tool not found or already loaded.
+    """
+    with _tools_init_lock:
+        if has_tool(tool_name):
+            raise ValueError(f"Tool '{tool_name}' is already loaded")
+
+        available = {t.name: t for t in get_available_tools()}
+        if tool_name not in available:
+            raise ValueError(
+                f"Tool '{tool_name}' not found. Available: {', '.join(sorted(available.keys()))}"
+            )
+
+        tool = available[tool_name]
+        if not tool.is_available:
+            raise ValueError(
+                f"Tool '{tool_name}' is unavailable (likely missing dependencies)"
+            )
+
+        # Initialize, register hooks/commands (shared logic)
+        tool = _init_single_tool(tool)
+
+        # Add to loaded tools
+        _get_loaded_tools().append(tool)
+        logger.info("Loaded tool '%s' mid-conversation", tool_name)
+
+        return tool

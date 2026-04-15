@@ -1,22 +1,25 @@
 import atexit
 import logging
+import os
+from dataclasses import replace
 from typing import cast
 
 from dotenv import load_dotenv
 from rich.logging import RichHandler
 
+from .cli.setup import ask_for_api_key
 from .commands import init_commands
 from .config import get_config
 from .hooks import init_hooks
 from .llm import guess_provider_from_config, init_llm, is_custom_provider
 from .llm.models import (
     PROVIDERS,
+    CustomProvider,
     Provider,
     get_model,
     get_recommended_model,
     set_default_model,
 )
-from .setup import ask_for_api_key
 from .tools import ToolFormat, init_tools, set_tool_format
 from .util import console
 
@@ -29,20 +32,57 @@ def init(
     interactive: bool,
     tool_allowlist: list[str] | None,
     tool_format: ToolFormat,
+    no_confirm: bool = False,
+    server: bool = False,
 ):
+    """Initialize gptme.
+
+    Args:
+        model: Model to use, or None for auto-detection
+        interactive: Whether running in interactive mode
+        tool_allowlist: List of tools to enable, or None for all
+        tool_format: Format for tool output
+        no_confirm: Whether to skip tool confirmations
+        server: Whether running in server mode (API/WebUI)
+    """
     global _init_done
     if _init_done:
         logger.warning("init() called twice, ignoring")
+        # Always update tool_format even on re-entry, as it may differ
+        # between conversations in the same process (e.g. test suite)
+        set_tool_format(tool_format)
         return
     _init_done = True
 
     load_dotenv()
+    _init_plugins()
     init_model(model, interactive)
     init_tools(tool_allowlist)
-    init_hooks()
+    init_hooks(interactive=interactive, no_confirm=no_confirm, server=server)
     init_commands()
 
     set_tool_format(tool_format)
+
+
+def _init_plugins():
+    """Discover and initialize all plugins (folder-based + entry-point)."""
+    from pathlib import Path
+
+    from .plugins import discover_all_plugins
+
+    config = get_config()
+    folder_paths: list[Path] = []
+    enabled: list[str] | None = None
+
+    if config.project and config.project.plugins:
+        for path_str in config.project.plugins.paths:
+            path = Path(path_str).expanduser()
+            if not path.is_absolute() and config.project._workspace:
+                path = config.project._workspace / path
+            folder_paths.append(path)
+        enabled = config.project.plugins.enabled or None
+
+    discover_all_plugins(folder_paths=folder_paths or None, enabled_plugins=enabled)
 
 
 def init_model(
@@ -77,7 +117,7 @@ def init_model(
             provider, model_name = cast(tuple[Provider, str], model.split("/", 1))
         elif is_custom_provider(provider_part):
             # Custom provider - use full model string, provider is extracted
-            provider = provider_part  # type: ignore[assignment]
+            provider = CustomProvider(provider_part)
             model_name = "/".join(model.split("/")[1:])  # Rest after provider
         else:
             # Unknown provider format, treat as provider only
@@ -87,7 +127,7 @@ def init_model(
         if is_custom_provider(model):
             # Get the ModelMeta which will resolve the default model
             model_meta = get_model(model)
-            provider = model  # type: ignore[assignment]
+            provider = CustomProvider(model)
             model_name = "/".join(
                 model_meta.model.split("/")[1:]
             )  # Strip provider prefix
@@ -96,11 +136,27 @@ def init_model(
 
     # set up API_KEY and API_BASE, needs to be done before loading history to avoid saving API_KEY
     if model_name is None:
-        model_name = get_recommended_model(provider)  # type: ignore[arg-type]
+        model_name = get_recommended_model(provider)
     model_full = f"{provider}/{model_name}"
     console.log(f"Using model: [green]{model_full}[/green]")
     init_llm(provider)
-    set_default_model(model_full)
+
+    model_meta = get_model(model_full)
+
+    # Apply GPTME_CONTEXT_LENGTH override (useful for local models with non-standard context)
+    context_length_str = os.environ.get("GPTME_CONTEXT_LENGTH")
+    if context_length_str:
+        try:
+            context_length = int(context_length_str)
+        except ValueError:
+            logger.warning(
+                f"Invalid GPTME_CONTEXT_LENGTH value: {context_length_str!r}, ignoring"
+            )
+        else:
+            model_meta = replace(model_meta, context=context_length)
+            logger.info(f"Context length overridden to {context_length} tokens")
+
+    set_default_model(model_meta)
 
 
 def init_logging(verbose):

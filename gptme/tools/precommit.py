@@ -58,7 +58,7 @@ def use_checks() -> bool:
     Any issues found are included in the context, helping catch and fix code quality
     issues before the user continues the conversation.
     """
-    flag: str = get_config().get_env("GPTME_CHECK", "")  # type: ignore
+    flag = get_config().get_env("GPTME_CHECK", "") or ""
     explicit_enabled = flag.lower() in ("1", "true", "yes")
     explicit_disabled = flag.lower() in ("0", "false", "no")
     if explicit_disabled:
@@ -90,8 +90,7 @@ def run_checks_per_file() -> bool:
     Whether to support running pre-commit checks on each modified file immediately after save.
     Not always a good idea for multi-step/multi-file changes, so disabled by default.
     """
-    # TODO: also support checking only modified files in the full run after step complete?
-    flag: str = get_config().get_env("GPTME_CHECK_PER_FILE", "false")  # type: ignore
+    flag = get_config().get_env("GPTME_CHECK_PER_FILE", "false") or "false"
     return flag.lower() in (
         "1",
         "true",
@@ -99,8 +98,50 @@ def run_checks_per_file() -> bool:
     )
 
 
-def run_precommit_checks() -> tuple[bool, str | None]:
-    """Run pre-commit checks on modified files and return output if there are issues.
+def _get_modified_files() -> list[str]:
+    """Get list of modified, staged, and untracked files in the git working tree.
+
+    Returns a combined list of:
+    - Modified files (tracked, with unstaged changes)
+    - Staged files (in the index, ready to commit)
+    - Untracked files (new files not yet tracked)
+    """
+    files: set[str] = set()
+    try:
+        # Modified (unstaged) + staged files
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            files.update(result.stdout.strip().splitlines())
+
+        # Untracked files (new files not yet added to git)
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            files.update(result.stdout.strip().splitlines())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        logger.debug("Failed to get modified files from git")
+
+    return sorted(files)
+
+
+def run_precommit_checks(*, all_files: bool = True) -> tuple[bool, str | None]:
+    """Run pre-commit checks and return output if there are issues.
+
+    Args:
+        all_files: If True, run on all files (``--all-files``).
+            If False, run only on modified/staged/untracked files.
+            Falls back to ``--all-files`` when no modified files are found.
 
     Pre-commit checks will run if either:
     1. GPTME_CHECK=true is set explicitly, or
@@ -108,25 +149,34 @@ def run_precommit_checks() -> tuple[bool, str | None]:
 
     Returns:
         A tuple (True, None) if no issues found,
-        or (False, output) if issues found,
-        or (False, None) if interrupted.
-        If pre-commit checks are not enabled, returns (False, None).
+        or (False, output) if issues found or timed out,
+        or (False, None) if interrupted/not-enabled.
     """
     if not use_checks():
         logger.debug("Pre-commit checks not enabled")
         return False, None
 
-    # cmd = "pre-commit run --files $(git ls-files -m)"
-    cmd = ["pre-commit", "run", "--all-files"]
+    if all_files:
+        cmd = ["pre-commit", "run", "--all-files"]
+    else:
+        modified = _get_modified_files()
+        if modified:
+            cmd = ["pre-commit", "run", "--files", *modified]
+        else:
+            logger.debug("No modified files found, falling back to --all-files")
+            cmd = ["pre-commit", "run", "--all-files"]
     start_time = time.monotonic()
     logger.info(f"Running pre-commit checks: {' '.join(cmd)}")
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
         return True, None  # No issues found
+    except subprocess.TimeoutExpired:
+        logger.error("Pre-commit checks timed out after 300s")
+        return False, "Pre-commit checks timed out after 300s"
     except subprocess.CalledProcessError as e:
         # if exit code is 130, it means the user interrupted the process
         if e.returncode == 130:
-            raise KeyboardInterrupt() from None
+            raise KeyboardInterrupt from None
         # If no pre-commit config found
         # Can happen in nested git repos, since we check parent dirs but pre-commit only checks the current repo.
         if ".pre-commit-config.yaml is not a file" in e.stdout:
@@ -216,7 +266,11 @@ def run_precommit_on_file(
     try:
         # Check if pre-commit is available
         check_result = subprocess.run(
-            ["pre-commit", "--version"], capture_output=True, text=True, timeout=5
+            ["pre-commit", "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if check_result.returncode != 0:
             logger.debug("pre-commit not available, skipping hook")
@@ -232,6 +286,7 @@ def run_precommit_on_file(
         # Run pre-commit on the specific file
         result = subprocess.run(
             ["pre-commit", "run", "--files", str(path)],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -243,7 +298,7 @@ def run_precommit_on_file(
             output = result.stdout or result.stderr
             yield Message(
                 "system",
-                f"Pre-commit checks failed for {path.name}:\n```\n{output}\n```",
+                f"Pre-commit checks failed for {path.name}:\n{md_codeblock('', output)}",
             )
         else:
             # Pre-commit checks passed
@@ -294,8 +349,8 @@ def run_full_precommit_checks(
         return
 
     try:
-        # Run pre-commit checks on all files
-        success, failed_check_message = run_precommit_checks()
+        # Run pre-commit checks only on modified files (not --all-files)
+        success, failed_check_message = run_precommit_checks(all_files=False)
 
         if not success and failed_check_message:
             yield Message("system", failed_check_message, quiet=False)

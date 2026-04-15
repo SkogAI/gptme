@@ -3,6 +3,7 @@ Sets up a KeyboardInterrupt handler to handle Ctrl-C during the chat loop.
 """
 
 import os
+import threading
 import time
 from contextvars import ContextVar
 
@@ -21,6 +22,12 @@ def handle_keyboard_interrupt(signum, frame):  # pragma: no cover
     This handler allows interruption of the assistant or tool execution when in an interruptible state,
     while still providing a safeguard against accidental exits during user input.
     """
+    # Don't raise in non-main threads — causes "Exception ignored during
+    # thread shutdown" errors, especially on Windows where worker threads
+    # use threading-based I/O instead of select().
+    if threading.current_thread() is not threading.main_thread():
+        return
+
     current_time = time.time()
 
     # if testing with pytest
@@ -29,15 +36,8 @@ def handle_keyboard_interrupt(signum, frame):  # pragma: no cover
     if _interruptible_var.get() or testing:
         raise KeyboardInterrupt
 
-    # if current_time - last_interrupt_time <= timeout:
-    #     console.log("Second interrupt received, exiting...")
-    #     sys.exit(0)
-
     _last_interrupt_time_var.set(current_time)
     console.print()
-    # console.log(
-    #     f"Interrupt received. Press Ctrl-C again within {timeout} seconds to exit."
-    # )
     console.log("Interrupted. Press Ctrl-D to exit.")
 
 

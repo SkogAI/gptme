@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..hooks import HookType, StopPropagation
 from ..message import Message
-from .base import ConfirmFunc, ToolSpec, ToolUse
+from .base import ToolSpec, ToolUse
 from .todo import get_incomplete_todos_summary, has_incomplete_todos
 
 if TYPE_CHECKING:
@@ -18,14 +18,11 @@ logger = logging.getLogger(__name__)
 class SessionCompleteException(Exception):
     """Exception raised to signal that the session should end."""
 
-    pass
-
 
 def execute_complete(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Message:
     """Signal that the autonomous session is complete and ready to exit."""
     return Message(
@@ -62,16 +59,31 @@ def complete_hook(
         logger.debug("complete_hook: no messages")
         return
 
-    # Look for complete tool call in the last assistant message
+    # Only look at assistant messages in the CURRENT turn (after the last user message).
+    # This prevents re-triggering when subsequent chained prompts are processed:
+    # after the second prompt is appended, the last user message is that prompt,
+    # and there are no assistant messages after it yet, so we correctly do nothing.
+    last_user_idx = next(
+        (
+            len(messages) - 1 - i
+            for i, m in enumerate(reversed(messages))
+            if m.role == "user"
+        ),
+        None,
+    )
+    current_turn = (
+        messages[last_user_idx + 1 :] if last_user_idx is not None else messages
+    )
+
     last_assistant_msg = next(
-        (m for m in reversed(messages) if m.role == "assistant"), None
+        (m for m in reversed(current_turn) if m.role == "assistant"), None
     )
     if not last_assistant_msg:
-        logger.debug("complete_hook: no assistant messages")
+        logger.debug("complete_hook: no assistant messages in current turn")
         return
 
     logger.debug(
-        "complete_hook: checking last assistant message for complete tool call"
+        "complete_hook: checking last assistant message in current turn for complete tool call"
     )
 
     # Check if the assistant called the complete tool

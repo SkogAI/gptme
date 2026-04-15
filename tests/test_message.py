@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from gptme.message import Message, msgs_to_toml, toml_to_msgs
-from gptme.util.uri import FilePath
+
+if TYPE_CHECKING:
+    from gptme.util.uri import FilePath
 
 
 def test_toml():
@@ -210,30 +213,33 @@ def test_message_metadata():
 
     from gptme.message import Message, MessageMetadata
 
-    # Create message with metadata using flat token format
-    # Per Erik's review: https://github.com/gptme/gptme/pull/943#issuecomment-3633137716
+    # Create message with metadata using nested usage format
     meta: MessageMetadata = {
         "model": "claude-sonnet",
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cache_read_tokens": 80,
-        "cache_creation_tokens": 10,
         "cost": 0.005,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 80,
+            "cache_creation_tokens": 10,
+        },
     }
     msg = Message(role="assistant", content="Hello world", metadata=meta)
 
     # Verify metadata stored correctly
     assert msg.metadata is not None
     assert msg.metadata["model"] == "claude-sonnet"
-    assert msg.metadata["input_tokens"] == 100
-    assert msg.metadata["output_tokens"] == 50
-    assert msg.metadata["cache_read_tokens"] == 80
-    assert msg.metadata["cache_creation_tokens"] == 10
     assert msg.metadata["cost"] == 0.005
+    usage = msg.metadata["usage"]
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["cache_read_tokens"] == 80
+    assert usage["cache_creation_tokens"] == 10
 
     # Test JSON/JSONL roundtrip
     d = msg.to_dict()
     assert "metadata" in d
+    assert "usage" in d["metadata"]
     json_str = json.dumps(d)
     json_data = json.loads(json_str)
     from dateutil.parser import isoparse
@@ -246,6 +252,64 @@ def test_message_metadata():
     toml_str = msg.to_toml()
     msg3 = Message.from_toml(toml_str)
     assert msg3.metadata == meta
+
+
+def test_message_metadata_migration():
+    """Test backward-compatible migration from flat to nested usage format."""
+    import json
+
+    from gptme.message import Message, _migrate_metadata
+
+    # Old flat format (as stored in existing logs)
+    flat_meta = {
+        "model": "claude-sonnet",
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_read_tokens": 80,
+        "cache_creation_tokens": 10,
+        "cost": 0.005,
+    }
+
+    # Migration should nest token fields under "usage"
+    migrated = _migrate_metadata(flat_meta)
+    assert migrated["model"] == "claude-sonnet"
+    assert migrated["cost"] == 0.005
+    assert "usage" in migrated
+    assert migrated["usage"]["input_tokens"] == 100
+    assert migrated["usage"]["output_tokens"] == 50
+    assert migrated["usage"]["cache_read_tokens"] == 80
+    assert migrated["usage"]["cache_creation_tokens"] == 10
+    # Flat token keys should NOT be at top level
+    assert "input_tokens" not in migrated
+    assert "output_tokens" not in migrated
+
+    # Already-migrated format should pass through unchanged
+    nested_meta = {
+        "model": "claude-sonnet",
+        "cost": 0.005,
+        "usage": {"input_tokens": 100, "output_tokens": 50},
+    }
+    migrated2 = _migrate_metadata(nested_meta)
+    assert migrated2 == nested_meta
+
+    # JSONL round-trip with old flat format should auto-migrate
+    old_json = json.dumps(
+        {
+            "role": "assistant",
+            "content": "Hello",
+            "timestamp": "2025-01-01T00:00:00",
+            "metadata": flat_meta,
+        }
+    )
+    from dateutil.parser import isoparse
+
+    json_data = json.loads(old_json)
+    json_data["timestamp"] = isoparse(json_data["timestamp"])
+    json_data["metadata"] = _migrate_metadata(json_data["metadata"])
+    msg = Message(**json_data)
+    assert msg.metadata is not None
+    assert "usage" in msg.metadata
+    assert msg.metadata["usage"]["input_tokens"] == 100
 
 
 def test_message_metadata_none():
@@ -305,6 +369,45 @@ def test_to_xml_handles_quotes_in_role():
 
     # Quotes in content should be safe (no escaping needed for XML content)
     assert 'Test content with "quotes"' in xml_str
+
+
+def test_message_equality_ignores_timestamp():
+    """Test that Message equality is based on role and content, not timestamp."""
+    msg1 = Message("user", "Hello", timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    msg2 = Message("user", "Hello", timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg3 = Message("user", "World", timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    msg4 = Message(
+        "assistant", "Hello", timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+
+    # Same role + content = equal, regardless of timestamp
+    assert msg1 == msg2
+
+    # Different content = not equal
+    assert msg1 != msg3
+
+    # Different role = not equal
+    assert msg1 != msg4
+
+    # Not equal to non-Message
+    assert msg1 != "not a message"
+
+
+def test_message_hash_consistent_with_equality():
+    """Test that Message hash is consistent with equality (equal objects hash the same)."""
+    msg1 = Message("user", "Hello", timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    msg2 = Message("user", "Hello", timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg3 = Message("user", "World")
+
+    # Equal messages must have equal hashes
+    assert hash(msg1) == hash(msg2)
+
+    # Different messages should (likely) have different hashes
+    assert hash(msg1) != hash(msg3)
+
+    # Messages work correctly in sets
+    s = {msg1, msg2, msg3}
+    assert len(s) == 2  # msg1 and msg2 are equal, so only 2 unique
 
 
 def test_toml_preserves_whitespace():
@@ -371,3 +474,86 @@ def test_call_id_serialization():
 
     restored_with = Message.from_toml(toml_str_with)
     assert restored_with.call_id == "call_abc123"
+
+
+def test_message_concat():
+    """Test Message.concat properly merges all relevant fields."""
+    from pathlib import Path
+
+    msg1 = Message(
+        "user",
+        "First message",
+        files=[Path("/tmp/file1.png")],
+        file_hashes={"/tmp/file1.png": "hash1"},
+    )
+    msg2 = Message(
+        "user",
+        "Second message",
+        files=[Path("/tmp/file2.png")],
+        file_hashes={"/tmp/file2.png": "hash2"},
+        pinned=True,
+    )
+
+    # Test basic concatenation
+    merged = msg1.concat(msg2)
+    assert merged.role == "user"
+    assert merged.content == "First message\n\nSecond message"
+    assert len(merged.files) == 2
+    assert Path("/tmp/file1.png") in merged.files
+    assert Path("/tmp/file2.png") in merged.files
+
+    # Test file_hashes are merged
+    assert merged.file_hashes == {
+        "/tmp/file1.png": "hash1",
+        "/tmp/file2.png": "hash2",
+    }
+
+    # Test pinned is preserved if either message is pinned
+    assert merged.pinned is True
+
+    # Test quiet is preserved if either message is quiet
+    msg_quiet = Message("user", "Quiet message", quiet=True)
+    msg_normal = Message("user", "Normal message")
+    assert msg_quiet.concat(msg_normal).quiet is True
+    assert msg_normal.concat(msg_quiet).quiet is True
+    assert msg_normal.concat(msg_normal).quiet is False
+
+    # Test custom separator
+    merged_custom = msg1.concat(msg2, separator=" | ")
+    assert merged_custom.content == "First message | Second message"
+
+
+def test_message_concat_different_roles_raises():
+    """Test that concat raises ValueError for different roles."""
+    import pytest
+
+    msg1 = Message("user", "User message")
+    msg2 = Message("assistant", "Assistant message")
+
+    with pytest.raises(ValueError, match="different roles"):
+        msg1.concat(msg2)
+
+
+def test_message_concat_preserves_images():
+    """Test that concat preserves image files for vision models."""
+    from pathlib import Path
+
+    # Simulates system message converted to user + original user with image
+    system_as_user = Message(
+        "user",
+        "<system>You are a helpful assistant</system>",
+    )
+    user_with_image = Message(
+        "user",
+        "/path/to/image.png",
+        files=[Path("/path/to/image.png")],
+        file_hashes={"/path/to/image.png": "abc123"},
+    )
+
+    # This is what _merge_consecutive does
+    merged = system_as_user.concat(user_with_image)
+
+    # The image should be preserved
+    assert len(merged.files) == 1
+    assert Path("/path/to/image.png") in merged.files
+    assert merged.file_hashes.get("/path/to/image.png") == "abc123"

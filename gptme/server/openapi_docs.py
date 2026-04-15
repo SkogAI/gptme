@@ -5,6 +5,7 @@ Simple decorator-based approach for existing function routes with automatic infe
 """
 
 import inspect
+import logging
 import re
 from collections.abc import Callable
 from typing import (
@@ -19,6 +20,8 @@ from flask import Blueprint, current_app, jsonify
 from pydantic import BaseModel, Field
 
 from gptme.__version__ import __version__
+
+logger = logging.getLogger(__name__)
 
 # Pydantic Models (auto-generate OpenAPI schemas)
 # -----------------------------------------------
@@ -126,6 +129,67 @@ class GenerateResponse(BaseModel):
 # -------------
 
 
+class ApiCapabilities(BaseModel):
+    """Advertised server capabilities."""
+
+    external_session_catalog: bool = Field(
+        False,
+        description="Whether read-only external session catalog listing is available",
+    )
+    external_session_transcript: bool = Field(
+        False,
+        description="Whether read-only external session transcript viewing is available",
+    )
+
+
+class ApiRootResponse(BaseModel):
+    """Response from the V2 API root endpoint."""
+
+    message: str = Field(..., description="API description")
+    documentation: str = Field(..., description="Documentation URL")
+    capabilities: ApiCapabilities = Field(
+        ..., description="Advertised optional server capabilities"
+    )
+
+
+class ExternalSessionListItem(BaseModel):
+    """A read-only external session catalog item."""
+
+    id: str = Field(..., description="Opaque external session identifier")
+    session_id: str = Field(..., description="Underlying provider session identifier")
+    harness: str = Field(..., description="Harness name")
+    session_name: str | None = Field(None, description="Human-readable session name")
+    project: str | None = Field(None, description="Associated project or workspace")
+    model: str | None = Field(None, description="Model used by the session")
+    started_at: str | None = Field(None, description="Session start timestamp")
+    last_activity: str | None = Field(None, description="Last activity timestamp")
+    capabilities: list[str] = Field(
+        default_factory=list,
+        description="Read-only capabilities available for this external session",
+    )
+    trajectory_path: str = Field(
+        ...,
+        description="Absolute path to the normalized transcript backing this catalog item",
+    )
+
+
+class ExternalSessionListResponse(BaseModel):
+    """Response containing external session catalog items."""
+
+    sessions: list[ExternalSessionListItem] = Field(
+        ..., description="List of external sessions"
+    )
+
+
+class ExternalSessionResponse(BaseModel):
+    """Response containing a normalized external session transcript."""
+
+    id: str = Field(..., description="Opaque external session identifier")
+    transcript: dict = Field(
+        ..., description="Normalized external session transcript payload"
+    )
+
+
 class SessionResponse(BaseModel):
     """Session information response."""
 
@@ -141,6 +205,14 @@ class StepRequest(BaseModel):
     stream: bool = Field(True, description="Enable streaming")
     branch: str = Field("main", description="Conversation branch")
     auto_confirm: bool | int = Field(False, description="Auto-confirm tools")
+    use_acp: bool = Field(
+        False,
+        description=(
+            "Route this session through an ACP subprocess for process-isolated execution. "
+            "Sticky: once enabled for a session, all subsequent steps use ACP. "
+            "The subprocess manages its own model; 'model' is ignored in ACP mode."
+        ),
+    )
 
 
 class ToolConfirmRequest(BaseModel):
@@ -154,6 +226,24 @@ class ToolConfirmRequest(BaseModel):
     action: str = Field(..., description="Action: confirm, edit, skip, auto")
     content: str | None = Field(None, description="Modified content (for edit action)")
     count: int | None = Field(None, description="Auto-confirm count (for auto action)")
+
+
+class ElicitRespondRequest(BaseModel):
+    """Request to respond to an elicitation prompt from the agent."""
+
+    elicit_id: str = Field(..., description="Elicitation request ID")
+    action: str = Field(
+        ...,
+        description="Action: accept (provide value), decline, or cancel",
+    )
+    value: str | None = Field(
+        None,
+        description="Response value for text/choice/secret/confirmation/form types",
+    )
+    values: list[str] | None = Field(
+        None,
+        description="Selected values for multi_choice type",
+    )
 
 
 class InterruptRequest(BaseModel):
@@ -181,6 +271,14 @@ class AgentCreateResponse(BaseModel):
     status: str = Field(..., description="Operation status")
     message: str = Field(..., description="Success message")
     initial_conversation_id: str = Field(..., description="Initial conversation ID")
+
+
+class AgentInfoResponse(BaseModel):
+    """Response containing agent information."""
+
+    name: str = Field(..., description="Agent name")
+    avatar: str | None = Field(None, description="Avatar path or URL")
+    path: str | None = Field(None, description="Agent workspace path")
 
 
 class ChatConfig(BaseModel):
@@ -239,6 +337,9 @@ def _infer_response_type(func: Callable) -> dict[int, type | None]:
 
         return {200: None}
     except Exception:
+        logger.debug(
+            "Failed to infer response type for %s", func.__name__, exc_info=True
+        )
         return {200: None}
 
 
@@ -250,7 +351,7 @@ def _infer_request_body(func: Callable) -> type[BaseModel] | None:
 
         # Look for parameters that are BaseModel subclasses (excluding path params)
         sig = inspect.signature(func)
-        for param_name, _param in sig.parameters.items():
+        for param_name in sig.parameters:
             if param_name in ("logfile", "filename"):  # Skip path parameters
                 continue
 
@@ -264,6 +365,9 @@ def _infer_request_body(func: Callable) -> type[BaseModel] | None:
 
         return None
     except Exception:
+        logger.debug(
+            "Failed to infer request body for %s", func.__name__, exc_info=True
+        )
         return None
 
 
@@ -297,20 +401,18 @@ def _convert_flask_path_to_openapi(flask_path: str) -> str:
 
 def _infer_parameters(func: Callable, rule_string: str) -> list[dict[str, Any]]:
     """Infer parameters from Flask route and function signature."""
-    parameters = []
-
     # Extract path parameters from route - handle all Flask parameter types
     path_params = re.findall(r"<(?:\w+:)?(\w+)>", rule_string)
-    for param in path_params:
-        parameters.append(
-            {
-                "name": param,
-                "in": "path",
-                "required": True,
-                "schema": {"type": "string"},
-                "description": f"{param.replace('_', ' ').title()} identifier",
-            }
-        )
+    parameters = [
+        {
+            "name": param,
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string"},
+            "description": f"{param.replace('_', ' ').title()} identifier",
+        }
+        for param in path_params
+    ]
 
     # Try to infer query parameters from function signature
     try:
@@ -332,7 +434,9 @@ def _infer_parameters(func: Callable, rule_string: str) -> list[dict[str, Any]]:
                     }
                 )
     except Exception:
-        pass
+        logger.debug(
+            "Failed to infer query parameters for %s", func.__name__, exc_info=True
+        )
 
     return parameters
 
@@ -494,8 +598,10 @@ def _generate_schemas(model_classes: set[type[BaseModel]]) -> dict[str, Any]:
                 # Remove $defs from main schema since we've promoted them
                 del schema["$defs"]
 
-        except Exception as e:
-            print(f"Warning: Could not generate schema for {cls.__name__}: {e}")
+        except Exception:
+            logger.warning(
+                "Could not generate schema for %s", cls.__name__, exc_info=True
+            )
 
     return all_schemas
 
@@ -510,7 +616,7 @@ def _update_schema_refs(all_schemas: dict[str, Any]) -> dict[str, Any]:
                 ref_name = obj["$ref"].split("/")[-1]
                 obj["$ref"] = f"#/components/schemas/{ref_name}"
             return {k: update_refs(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
+        if isinstance(obj, list):
             return [update_refs(item) for item in obj]
         return obj
 
@@ -573,10 +679,9 @@ def _convert_to_openapi_nullable(schema: dict) -> dict:
 
         # Recursively process all dictionary values
         return {k: _convert_to_openapi_nullable(v) for k, v in schema.items()}
-    elif isinstance(schema, list):
+    if isinstance(schema, list):
         return [_convert_to_openapi_nullable(item) for item in schema]
-    else:
-        return schema
+    return schema
 
 
 def _process_route_parameters(
@@ -592,9 +697,11 @@ def _process_route_parameters(
     manual_param_names = {p["name"] for p in manual_parameters}
 
     # Add inferred path parameters that aren't manually overridden
-    for param in inferred_parameters:
-        if param["name"] not in manual_param_names:
-            final_parameters.append(param)
+    final_parameters = [
+        param
+        for param in inferred_parameters
+        if param["name"] not in manual_param_names
+    ]
 
     # Add manual parameters
     final_parameters.extend(manual_parameters)
@@ -695,13 +802,13 @@ def _add_flask_routes_to_spec(spec: dict[str, Any]) -> None:
 
         final_parameters = _process_route_parameters(view_func, rule.rule, doc)
 
-        paths_dict = spec["paths"]  # type: ignore
+        paths_dict = spec["paths"]
         if path not in paths_dict:
             paths_dict[path] = {}
 
         for method in methods:
             method_spec = _create_method_spec(doc, method, final_parameters)
-            paths_dict[path][method.lower()] = method_spec  # type: ignore
+            paths_dict[path][method.lower()] = method_spec
 
 
 def generate_openapi_spec() -> dict[str, Any]:
@@ -721,7 +828,7 @@ def generate_openapi_spec() -> dict[str, Any]:
         )
 
     # Add all schemas to spec
-    spec["components"]["schemas"].update(all_schemas)  # type: ignore
+    spec["components"]["schemas"].update(all_schemas)
 
     # Add Flask routes
     _add_flask_routes_to_spec(spec)

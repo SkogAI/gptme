@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import functools
 import importlib
+import importlib.util
+import inspect
 import json
 import logging
 import re
-import sys
 import types
 from collections.abc import Callable, Generator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import indent
@@ -29,11 +30,11 @@ import json_repair
 from lxml import etree
 
 from ..codeblock import Codeblock
-from ..hooks import HookFunc
 from ..message import Message
 from ..util import clean_example, transform_examples_to_chat_directives
 
 if TYPE_CHECKING:
+    from ..hooks import HookFunc
     from ..logmanager import Log
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ ToolFormat: TypeAlias = Literal["markdown", "xml", "tool"]
 tool_format: ToolFormat = "markdown"
 
 # Match tool name and start of JSON
-toolcall_re = re.compile(r"^@(\w+)\(([\w\-:\.]+)\):\s*({.*)", re.M | re.S)
+toolcall_re = re.compile(r"^@(\w+)\(([\w\-:\.]+)\):\s*({.*)", re.MULTILINE | re.DOTALL)
 
 
 def find_json_end(s: str, start: int) -> int | None:
@@ -76,6 +77,41 @@ def find_json_end(s: str, start: int) -> int | None:
     return None
 
 
+def _codeblock_char_ranges(content: str) -> list[tuple[int, int]]:
+    """Get character ranges of markdown fenced code blocks.
+
+    Returns a list of (start, end) character positions for each fenced code block,
+    used to skip tool call matches that appear inside code blocks.
+    """
+    ranges = []
+    fence_re = re.compile(r"^(`{3,})", re.MULTILINE)
+    fences = list(fence_re.finditer(content))
+
+    i = 0
+    while i < len(fences):
+        open_match = fences[i]
+        open_len = len(open_match.group(1))
+
+        # Find matching closing fence (same length, bare line)
+        for j in range(i + 1, len(fences)):
+            close_match = fences[j]
+            close_len = len(close_match.group(1))
+            # Closing fence: same backtick count, nothing else on the line
+            line_end_pos = content.find("\n", close_match.end())
+            if line_end_pos == -1:
+                line_end_pos = len(content)
+            after_backticks = content[close_match.end() : line_end_pos].strip()
+            if close_len == open_len and after_backticks == "":
+                ranges.append((open_match.start(), line_end_pos))
+                i = j + 1
+                break
+        else:
+            # No matching close found
+            i += 1
+
+    return ranges
+
+
 def extract_json(content: str, match: re.Match) -> str | None:
     """Extract complete JSON object starting from a regex match"""
     json_start = match.start(3)  # start of the JSON content
@@ -86,6 +122,17 @@ def extract_json(content: str, match: re.Match) -> str | None:
 
 
 ConfirmFunc = Callable[[str], bool]
+
+# Context var to track the current ToolUse being executed
+# This allows get_confirmation() to work without explicit tool_use parameter
+_current_tool_use: ContextVar[ToolUse | None] = ContextVar(
+    "current_tool_use", default=None
+)
+
+
+def get_current_tool_use() -> ToolUse | None:
+    """Get the currently executing ToolUse from context."""
+    return _current_tool_use.get()
 
 
 def set_tool_format(new_format: ToolFormat):
@@ -103,7 +150,6 @@ class ExecuteFuncGen(Protocol):
         code: str | None,
         args: list[str] | None,
         kwargs: dict[str, str] | None,
-        confirm: ConfirmFunc,
     ) -> Generator[Message, None, None]: ...
 
 
@@ -113,7 +159,6 @@ class ExecuteFuncMsg(Protocol):
         code: str | None,
         args: list[str] | None,
         kwargs: dict[str, str] | None,
-        confirm: ConfirmFunc,
     ) -> Message: ...
 
 
@@ -307,35 +352,67 @@ class ToolSpec:
             instructions.append(self.instructions)
 
         if tool_format in self.instructions_format:
+            # A format-specific override replaces the auto-generated function listing
+            # for that format. This is intentional: if a tool defines
+            # instructions_format["tool"], it takes responsibility for providing a
+            # concise summary (needed to stay within OpenAI's 1024-char limit, #1697).
+            # The same applies to any other format that has an override.
             instructions.append(self.instructions_format[tool_format])
-
-        if self.functions:
+        elif self.functions:
             instructions.append(self.get_functions_description())
 
         return "\n\n".join(instructions)
 
     def get_tool_prompt(self, examples: bool, tool_format: ToolFormat):
+        if tool_format == "xml":
+            return self._get_tool_prompt_xml(examples, tool_format)
         prompt = ""
         prompt += f"\n\n## {self.name}"
         prompt += f"\n\n**Description:** {self.desc}" if self.desc else ""
         instructions = self.get_instructions(tool_format)
         if instructions:
             prompt += f"\n\n**Instructions:** {instructions}"
-        # TODO: Don't include examples for reasoning models: https://platform.openai.com/docs/guides/function-calling?api-mode=chat&example=get-weather#best-practices-for-defining-functions
         if examples and (
-            examples_content := self.get_examples(tool_format, quote=True).strip()
+            examples_content := self.get_examples(
+                tool_format, quote=True, strip_system=True
+            ).strip()
         ):
             prompt += f"\n\n### Examples\n\n{examples_content}"
         return prompt
 
-    def get_examples(self, tool_format: ToolFormat = "markdown", quote=False):
+    def _get_tool_prompt_xml(self, examples: bool, tool_format: ToolFormat):
+        """Generate tool prompt with XML-sectioned structure."""
+        parts = [f"\n<tool name={quoteattr(self.name)}>"]
+        if self.desc:
+            parts.append(f"<description>{xml_escape(self.desc)}</description>")
+        # Note: xml_escape is applied here, so any instructions_format["xml"] entry
+        # should NOT embed raw XML markup — it would be double-escaped.
+        # If a future tool needs unescaped XML in instructions, add a separate tag here.
+        instructions = self.get_instructions(tool_format)
+        if instructions:
+            parts.append(f"<instructions>\n{xml_escape(instructions)}\n</instructions>")
+        if examples and (
+            examples_content := self.get_examples(
+                tool_format, quote=True, strip_system=True
+            ).strip()
+        ):
+            parts.append(f"<examples>\n{examples_content}\n</examples>")
+        parts.append("</tool>")
+        return "\n".join(parts)
+
+    def get_examples(
+        self,
+        tool_format: ToolFormat = "markdown",
+        quote=False,
+        strip_system=False,
+    ):
         if callable(self.examples):
             examples = self.examples(tool_format)
         else:
             examples = self.examples
         # make sure headers have exactly two newlines after them
         examples = re.sub(r"\n*(\n#+.*?)\n+", r"\n\1\n\n", examples)
-        return clean_example(examples, quote=quote)
+        return clean_example(examples, quote=quote, strip_system=strip_system)
 
     def get_functions_description(self) -> str:
         # return a prompt with a brief description of the available functions
@@ -349,8 +426,7 @@ class ToolSpec:
                 )
                 + "\n```"
             )
-        else:
-            return "None"
+        return "None"
 
 
 @dataclass(frozen=True)
@@ -365,7 +441,6 @@ class ToolUse:
 
     def execute(
         self,
-        confirm: ConfirmFunc,
         log: Log | None = None,
         workspace: Path | None = None,
     ) -> Generator[Message, None, None]:
@@ -374,14 +449,6 @@ class ToolUse:
         from ..hooks import HookType, trigger_hook  # fmt: skip
         from ..telemetry import record_tool_call, trace_function  # fmt: skip
         from . import get_tool  # fmt: skip
-
-        # wrap confirm in trace_function
-        @functools.wraps(confirm)
-        def _confirm(content: str) -> bool:
-            return trace_function(
-                name=f"tool.{self.tool}.confirm",
-                attributes={"tool_name": self.tool},
-            )(confirm)(content)
 
         @trace_function(name=f"tool.{self.tool}", attributes={"tool_name": self.tool})
         def _execute_tool():
@@ -408,18 +475,23 @@ class ToolUse:
 
                     start_time = time.time()
 
-                    ex = tool.execute(
-                        self.content,
-                        self.args,
-                        self.kwargs,
-                        _confirm,
-                    )
-                    if isinstance(ex, Generator):
-                        # Convert generator to list to measure execution time properly
-                        results = list(ex)
-                        yield from results
-                    else:
-                        yield ex
+                    # Set context var so tools can access current ToolUse
+                    # via get_current_tool_use() or implicitly in get_confirmation()
+                    token = _current_tool_use.set(self)
+                    try:
+                        ex = tool.execute(
+                            self.content,
+                            self.args,
+                            self.kwargs,
+                        )
+                        if isinstance(ex, Generator):
+                            # Convert generator to list to measure execution time properly
+                            results = list(ex)
+                            yield from results
+                        else:
+                            yield ex
+                    finally:
+                        _current_tool_use.reset(token)
 
                     # Calculate duration
                     duration = time.time() - start_time
@@ -499,13 +571,12 @@ class ToolUse:
                 start=codeblock.start,
                 _format="markdown",
             )
-        else:
-            # no_op_langs = ["csv", "json", "html", "xml", "stdout", "stderr", "result"]
-            # if codeblock.lang and codeblock.lang not in no_op_langs:
-            #     logger.warning(
-            #         f"Unknown codeblock type '{codeblock.lang}', neither supported language or filename."
-            #     )
-            return None
+        # no_op_langs = ["csv", "json", "html", "xml", "stdout", "stderr", "result"]
+        # if codeblock.lang and codeblock.lang not in no_op_langs:
+        #     logger.warning(
+        #         f"Unknown codeblock type '{codeblock.lang}', neither supported language or filename."
+        #     )
+        return None
 
     @classmethod
     def iter_from_content(
@@ -525,46 +596,67 @@ class ToolUse:
         active_format = tool_format_override or tool_format
 
         # collect all tool uses
-        tool_uses = []
+        tool_uses: list[ToolUse] = []
         if active_format == "xml":
-            for tool_use in cls._iter_from_xml(content):
-                tool_uses.append(tool_use)
-        if active_format == "markdown":
-            for tool_use in cls._iter_from_markdown(content, streaming=streaming):
-                tool_uses.append(tool_use)
+            tool_uses = list(cls._iter_from_xml(content))
+        if active_format in ("markdown", "tool"):
+            # Always try markdown parsing: "tool" format also needs to parse
+            # markdown blocks for /impersonate content and user-provided tool calls
+            tool_uses = list(cls._iter_from_markdown(content, streaming=streaming))
 
         # return them in the order they appear
-        assert all(x.start is not None for x in tool_uses)
-        tool_uses.sort(key=lambda x: x.start or 0)
-        for tool_use in tool_uses:
-            yield tool_use
+        # sort by position; tools with unknown position (None) go last
+        tool_uses.sort(key=lambda x: x.start if x.start is not None else len(content))
+        yield from tool_uses
 
         # don't continue unless tool format (or override allows it)
         if active_format != "tool":
             return
 
-        # check if its a toolcall and extract valid JSON
-        if match := toolcall_re.search(content):
+        # Find all tool calls by iterating through the content.
+        # We can't use finditer() directly because the DOTALL pattern would consume
+        # everything from the first { to the end. Instead, we search from after
+        # each extracted JSON end position to handle multiple tool calls.
+        #
+        # Skip matches inside markdown fenced code blocks to prevent
+        # false positives when tool call syntax appears in examples/docs.
+        codeblock_ranges = _codeblock_char_ranges(content)
+        search_from = 0
+        while match := toolcall_re.search(content, search_from):
+            match_pos = match.start()
+            # Skip tool calls inside markdown fenced code blocks
+            block_end = next(
+                (end for start, end in codeblock_ranges if start <= match_pos < end),
+                None,
+            )
+            if block_end is not None:
+                search_from = block_end
+                continue
             tool_name = match.group(1)
             call_id = match.group(2)
-            if (json_str := extract_json(content, match)) is not None:
-                try:
-                    kwargs = json_repair.loads(json_str)
-                    if not isinstance(kwargs, dict):
-                        logger.debug(f"JSON repair result is not a dict: {kwargs}")
-                        return
-                    start_pos = content.find(f"@{tool_name}(")
-                    yield ToolUse(
-                        tool_name,
-                        None,
-                        None,
-                        kwargs=cast(dict[str, str], kwargs),
-                        call_id=call_id,
-                        start=start_pos,
-                        _format="tool",
-                    )
-                except json.JSONDecodeError:
-                    logger.debug(f"Failed to parse JSON: {json_str}")
+            json_start = match.start(3)
+            json_end = find_json_end(content, json_start)
+            if json_end is None:
+                # Incomplete JSON (e.g. during streaming), stop here
+                break
+            json_str = content[json_start:json_end]
+            search_from = json_end  # advance past this JSON for next iteration
+            try:
+                kwargs = json_repair.loads(json_str)
+                if not isinstance(kwargs, dict):
+                    logger.debug(f"JSON repair result is not a dict: {kwargs}")
+                    continue
+                yield ToolUse(
+                    tool_name,
+                    None,
+                    None,
+                    kwargs=cast(dict[str, str], kwargs),
+                    call_id=call_id,
+                    start=match.start(),
+                    _format="tool",
+                )
+            except json.JSONDecodeError:
+                logger.debug(f"Failed to parse JSON: {json_str}")
 
     @classmethod
     def _iter_from_markdown(
@@ -620,19 +712,24 @@ class ToolUse:
 
             # Handle gptme format: <tool-use><toolname>...</toolname></tool-use>
             for tooluse in tree.xpath("//tool-use"):
-                for child in tooluse.getchildren():
+                for child in tooluse:
                     tool_name = child.tag
                     args = list(child.attrib.values())
-                    tool_content = (child.text or "").strip()
+                    # Use itertext() to capture text across child elements
+                    # (handles <, > in code and angle-bracket tokens like <filename>)
+                    tool_content = "".join(child.itertext()).strip()
 
                     # Find the start position of the tool in the original content
+                    # HTMLParser lowercases tag names, so try case-insensitive
                     start_pos = content.find(f"<{tool_name}")
+                    if start_pos == -1:
+                        start_pos = content.lower().find(f"<{tool_name.lower()}")
 
                     yield ToolUse(
                         tool_name,
                         args,
                         tool_content,
-                        start=start_pos,
+                        start=start_pos if start_pos >= 0 else None,
                         _format="xml",
                     )
 
@@ -646,7 +743,9 @@ class ToolUse:
 
                     # Get any other attributes as args (excluding 'name')
                     args = [v for k, v in invoke.attrib.items() if k != "name"]
-                    tool_content = (invoke.text or "").strip()
+                    # Use itertext() to capture text across child elements
+                    # (handles <, > in code and angle-bracket tokens like <filename>)
+                    tool_content = "".join(invoke.itertext()).strip()
 
                     # Find the start position of the invoke in the original content
                     start_pos = content.find(f'<invoke name="{tool_name}"')
@@ -655,7 +754,7 @@ class ToolUse:
                         tool_name,
                         args,
                         tool_content,
-                        start=start_pos,
+                        start=start_pos if start_pos >= 0 else None,
                         _format="xml",
                     )
         except etree.ParseError as e:
@@ -665,9 +764,9 @@ class ToolUse:
     def to_output(self, tool_format: ToolFormat = "markdown") -> str:
         if tool_format == "markdown":
             return self._to_markdown()
-        elif tool_format == "xml":
+        if tool_format == "xml":
             return self._to_xml()
-        elif tool_format == "tool":
+        if tool_format == "tool":
             return self._to_toolcall()
 
     def _to_markdown(self) -> str:
@@ -700,17 +799,28 @@ class ToolUse:
 
         if self.kwargs is not None:
             return self.kwargs
-        elif self.args is not None and self.content is not None:
+        if self.args is not None and self.content is not None:
             # match positional args with kwargs
             if tool := get_tool(self.tool):
-                if self.args:
-                    args = [*self.args, self.content]
-                else:
-                    args = [self.content]
+                args = list(self.args) if self.args else []
+                # Only append content as a positional parameter if the next
+                # parameter slot is *required*. This prevents display-only
+                # content from leaking into optional parameters (e.g. read's
+                # start_line/end_line) while correctly mapping content for
+                # tools like save/append/shell where the body IS required.
+                next_idx = len(args)
+                if (
+                    next_idx < len(tool.parameters)
+                    and tool.parameters[next_idx].required
+                ):
+                    args.append(self.content)
 
                 json_parameters: dict[str, str] = {}
                 for index, param in enumerate(tool.parameters):
-                    json_parameters[param.name] = args[index]
+                    if index < len(args):
+                        json_parameters[param.name] = args[index]
+                    elif param.required:
+                        break  # required param missing, stop mapping
 
                 return json_parameters
         return {}
@@ -729,11 +839,7 @@ def get_path(
     """Get the path from args/kwargs for save, append, and patch."""
     if code is not None and args is not None:
         fn = " ".join(args)
-        if (
-            fn.startswith("save ")
-            or fn.startswith("append ")
-            or fn.startswith("patch ")
-        ):
+        if fn.startswith(("save ", "append ", "patch ")):
             fn = fn.split(" ", 1)[1]
     elif kwargs is not None:
         fn = kwargs.get("path", "")
@@ -743,17 +849,16 @@ def get_path(
     return Path(fn).expanduser()
 
 
-# TODO: allow using via specifying .py paths with --tools flag
 def load_from_file(path: Path) -> list[ToolSpec]:
-    """Import a tool from a Python file and register the ToolSpec.
+    """Import a tool from a Python file and return discovered ToolSpec instances.
+
+    Supports use via ``--tools path/to/tool.py`` or ``/tools load path/to/tool.py``.
 
     Security:
         - Path must exist and be a regular file
         - Path must have .py extension
         - Resolved path is used to prevent symlink attacks
     """
-    from . import get_tool, get_tools
-
     # Validate path before import
     resolved_path = path.resolve()
     if not resolved_path.exists():
@@ -763,15 +868,25 @@ def load_from_file(path: Path) -> list[ToolSpec]:
     if resolved_path.suffix != ".py":
         raise ValueError(f"Tool file must be a .py file: {path}")
 
-    tools_before = set([t.name for t in get_tools()])
+    # Import using spec_from_file_location to avoid module name collisions
+    # (importlib.import_module caches by stem, so two files named "tool.py"
+    # from different directories would collide in sys.modules)
+    module_name = f"gptme_tool_{resolved_path.stem}_{hash(resolved_path)}"
+    spec = importlib.util.spec_from_file_location(module_name, resolved_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load spec for tool file: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
-    # import the python file
-    script_dir = resolved_path.parent
-    if script_dir not in sys.path:
-        sys.path.append(str(script_dir))
-    importlib.import_module(resolved_path.stem)
+    # Discover ToolSpec instances in the imported module
+    tools = [
+        obj for _, obj in inspect.getmembers(module, lambda c: isinstance(c, ToolSpec))
+    ]
 
-    tools_after = set([t.name for t in get_tools()])
-    tools_new = tools_after - tools_before
-    print(f"Loaded tools {tools_new} from {path}")
-    return [tool for tool_name in tools_new if (tool := get_tool(tool_name))]
+    if tools:
+        tool_names = [t.name for t in tools]
+        logger.info("Loaded tools %s from %s", tool_names, path)
+    else:
+        logger.warning("No ToolSpec instances found in %s", path)
+
+    return tools

@@ -16,9 +16,10 @@ from httpx import RemoteProtocolError
 from pydantic import BaseModel  # fmt: skip
 
 from ..constants import TEMPERATURE, TOP_P
-from ..message import Message, MessageMetadata, msgs2dicts
+from ..message import Message, MessageMetadata, UsageData, msgs2dicts
 from ..telemetry import record_llm_request
 from ..tools.base import ToolSpec
+from .constants import _MIN_RESPONSE_TOKENS
 from .models import ModelMeta, get_model
 from .utils import (
     apply_cache_control,
@@ -138,37 +139,81 @@ def _record_usage(
         cache_read_tokens=cache_read_tokens,
     )
 
+    # Build nested usage data
+    usage_data: UsageData = {}
+    if input_tokens is not None:
+        usage_data["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        usage_data["output_tokens"] = output_tokens
+    if cache_read_tokens is not None:
+        usage_data["cache_read_tokens"] = cache_read_tokens
+    if cache_creation_tokens is not None:
+        usage_data["cache_creation_tokens"] = cache_creation_tokens
+
     # Return MessageMetadata for attachment to Message
     metadata: MessageMetadata = {"model": model}
-    if input_tokens is not None:
-        metadata["input_tokens"] = input_tokens
-    if output_tokens is not None:
-        metadata["output_tokens"] = output_tokens
-    if cache_read_tokens is not None:
-        metadata["cache_read_tokens"] = cache_read_tokens
-    if cache_creation_tokens is not None:
-        metadata["cache_creation_tokens"] = cache_creation_tokens
+    if usage_data:
+        metadata["usage"] = usage_data
     if cost > 0:
         metadata["cost"] = cost
     return metadata
 
 
+def _adjust_thinking_budget(
+    max_tokens: int, thinking_budget: int, use_thinking: bool
+) -> tuple[int, bool]:
+    """Clamp thinking_budget to fit within max_tokens for Anthropic's extended thinking.
+
+    Anthropic requires max_tokens > budget_tokens when extended thinking is active.
+    We honor the caller's max_tokens limit by reducing thinking_budget to fit,
+    rather than inflating max_tokens (which defeats cost-saving intent).
+
+    Always reserves at least _MIN_RESPONSE_TOKENS for the actual response;
+    disables thinking entirely when max_tokens is too small to be useful.
+    """
+    if not use_thinking or max_tokens >= thinking_budget + _MIN_RESPONSE_TOKENS:
+        return thinking_budget, use_thinking
+    new_budget = max_tokens - _MIN_RESPONSE_TOKENS
+    if new_budget <= 0:
+        # Not enough room for thinking AND a useful response — disable thinking.
+        logger.warning(
+            "max_tokens=%d is too small to accommodate thinking tokens "
+            "and a useful response (min %d tokens); "
+            "disabling extended thinking. Increase max_tokens or unset %s.",
+            max_tokens,
+            _MIN_RESPONSE_TOKENS,
+            ENV_REASONING_BUDGET,
+        )
+        return thinking_budget, False
+    logger.warning(
+        "max_tokens=%d cannot accommodate thinking_budget=%d; "
+        "reducing thinking_budget to %d (reserving %d tokens for response). "
+        "Set %s to a smaller value to avoid this.",
+        max_tokens,
+        thinking_budget,
+        new_budget,
+        _MIN_RESPONSE_TOKENS,
+        ENV_REASONING_BUDGET,
+    )
+    return new_budget, use_thinking
+
+
 def _should_use_thinking(model_meta: ModelMeta, tools: list[ToolSpec] | None) -> bool:
+    """Determine if thinking mode should be enabled for the given model and tools.
+
+    Note: Thinking mode is now supported with tool use. When enabled, assistant
+    messages containing <think> tags will be converted to proper Anthropic
+    thinking blocks in the content array.
+    """
     # Support environment variable to override reasoning behavior
     env_reasoning = os.environ.get(ENV_REASONING)
     if env_reasoning and env_reasoning.lower() in ("1", "true", "yes"):
         return True
-    elif env_reasoning and env_reasoning.lower() in ("0", "false", "no"):
+    if env_reasoning and env_reasoning.lower() in ("0", "false", "no"):
         return False
 
-    # Only enable thinking for supported models and when not using `tool` format
-    if not model_meta.supports_reasoning:
-        return False
-    if tools:
-        # FIXME: support this by adhering to anthropic's signature restrictions
-        logger.warning("Tool format `tool` is not supported with reasoning yet.")
-        return False
-    return True
+    # Enable thinking for supported models regardless of tool use
+    return model_meta.supports_reasoning
 
 
 def _handle_anthropic_transient_error(e, attempt, max_retries, base_delay):
@@ -229,7 +274,7 @@ def _handle_anthropic_transient_error(e, attempt, max_retries, base_delay):
         f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
     )
     if status_code in [200, "200"]:
-        logger.warning(f"Status code was strangely 200. Error details: {str(e)}")
+        logger.warning(f"Status code was strangely 200. Error details: {e}")
     time.sleep(delay)
 
 
@@ -249,6 +294,9 @@ def retry_on_overloaded(max_retries: int = 5, base_delay: float = 1.0):
                     _handle_anthropic_transient_error(
                         e, attempt, max_retries, base_delay
                     )
+            # _handle_anthropic_transient_error raises on last attempt,
+            # but guard against silent None return if logic changes
+            raise RuntimeError("retry exhausted without raising")  # pragma: no cover
 
         return wrapper
 
@@ -288,6 +336,9 @@ def retry_generator_on_overloaded(max_retries: int = 5, base_delay: float = 1.0)
                     _handle_anthropic_transient_error(
                         e, attempt, max_retries, base_delay
                     )
+            # _handle_anthropic_transient_error raises on last attempt,
+            # but guard against silent None return if logic changes
+            raise RuntimeError("retry exhausted without raising")  # pragma: no cover
 
         return wrapper
 
@@ -359,6 +410,7 @@ def chat(
     model: str,
     tools: list[ToolSpec] | None,
     output_schema: type[BaseModel] | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[str, MessageMetadata | None]:
     from anthropic import NOT_GIVEN  # fmt: skip
 
@@ -403,7 +455,12 @@ def chat(
             f"Invalid {ENV_REASONING_BUDGET} value: {thinking_budget_str!r}. "
             "Must be a valid integer."
         ) from parse_err
-    max_tokens = model_meta.max_output or 4096
+    max_tokens = (
+        max_tokens if max_tokens is not None else (model_meta.max_output or 4096)
+    )
+    thinking_budget, use_thinking = _adjust_thinking_budget(
+        max_tokens, thinking_budget, use_thinking
+    )
 
     response = _anthropic.messages.create(
         model=api_model,
@@ -412,7 +469,7 @@ def chat(
         temperature=TEMPERATURE if not model_meta.supports_reasoning else 1,
         top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
-        tools=tools_dict if tools_dict else NOT_GIVEN,
+        tools=tools_dict or NOT_GIVEN,
         thinking=(
             {"type": "enabled", "budget_tokens": thinking_budget}
             if use_thinking
@@ -430,7 +487,11 @@ def chat(
         if block.type == "text":
             parsed_block.append(block.text)
         elif block.type == "thinking":
-            parsed_block.append(f"<think>\n{block.thinking}\n</think>")
+            # Embed signature so it survives serialisation and can be passed
+            # back on the next API call (Anthropic requires it for multi-turn).
+            parsed_block.append(
+                f"<think>\n{block.thinking}\n<!-- think-sig: {block.signature} -->\n</think>"
+            )
         elif block.type == "tool_use":
             parsed_block.append(f"\n@{block.name}({block.id}): {block.input}")
         else:
@@ -445,12 +506,16 @@ def stream(
     model: str,
     tools: list[ToolSpec] | None,
     output_schema: type[BaseModel] | None = None,
+    max_tokens: int | None = None,
 ) -> Generator[str, None, MessageMetadata | None]:
     import anthropic.types  # fmt: skip
     from anthropic import NOT_GIVEN  # fmt: skip
 
     # Variable to capture metadata from usage recording
     captured_metadata: MessageMetadata | None = None
+    # Track the signature for the current thinking block so it can be embedded
+    # in the output before </think> for round-trip preservation.
+    _current_block_signature: str | None = None
 
     if not _anthropic:
         raise RuntimeError("LLM not initialized")
@@ -494,7 +559,12 @@ def stream(
             f"Invalid {ENV_REASONING_BUDGET} value: {thinking_budget_str!r}. "
             "Must be a valid integer."
         ) from parse_err
-    max_tokens = model_meta.max_output or 4096
+    max_tokens = (
+        max_tokens if max_tokens is not None else (model_meta.max_output or 4096)
+    )
+    thinking_budget, use_thinking = _adjust_thinking_budget(
+        max_tokens, thinking_budget, use_thinking
+    )
 
     with _anthropic.messages.stream(
         model=api_model,
@@ -503,7 +573,7 @@ def stream(
         temperature=TEMPERATURE if not model_meta.supports_reasoning else 1,
         top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
-        tools=tools_dict if tools_dict else NOT_GIVEN,
+        tools=tools_dict or NOT_GIVEN,
         thinking=(
             {"type": "enabled", "budget_tokens": thinking_budget}
             if use_thinking
@@ -528,7 +598,7 @@ def stream(
                     # Note: Server-side tool use (e.g., web search) comes through as
                     # regular ToolUseBlock with specific tool names, not special types
                     else:
-                        print(f"Unknown block type: {block}")
+                        logger.warning("Unknown block type: %s", block)
                 case "content_block_delta":
                     chunk = cast(anthropic.types.RawContentBlockDeltaEvent, chunk)
                     delta = chunk.delta
@@ -542,8 +612,8 @@ def stream(
                         if delta.partial_json is not None:
                             yield delta.partial_json
                     elif isinstance(delta, anthropic.types.SignatureDelta):
-                        # delta.signature
-                        pass
+                        # Capture signature for embedding in the closing </think> tag.
+                        _current_block_signature = delta.signature
                     elif isinstance(delta, anthropic.types.CitationsDelta):
                         # Citation from web search results
                         if (
@@ -556,12 +626,17 @@ def stream(
                         logger.warning("Unknown delta type: %s", delta)
                 case "content_block_stop":
                     stop_chunk = cast(anthropic.types.ContentBlockStopEvent, chunk)
-                    stop_block = stop_chunk.content_block  # type: ignore
+                    stop_block = getattr(stop_chunk, "content_block", None)
                     if isinstance(stop_block, anthropic.types.TextBlock):
                         pass
                     elif isinstance(stop_block, anthropic.types.ToolUseBlock):
                         pass
                     elif isinstance(stop_block, anthropic.types.ThinkingBlock):
+                        # Embed the signature so it's preserved in message history
+                        # and can be passed back to the API on subsequent turns.
+                        if _current_block_signature:
+                            yield f"\n<!-- think-sig: {_current_block_signature} -->"
+                            _current_block_signature = None
                         yield "\n</think>\n\n"
                     elif isinstance(stop_block, anthropic.types.RedactedThinkingBlock):
                         yield "\n</think redacted>\n\n"
@@ -593,6 +668,69 @@ def stream(
     return captured_metadata
 
 
+def _extract_thinking_content(
+    content: str | list,
+) -> tuple[list[tuple[str, str]], str]:
+    """Extract thinking content from <think>/<thinking> tags.
+
+    Handles both string content and list of content blocks.
+    Also extracts the embedded ``<!-- think-sig: ... -->`` signature comment
+    that is injected by ``chat()`` and ``stream()`` to preserve the Anthropic
+    thinking-block signature across message serialisation.
+
+    Returns:
+        Tuple of (thinking_blocks, remaining_content_without_tags) where
+        thinking_blocks is a list of (thinking_text, signature) per block
+        (signature is empty string if none was embedded), and
+        remaining_content_without_tags is the text with all thinking tags removed.
+    """
+    import re
+
+    # Handle list content (e.g., [{"type": "text", "text": "..."}])
+    text_content = ""
+    if isinstance(content, list):
+        text_parts = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        text_content = "\n".join(text_parts)
+    elif isinstance(content, str):
+        text_content = content
+
+    if not text_content:
+        return [], ""
+
+    # Extract content from <think>...</think> and <thinking>...</thinking> blocks
+    think_matches = re.findall(r"<think>(.*?)</think>", text_content, flags=re.DOTALL)
+    thinking_matches = re.findall(
+        r"<thinking>(.*?)</thinking>", text_content, flags=re.DOTALL
+    )
+    all_thinking = think_matches + thinking_matches
+
+    # Extract the embedded signature comment and strip it from each block.
+    # Each block gets its own signature to support multiple thinking blocks.
+    sig_pattern = re.compile(r"\n<!-- think-sig: (.*?) -->", re.DOTALL)
+    thinking_blocks: list[tuple[str, str]] = []
+    for block in all_thinking:
+        sig_match = sig_pattern.search(block)
+        signature = sig_match.group(1).strip() if sig_match else ""
+        cleaned_block = sig_pattern.sub("", block).strip()
+        if cleaned_block:
+            thinking_blocks.append((cleaned_block, signature))
+
+    # Remove <think> and <thinking> tags from content
+    cleaned_content = re.sub(
+        r"<think>.*?</think>\s*", "", text_content, flags=re.DOTALL
+    )
+    cleaned_content = re.sub(
+        r"<thinking>.*?</thinking>\s*", "", cleaned_content, flags=re.DOTALL
+    )
+    cleaned_content = cleaned_content.strip()
+
+    return thinking_blocks, cleaned_content
+
+
 def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
     for message in message_dicts:
         # Format tool result as expected by the model
@@ -609,24 +747,63 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
         # Find tool_use occurrences and format them as expected
         elif message["role"] == "assistant":
             modified_message = dict(message)
+            original_content = message["content"]
 
-            content_parts, tool_uses = extract_tool_uses_from_assistant_message(
-                message["content"], tool_format_override="tool"
+            # Extract thinking content from <think> tags for proper Anthropic format
+            thinking_blocks, cleaned_content = _extract_thinking_content(
+                original_content
             )
 
-            # Add tool uses in Anthropic format
-            for tooluse in tool_uses:
-                content_parts.append(
-                    {
-                        "type": "tool_use",
-                        "id": tooluse.call_id or "",
-                        "name": tooluse.tool,
-                        "input": tooluse.kwargs or {},
-                    }
-                )
+            # Parse tool uses from the cleaned content (without thinking tags)
+            content_parts, tool_uses = extract_tool_uses_from_assistant_message(
+                cleaned_content, tool_format_override="tool"
+            )
 
-            if content_parts:
-                modified_message["content"] = content_parts
+            # Build content array in proper order: thinking first, then text, then tools
+            final_content: list[dict] = []
+
+            # Add thinking blocks (must come first in Anthropic format).
+            # The Anthropic API requires the signature field for thinking blocks in
+            # multi-turn history; without it the request returns a 400 error.
+            # We embed each block's signature as a <!-- think-sig: ... --> comment in
+            # the serialised message content so it survives round-trips.
+            # Each block is emitted separately to preserve per-block signatures.
+            for thinking_text, thinking_signature in thinking_blocks:
+                if thinking_signature:
+                    final_content.append(
+                        {
+                            "type": "thinking",
+                            "thinking": thinking_text,
+                            "signature": thinking_signature,
+                        }
+                    )
+                else:
+                    # No signature available (legacy message or format mismatch).
+                    # Skip the thinking block to avoid an Anthropic API 400 error.
+                    logger.debug(
+                        "Skipping thinking block in history: no signature available"
+                    )
+
+            # Add text content parts
+            for part in content_parts:
+                if isinstance(part, str) and part.strip():
+                    final_content.append({"type": "text", "text": part})
+                elif isinstance(part, dict):
+                    final_content.append(part)
+
+            # Add tool uses in Anthropic format
+            final_content.extend(
+                {
+                    "type": "tool_use",
+                    "id": tooluse.call_id or "",
+                    "name": tooluse.tool,
+                    "input": tooluse.kwargs or {},
+                }
+                for tooluse in tool_uses
+            )
+
+            if final_content:
+                modified_message["content"] = final_content
 
             yield modified_message
         else:
@@ -634,10 +811,15 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
 
 
 # File extensions allowed for image uploads
-ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif"]
+ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"]
 
 
 def _process_file(message_dict: dict) -> dict:
+    """Process remaining file attachments (images only).
+
+    Text files are already embedded by embed_attached_file_content() in
+    prepare_messages(). Only non-text files (images, binaries) remain here.
+    """
     message_content = message_dict["content"]
 
     # combines a content message with a list of files
@@ -709,7 +891,7 @@ def _transform_system_messages(
             messages[i] = Message(
                 "user",
                 content=content,
-                files=message.files,  # type: ignore
+                files=message.files,
                 call_id=message.call_id,
             )
 
@@ -723,12 +905,7 @@ def _transform_system_messages(
             and message.role == "user"
             and message.call_id == messages_new[-1].call_id
         ):
-            messages_new[-1] = Message(
-                "user",
-                content=f"{messages_new[-1].content}\n\n{message.content}",
-                files=messages_new[-1].files + message.files,  # type: ignore
-                call_id=messages_new[-1].call_id,
-            )
+            messages_new[-1] = messages_new[-1].concat(message)
         else:
             messages_new.append(message)
     messages = messages_new
@@ -820,11 +997,18 @@ def _prepare_messages_for_api(
         "yes",
     )
     if web_search_enabled:
-        max_uses = int(os.environ.get("GPTME_ANTHROPIC_WEB_SEARCH_MAX_USES", "5"))
+        _max_uses_str = os.environ.get("GPTME_ANTHROPIC_WEB_SEARCH_MAX_USES", "5")
+        try:
+            max_uses = int(_max_uses_str)
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid GPTME_ANTHROPIC_WEB_SEARCH_MAX_USES value: {_max_uses_str!r}. "
+                "Must be a valid integer."
+            ) from e
         web_search_tool = _create_web_search_tool(max_uses=max_uses)
         if tools_dict is None:
             tools_dict = []
-        tools_dict.append(web_search_tool)  # type: ignore
+        tools_dict.append(cast("anthropic.types.ToolParam", web_search_tool))
         logger.info(f"Anthropic native web search enabled (max_uses={max_uses})")
 
     if tools_dict is not None:
@@ -847,7 +1031,7 @@ def _prepare_messages_for_api(
 
         for part in raw_content:
             if isinstance(part, dict):
-                content_parts.append(part)  # type: ignore
+                content_parts.append(cast(anthropic.types.TextBlockParam, part))
             else:
                 content_parts.append({"type": "text", "text": str(part)})
 

@@ -14,7 +14,7 @@ import functools
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from .llm.models import get_model
 from .util._telemetry import (
@@ -142,7 +142,7 @@ def trace_function(
                     span.set_attribute("function.error.message", str(e))
                     raise
 
-        return wrapper  # type: ignore
+        return cast(F, wrapper)
 
     return decorator
 
@@ -308,12 +308,12 @@ def record_llm_request(
     logger.debug(
         f"tokens in:  {input_tokens}"
         + (
-            f" + {cache_creation_tokens} cache create ({100*(cache_creation_tokens or 0)/(total_in):.1f}%)"
+            f" + {cache_creation_tokens} cache create ({100 * (cache_creation_tokens or 0) / (total_in):.1f}%)"
             if cache_creation_tokens
             else ""
         )
         + (
-            f" + {cache_read_tokens} cache read ({100*(cache_read_tokens or 0)/(total_in):.1f}%)"
+            f" + {cache_read_tokens} cache read ({100 * (cache_read_tokens or 0) / (total_in):.1f}%)"
             if cache_read_tokens
             else ""
         )
@@ -478,4 +478,4 @@ def measure_tokens_per_second(func: F) -> F:
 
         return result
 
-    return wrapper  # type: ignore
+    return cast(F, wrapper)

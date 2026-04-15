@@ -1,10 +1,15 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from .llm_openai_models_deprecated import OPENAI_MODELS_DEPRECATED
 
 if TYPE_CHECKING:
     from .models import _ModelDictMeta  # fmt: skip
 
-OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
+# Active models only. Deprecated models are in llm_openai_models_deprecated.py
+# and merged in below. They still work when explicitly requested via --model.
+
+_OPENAI_MODELS_ACTIVE: dict[str, "_ModelDictMeta"] = {
     # GPT-5
     "gpt-5": {
         "context": 400_000,
@@ -13,7 +18,8 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_output": 10,
         "supports_vision": True,
         "supports_reasoning": True,
-        "knowledge_cutoff": datetime(2024, 9, 30),
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 9, 30, tzinfo=timezone.utc),
     },
     "gpt-5-mini": {
         "context": 400_000,
@@ -22,7 +28,8 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_output": 2,
         "supports_vision": True,
         "supports_reasoning": True,
-        "knowledge_cutoff": datetime(2024, 5, 31),
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 5, 31, tzinfo=timezone.utc),
     },
     "gpt-5-nano": {
         "context": 400_000,
@@ -31,7 +38,36 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_output": 0.4,
         "supports_vision": True,
         "supports_reasoning": True,
-        "knowledge_cutoff": datetime(2024, 5, 31),
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 5, 31, tzinfo=timezone.utc),
+    },
+    # GPT-4.1
+    "gpt-4.1": {
+        "context": 1_047_576,
+        "max_output": 32_768,
+        "price_input": 2,
+        "price_output": 8,
+        "supports_vision": True,
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 6, 1, tzinfo=timezone.utc),
+    },
+    "gpt-4.1-mini": {
+        "context": 1_047_576,
+        "max_output": 32_768,
+        "price_input": 0.4,
+        "price_output": 1.6,
+        "supports_vision": True,
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 6, 1, tzinfo=timezone.utc),
+    },
+    "gpt-4.1-nano": {
+        "context": 1_047_576,
+        "max_output": 32_768,
+        "price_input": 0.1,
+        "price_output": 0.4,
+        "supports_vision": True,
+        "supports_parallel_tool_calls": True,
+        "knowledge_cutoff": datetime(2024, 6, 1, tzinfo=timezone.utc),
     },
     # GPT-4o
     "gpt-4o": {
@@ -39,20 +75,9 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_input": 5,
         "price_output": 15,
         "supports_vision": True,
+        "supports_parallel_tool_calls": True,
         # October 2023
-        "knowledge_cutoff": datetime(2023, 10, 1),
-    },
-    "gpt-4o-2024-08-06": {
-        "context": 128_000,
-        "price_input": 2.5,
-        "price_output": 10,
-        "knowledge_cutoff": datetime(2023, 10, 1),
-    },
-    "gpt-4o-2024-05-13": {
-        "context": 128_000,
-        "price_input": 5,
-        "price_output": 15,
-        "knowledge_cutoff": datetime(2023, 10, 1),
+        "knowledge_cutoff": datetime(2023, 10, 1, tzinfo=timezone.utc),
     },
     # GPT-4o mini
     "gpt-4o-mini": {
@@ -60,123 +85,140 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_input": 0.15,
         "price_output": 0.6,
         "supports_vision": True,
-        "knowledge_cutoff": datetime(2023, 10, 1),
+        "knowledge_cutoff": datetime(2023, 10, 1, tzinfo=timezone.utc),
     },
-    "gpt-4o-mini-2024-07-18": {
-        "context": 128_000,
-        "price_input": 0.15,
-        "price_output": 0.6,
-        "knowledge_cutoff": datetime(2023, 10, 1),
-    },
-    # OpenAI o1-preview
-    "o1-preview": {
-        "context": 128_000,
-        "price_input": 15,
-        "price_output": 60,
+    # OpenAI o4-mini
+    "o4-mini": {
+        "context": 200_000,
+        "max_output": 100_000,
+        "price_input": 1.1,
+        "price_output": 4.4,
+        "supports_vision": True,
         "supports_reasoning": True,
     },
-    "o1-preview-2024-09-12": {
-        "context": 128_000,
-        "price_input": 15,
-        "price_output": 60,
-        "supports_reasoning": True,
-    },
-    # OpenAI o1-mini
-    "o1-mini": {
-        "context": 128_000,
-        "price_input": 3,
-        "price_output": 12,
-        "supports_reasoning": True,
-    },
-    "o1-mini-2024-09-12": {
-        "context": 128_000,
-        "price_input": 3,
-        "price_output": 12,
-        "supports_reasoning": True,
-    },
-    # GPT-4 Turbo
-    "gpt-4-turbo": {
-        "context": 128_000,
-        "price_input": 10,
-        "price_output": 30,
-    },
-    "gpt-4-turbo-2024-04-09": {
-        "context": 128_000,
-        "price_input": 10,
-        "price_output": 30,
-    },
-    "gpt-4-0125-preview": {
-        "context": 128_000,
-        "price_input": 10,
-        "price_output": 30,
-    },
-    "gpt-4-1106-preview": {
-        "context": 128_000,
-        "price_input": 10,
-        "price_output": 30,
-    },
-    "gpt-4-vision-preview": {
-        "context": 128_000,
-        "price_input": 10,
-        "price_output": 30,
-    },
-    # GPT-4
-    "gpt-4": {
-        "context": 8192,
-        "price_input": 30,
-        "price_output": 60,
-    },
-    "gpt-4-32k": {
-        "context": 32768,
-        "price_input": 60,
-        "price_output": 120,
-    },
-    # GPT-3.5 Turbo
-    "gpt-3.5-turbo-0125": {
-        "context": 16385,
-        "price_input": 0.5,
-        "price_output": 1.5,
-    },
-    "gpt-3.5-turbo": {
-        "context": 16385,
-        "price_input": 0.5,
-        "price_output": 1.5,
-    },
-    "gpt-3.5-turbo-instruct": {
-        "context": 4096,
-        "price_input": 1.5,
-        "price_output": 2,
-    },
-    # Deprecated models (kept for reference)
-    "gpt-3.5-turbo-1106": {
-        "context": 16385,
-        "price_input": 1,
-        "price_output": 2,
-    },
-    "gpt-3.5-turbo-0613": {
-        "context": 4096,
-        "price_input": 1.5,
-        "price_output": 2,
-    },
-    "gpt-3.5-turbo-16k-0613": {
-        "context": 16385,
-        "price_input": 3,
-        "price_output": 4,
-    },
-    "gpt-3.5-turbo-0301": {
-        "context": 4096,
-        "price_input": 1.5,
-        "price_output": 2,
-    },
-    # Other models
-    "davinci-002": {
-        "context": 4096,  # Assuming default context size
+    # OpenAI o3
+    "o3": {
+        "context": 200_000,
+        "max_output": 100_000,
         "price_input": 2,
-        "price_output": 2,
+        "price_output": 8,
+        "supports_vision": True,
+        "supports_reasoning": True,
     },
-    "babbage-002": {
-        "context": 4096,  # Assuming default context size
-        "price_input": 0.4,
-        "price_output": 0.4,
+    "o3-mini": {
+        "context": 200_000,
+        "max_output": 100_000,
+        "price_input": 1.1,
+        "price_output": 4.4,
+        "supports_reasoning": True,
+    },
+    # OpenAI o1
+    "o1": {
+        "context": 200_000,
+        "max_output": 100_000,
+        "price_input": 15,
+        "price_output": 60,
+        "supports_reasoning": True,
+    },
+}
+
+# Merge active + deprecated into the public dict
+OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
+    **_OPENAI_MODELS_ACTIVE,
+    **OPENAI_MODELS_DEPRECATED,
+}
+
+# OpenAI Codex / Responses API models.
+# These models use the Responses API (not Chat Completions), and are accessed
+# via the ChatGPT subscription (openai-subscription provider). Prices reflect
+# API-equivalent cost for comparison. models.py adds default_tool_format="tool".
+# Reasoning level suffix (e.g., :high) is stripped at lookup time in get_model().
+OPENAI_SUBSCRIPTION_MODELS: dict[str, "_ModelDictMeta"] = {
+    # GPT-5.4 — latest flagship, 1M context
+    "gpt-5.4": {
+        "context": 1_050_000,
+        "max_output": 128_000,
+        "price_input": 2.5,
+        "price_output": 15,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2025, 8, 31, tzinfo=timezone.utc),
+    },
+    # GPT-5.3 Codex — top-tier agentic coding model
+    "gpt-5.3-codex": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.75,
+        "price_output": 14,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2025, 8, 31, tzinfo=timezone.utc),
+    },
+    # GPT-5.3 Codex Spark — fast text-only coding (1000+ tok/s)
+    "gpt-5.3-codex-spark": {
+        "context": 128_000,
+        "max_output": 128_000,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2025, 8, 31, tzinfo=timezone.utc),
+    },
+    # GPT-5.2
+    "gpt-5.2": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.75,
+        "price_output": 14,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2025, 8, 31, tzinfo=timezone.utc),
+    },
+    # GPT-5.2 Codex — agentic coding variant of 5.2
+    "gpt-5.2-codex": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.75,
+        "price_output": 14,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2025, 8, 31, tzinfo=timezone.utc),
+    },
+    # GPT-5.1 Codex Max — multi-context-window compaction
+    "gpt-5.1-codex-max": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.25,
+        "price_output": 10,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 9, 30, tzinfo=timezone.utc),
+    },
+    # GPT-5.1 Codex — agentic coding variant of 5.1
+    "gpt-5.1-codex": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.25,
+        "price_output": 10,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 9, 30, tzinfo=timezone.utc),
+    },
+    # GPT-5.1 Codex Mini — smaller/cheaper coding variant
+    "gpt-5.1-codex-mini": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 0.25,
+        "price_output": 2,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 9, 30, tzinfo=timezone.utc),
+    },
+    # GPT-5.1
+    "gpt-5.1": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.25,
+        "price_output": 10,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 9, 30, tzinfo=timezone.utc),
     },
 }

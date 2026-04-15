@@ -20,6 +20,7 @@ Actions = Literal[
     "delete",
     "tools",
     "model",
+    "models",
     "context",
     "replay",
     "impersonate",
@@ -31,6 +32,7 @@ Actions = Literal[
     "clear",
     "plugin",
     "setup",
+    "doctor",
     "restart",
     "help",
     "exit",
@@ -46,7 +48,8 @@ action_descriptions: dict[Actions, str] = {
     "summarize": "Summarize the conversation",
     "replay": "Replay tool operations",
     "export": "Export conversation as HTML",
-    "model": "List or switch models",
+    "model": "Show or switch the current model",
+    "models": "List available models",
     "tokens": "Show token usage and costs (alias: /cost)",
     "context": "Show context token breakdown",
     "tools": "Show available tools",
@@ -56,6 +59,7 @@ action_descriptions: dict[Actions, str] = {
     "plugin": "Manage plugins",
     "clear": "Clear the terminal screen",
     "setup": "Setup gptme with completions and configuration",
+    "doctor": "Run system diagnostics",
     "restart": "Restart gptme process",
     "help": "Show this help message",
     "exit": "Exit the program",
@@ -63,33 +67,37 @@ action_descriptions: dict[Actions, str] = {
 COMMANDS = list(action_descriptions.keys())
 
 
-@command("impersonate")
+@command("impersonate", auto_undo=False)
 def cmd_impersonate(ctx: CommandContext) -> Generator["Message", None, None]:
     """Impersonate the assistant."""
     from ..message import Message  # fmt: skip
     from ..tools import execute_msg  # fmt: skip
 
-    content = ctx.full_args if ctx.full_args else input("[impersonate] Assistant: ")
+    content = ctx.full_args or input("[impersonate] Assistant: ")
     msg = Message("assistant", content)
     yield msg
-    yield from execute_msg(msg, confirm=lambda _: True)
+    yield from execute_msg(msg)
 
 
 @command("setup")
 def cmd_setup(ctx: CommandContext) -> None:
     """Setup gptme with completions, configuration, and project setup."""
-    from ..setup import setup
+    from ..cli.setup import setup
 
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
     setup()
+
+
+@command("doctor")
+def cmd_doctor(ctx: CommandContext) -> None:
+    """Run system diagnostics to check gptme health."""
+    from ..cli.doctor import main as doctor_main
+
+    doctor_main()
 
 
 @command("help")
 def cmd_help(ctx: CommandContext) -> None:
     """Show help message."""
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
     _help()
 
 
@@ -117,9 +125,11 @@ def _complete_plugin(partial: str, prev_args: list[str]) -> list[tuple[str, str]
                 Path(p).expanduser().resolve() for p in config.project.plugins.paths
             ]
             plugins = discover_plugins(plugin_paths)
-            for plugin in plugins:
-                if plugin.name.startswith(partial):
-                    completions.append((plugin.name, str(plugin.path)))
+            completions.extend(
+                (plugin.name, str(plugin.path))
+                for plugin in plugins
+                if plugin.name.startswith(partial)
+            )
 
     return completions
 
@@ -135,13 +145,11 @@ def cmd_plugin(ctx: CommandContext) -> None:
         get_install_instructions,
     )
 
-    ctx.manager.undo(1, quiet=True)
-
     config = get_config()
 
     if not ctx.args:
         print("Usage: /plugin <list|info> [name]")
-        print("")
+        print()
         print("Commands:")
         print("  list       Show all discovered plugins")
         print("  info NAME  Show details about a specific plugin")
@@ -159,9 +167,9 @@ def cmd_plugin(ctx: CommandContext) -> None:
 
         if not plugin_paths:
             print("No plugin paths configured.")
-            print("")
+            print()
             print("Add plugin paths to your gptme.toml:")
-            print("")
+            print()
             print("[plugins]")
             print('paths = ["path/to/plugin1", "path/to/plugin2"]')
             return
@@ -237,7 +245,7 @@ def cmd_plugin(ctx: CommandContext) -> None:
             install_cmd = get_install_instructions(pyproject_path.parent, env_type)
             print(f"\n  To install dependencies ({env_type} environment):")
             print(f"    {install_cmd}")
-            print("")
+            print()
             print("  Note: Installation must be done manually to respect your")
             print("        environment (pipx/uvx/venv/system).")
 

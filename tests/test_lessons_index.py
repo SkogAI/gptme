@@ -91,17 +91,19 @@ class TestLessonIndex:
 class TestLessonDeduplication:
     """Tests for lesson deduplication feature.
 
-    Deduplication is based on resolved path (realpath), not filename.
-    This handles symlinks pointing to the same file correctly.
+    Deduplication is two-level:
+    1. By resolved path (realpath) — catches symlinks to the same file
+    2. By relative filename — catches same-named lessons across directories
+       (first directory wins)
     """
 
-    def test_same_filename_different_files_not_deduplicated(
-        self, sample_lesson_content
-    ):
-        """Test that different files with same filename are NOT deduplicated.
+    def test_same_filename_different_dirs_deduplicated(self, sample_lesson_content):
+        """Test that same-named files in different directories are deduplicated.
 
-        With realpath-based deduplication, files with same name but different
-        paths are treated as separate lessons.
+        When the same relative filename exists in multiple configured lesson
+        directories, only the version from the first directory is included.
+        This prevents double-injection of lessons that exist in both
+        workspace lessons/ and gptme-contrib/lessons/.
         """
         clear_cache()
         with (
@@ -122,11 +124,9 @@ class TestLessonDeduplication:
 
             index = LessonIndex([dir1, dir2])
 
-            # Both files have different realpaths, so both are included
-            assert len(index.lessons) == 2
-            titles = {lesson.title for lesson in index.lessons}
-            assert "First Version" in titles
-            assert "Second Version" in titles
+            # Filename dedup: first directory wins
+            assert len(index.lessons) == 1
+            assert index.lessons[0].title == "First Version"
 
     def test_symlink_deduplication(self, sample_lesson_content):
         """Test that symlinks to the same file are deduplicated.
@@ -277,8 +277,8 @@ class TestLessonDeduplication:
             assert len(index.lessons) == 1
             assert index.lessons[0].title == "Real Lesson"
 
-    def test_different_files_multiple_directories(self, sample_lesson_content):
-        """Test different files with same name in multiple directories."""
+    def test_same_filename_multiple_directories_first_wins(self, sample_lesson_content):
+        """Test that same-named files in 3+ directories are deduplicated (first wins)."""
         clear_cache()
         with (
             tempfile.TemporaryDirectory() as tmp1,
@@ -298,12 +298,98 @@ class TestLessonDeduplication:
 
             index = LessonIndex(dirs)
 
-            # All files have different realpaths, so all are included
-            assert len(index.lessons) == 3
+            # Filename dedup: first directory wins
+            assert len(index.lessons) == 1
+            assert index.lessons[0].title == "Version 1"
+
+    def test_same_relative_path_in_subdirs_deduplicated(self, sample_lesson_content):
+        """Test that same relative path (subdir/file.md) across dirs is deduplicated.
+
+        This is the real-world case: lessons/social/foo.md in workspace and
+        gptme-contrib/lessons/social/foo.md — same relative path, first dir wins.
+        """
+        clear_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmp1,
+            tempfile.TemporaryDirectory() as tmp2,
+        ):
+            dir1 = Path(tmp1) / "lessons"
+            dir2 = Path(tmp2) / "lessons"
+            (dir1 / "social").mkdir(parents=True)
+            (dir2 / "social").mkdir(parents=True)
+
+            content1 = sample_lesson_content.replace("Test Lesson", "Workspace Version")
+            content2 = sample_lesson_content.replace("Test Lesson", "Contrib Version")
+
+            (dir1 / "social" / "github-engagement.md").write_text(content1)
+            (dir2 / "social" / "github-engagement.md").write_text(content2)
+
+            index = LessonIndex([dir1, dir2])
+
+            # Same relative path social/github-engagement.md → first dir wins
+            assert len(index.lessons) == 1
+            assert index.lessons[0].title == "Workspace Version"
+
+    def test_different_relative_paths_not_deduplicated(self, sample_lesson_content):
+        """Test that different relative paths are NOT deduplicated even with same basename."""
+        clear_cache()
+        with (
+            tempfile.TemporaryDirectory() as tmp1,
+            tempfile.TemporaryDirectory() as tmp2,
+        ):
+            dir1 = Path(tmp1) / "lessons"
+            dir2 = Path(tmp2) / "lessons"
+            (dir1 / "workflow").mkdir(parents=True)
+            (dir2 / "social").mkdir(parents=True)
+
+            content1 = sample_lesson_content.replace("Test Lesson", "Workflow Version")
+            content2 = sample_lesson_content.replace("Test Lesson", "Social Version")
+
+            # Same filename but different subdirectories = different relative paths
+            (dir1 / "workflow" / "best-practices.md").write_text(content1)
+            (dir2 / "social" / "best-practices.md").write_text(content2)
+
+            index = LessonIndex([dir1, dir2])
+
+            # Different relative paths → both included
+            assert len(index.lessons) == 2
             titles = {lesson.title for lesson in index.lessons}
-            assert "Version 1" in titles
-            assert "Version 2" in titles
-            assert "Version 3" in titles
+            assert "Workflow Version" in titles
+            assert "Social Version" in titles
+
+    def test_inactive_lesson_in_first_dir_blocks_active_in_second(
+        self, sample_lesson_content
+    ):
+        """Test that an inactive lesson in an earlier dir suppresses same file in later dirs.
+
+        'First directory wins' must hold regardless of lesson status.
+        A user who marks a lesson as 'deprecated' in their workspace dir should
+        fully suppress it, even if an active copy exists in gptme-contrib/lessons/.
+        """
+        clear_cache()
+        draft_content = sample_lesson_content.replace(
+            "status: active", "status: deprecated"
+        ).replace("Test Lesson", "Draft Version")
+        active_content = sample_lesson_content.replace("Test Lesson", "Active Version")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp1,
+            tempfile.TemporaryDirectory() as tmp2,
+        ):
+            dir1 = Path(tmp1) / "lessons"
+            dir2 = Path(tmp2) / "lessons"
+            dir1.mkdir()
+            dir2.mkdir()
+
+            # dir1 has an inactive copy (should claim the slot)
+            (dir1 / "shared.md").write_text(draft_content)
+            # dir2 has an active copy (should be suppressed by dir1's copy)
+            (dir2 / "shared.md").write_text(active_content)
+
+            index = LessonIndex([dir1, dir2])
+
+            # The active copy from dir2 must NOT be loaded (dir1 wins)
+            assert len(index.lessons) == 0
 
 
 class TestLessonCache:
@@ -393,3 +479,144 @@ class TestLessonSearch:
         results = index.search("test lesson")
 
         assert len(results) == 1
+
+
+class TestExtraLessonDirsEnv:
+    """Tests for GPTME_LESSONS_EXTRA_DIRS environment variable."""
+
+    def test_extra_dirs_adds_lessons(self, sample_lesson_content, monkeypatch):
+        """Test that GPTME_LESSONS_EXTRA_DIRS adds extra lesson directories."""
+        clear_cache()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_extra:
+            extra_dir = Path(tmp_extra) / "extra-lessons"
+            extra_dir.mkdir()
+            content = sample_lesson_content.replace("Test Lesson", "Extra Lesson")
+            (extra_dir / "extra.md").write_text(content)
+
+            monkeypatch.setenv("GPTME_LESSONS_EXTRA_DIRS", str(extra_dir))
+
+            # _default_dirs should include the extra dir
+            default_dirs = LessonIndex._default_dirs()
+            assert any(d.resolve() == extra_dir.resolve() for d in default_dirs), (
+                f"Extra dir not found in default dirs: {default_dirs}"
+            )
+
+    def test_extra_dirs_multiple_colon_separated(
+        self, sample_lesson_content, monkeypatch
+    ):
+        """Test that multiple dirs can be specified with colon separator."""
+        clear_cache()
+        import tempfile
+
+        with (
+            tempfile.TemporaryDirectory() as tmp1,
+            tempfile.TemporaryDirectory() as tmp2,
+        ):
+            dir1 = Path(tmp1) / "lessons1"
+            dir2 = Path(tmp2) / "lessons2"
+            dir1.mkdir()
+            dir2.mkdir()
+
+            (dir1 / "a.md").write_text(
+                sample_lesson_content.replace("Test Lesson", "Lesson A")
+            )
+            (dir2 / "b.md").write_text(
+                sample_lesson_content.replace("Test Lesson", "Lesson B")
+            )
+
+            monkeypatch.setenv("GPTME_LESSONS_EXTRA_DIRS", f"{dir1}:{dir2}")
+
+            default_dirs = LessonIndex._default_dirs()
+            resolved = [d.resolve() for d in default_dirs]
+            assert dir1.resolve() in resolved
+            assert dir2.resolve() in resolved
+
+    def test_extra_dirs_nonexistent_logs_warning(self, monkeypatch, caplog):
+        """Test that a nonexistent extra dir logs a warning but does not raise."""
+        import logging
+
+        clear_cache()
+        monkeypatch.setenv("GPTME_LESSONS_EXTRA_DIRS", "/nonexistent/path/lessons")
+
+        with caplog.at_level(logging.WARNING):
+            default_dirs = LessonIndex._default_dirs()
+        assert any("directory not found" in m for m in caplog.messages)
+        assert not any(str(d) == "/nonexistent/path/lessons" for d in default_dirs)
+
+    def test_extra_dirs_empty_string(self, monkeypatch):
+        """Test that empty string is handled gracefully."""
+        clear_cache()
+        monkeypatch.setenv("GPTME_LESSONS_EXTRA_DIRS", "")
+
+        # Should not raise or add any extra dirs
+        default_dirs = LessonIndex._default_dirs()
+        assert isinstance(default_dirs, list)
+
+    def test_extra_dirs_not_set(self, monkeypatch):
+        """Test that unset env var doesn't affect behavior."""
+        clear_cache()
+        monkeypatch.delenv("GPTME_LESSONS_EXTRA_DIRS", raising=False)
+
+        # Should work normally
+        default_dirs = LessonIndex._default_dirs()
+        assert isinstance(default_dirs, list)
+
+
+class TestWorktreeExclusion:
+    """Test that lessons in worktree directories are excluded."""
+
+    def test_worktree_lessons_excluded(self, tmp_path):
+        """Lessons in worktree/ subdirectories should be excluded."""
+        clear_cache()
+        from gptme.lessons.index import LessonIndex
+
+        # Create a normal lesson
+        normal_lesson = tmp_path / "normal.md"
+        normal_lesson.write_text(
+            "---\nmatch:\n  keywords: [normal]\n---\n# Normal Lesson\n\nContent."
+        )
+
+        # Create a worktree subdirectory with a lesson
+        worktree_dir = tmp_path / "worktree" / "some-branch" / "lessons"
+        worktree_dir.mkdir(parents=True)
+        worktree_lesson = worktree_dir / "worktree-lesson.md"
+        worktree_lesson.write_text(
+            "---\nmatch:\n  keywords: [worktree]\n---\n# Worktree Lesson\n\nContent."
+        )
+
+        # Index should only include the normal lesson, not the worktree one
+        index = LessonIndex(lesson_dirs=[tmp_path])
+
+        lesson_names = [lesson.title for lesson in index.lessons]
+        assert "Normal Lesson" in lesson_names
+        assert "Worktree Lesson" not in lesson_names
+        assert len(index.lessons) == 1
+
+    def test_git_directory_excluded(self, tmp_path):
+        """Lessons in .git directories should be excluded."""
+        clear_cache()
+        from gptme.lessons.index import LessonIndex
+
+        # Create a normal lesson
+        normal_lesson = tmp_path / "normal.md"
+        normal_lesson.write_text(
+            "---\nmatch:\n  keywords: [normal]\n---\n# Normal Lesson\n\nContent."
+        )
+
+        # Create a .git subdirectory with a lesson (shouldn't happen but test it)
+        git_dir = tmp_path / ".git" / "hooks"
+        git_dir.mkdir(parents=True)
+        git_lesson = git_dir / "some-file.md"
+        git_lesson.write_text(
+            "---\nmatch:\n  keywords: [git]\n---\n# Git Lesson\n\nContent."
+        )
+
+        # Index should only include the normal lesson
+        index = LessonIndex(lesson_dirs=[tmp_path])
+
+        lesson_names = [lesson.title for lesson in index.lessons]
+        assert "Normal Lesson" in lesson_names
+        assert "Git Lesson" not in lesson_names
+        assert len(index.lessons) == 1

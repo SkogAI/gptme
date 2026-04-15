@@ -3,30 +3,42 @@ name: Build
 on:
   push:
     branches: [ master ]
-    tags:
-      - 'v*'
   pull_request:
     branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload artifacts for (e.g., v0.31.1.dev20260310)'
+        required: false
 
 jobs:
   build-docker:
     name: Docker
     runs-on: ubuntu-latest
     env:
-      SHOULD_PUSH: ${{ github.ref == 'refs/tags/v*' || github.ref == 'refs/heads/master' }}
+      SHOULD_PUSH: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag != '' || github.ref == 'refs/heads/master' }}
     permissions:
       packages: write
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
       with:
         driver: docker
 
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      if: vars.DOCKER_USERNAME != ''
+      with:
+        username: ${{ vars.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       if: env.SHOULD_PUSH == 'true'
       with:
         registry: ghcr.io
@@ -35,16 +47,25 @@ jobs:
 
     - name: Set environment variables
       run: |
-        echo "OWNER_LC=${OWNER,,}" >>${GITHUB_ENV}
+        echo "OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')" >>${GITHUB_ENV}
         # Sanitize the ref name to be used as a Docker tag
-        SANITIZED_REF_NAME=$(echo "${GITHUB_REF_NAME}" | tr '/' '-')
+        REF_NAME="${TAG_INPUT:-${GITHUB_REF_NAME}}"
+        SANITIZED_REF_NAME=$(echo "${REF_NAME}" | tr '/' '-')
         echo "SANITIZED_REF_NAME=${SANITIZED_REF_NAME}" >>${GITHUB_ENV}
+        # Only push :latest for stable releases and master; dev/pre-releases get :dev
+        # Matches both .dev (project convention) and PEP 440 canonical (1.0a1, 1.0rc1)
+        if echo "${REF_NAME}" | grep -qE '\.(dev|a|b|rc)|[0-9](a|b|rc)[0-9]'; then
+          echo "DOCKER_EXTRA_TAG=dev" >>${GITHUB_ENV}
+        else
+          echo "DOCKER_EXTRA_TAG=latest" >>${GITHUB_ENV}
+        fi
       env:
         OWNER: '${{ github.repository_owner }}'
+        TAG_INPUT: ${{ inputs.tag }}
 
     # First build the base image locally (needed for subsequent builds)
     - name: Build Docker image (base)
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         tags: gptme:latest
         file: ./scripts/Dockerfile
@@ -53,22 +74,22 @@ jobs:
 
     # Push base image to registry if on master/tag
     - name: Push Docker image (base)
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       if: env.SHOULD_PUSH == 'true'
       with:
         tags: |
-          ghcr.io/${{ env.OWNER_LC }}/gptme:latest
+          ghcr.io/${{ env.OWNER_LC }}/gptme:${{ env.DOCKER_EXTRA_TAG }}
           ghcr.io/${{ env.OWNER_LC }}/gptme:${{ env.SANITIZED_REF_NAME }}
         file: ./scripts/Dockerfile
         context: .
         push: true
 
-    # Build and push eval image
+    # Build and push server image
     - name: Build and push Docker image (server)
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         tags: |
-          ghcr.io/${{ env.OWNER_LC }}/gptme-server:latest
+          ghcr.io/${{ env.OWNER_LC }}/gptme-server:${{ env.DOCKER_EXTRA_TAG }}
           ghcr.io/${{ env.OWNER_LC }}/gptme-server:${{ env.SANITIZED_REF_NAME }}
         file: ./scripts/Dockerfile.server
         context: .
@@ -78,10 +99,10 @@ jobs:
 
     # Build and push eval image
     - name: Build and push Docker image (eval)
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         tags: |
-          ghcr.io/${{ env.OWNER_LC }}/gptme-eval:latest
+          ghcr.io/${{ env.OWNER_LC }}/gptme-eval:${{ env.DOCKER_EXTRA_TAG }}
           ghcr.io/${{ env.OWNER_LC }}/gptme-eval:${{ env.SANITIZED_REF_NAME }}
         file: ./scripts/Dockerfile.eval
         context: .
@@ -90,7 +111,7 @@ jobs:
     # Now the full eval image
     # NOTE: takes a long time and leads to a big (1GB+) image
     #- name: Build and push Docker image (eval-full)
-    #  uses: docker/build-push-action@v6
+    #  uses: docker/build-push-action@v7
     #  with:
     #    tags: |
     #      ghcr.io/${{ env.OWNER_LC }}/gptme-eval-full:latest
@@ -102,9 +123,29 @@ jobs:
     #      RUST=yes
     #      BROWSER=yes
 
+    # Report and check image sizes
+    - name: Check image sizes
+      run: |
+        echo "## Docker Image Sizes" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Image | Size |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|------|" >> $GITHUB_STEP_SUMMARY
+        for img in gptme:latest ghcr.io/${OWNER_LC}/gptme-server:latest ghcr.io/${OWNER_LC}/gptme-eval:latest; do
+          SIZE=$(docker image inspect "$img" --format '{{.Size}}' 2>/dev/null || echo "0")
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "| $img | ${SIZE_MB}MB |" >> $GITHUB_STEP_SUMMARY
+          echo "$img: ${SIZE_MB}MB"
+          # Warn if base image exceeds 900MB (leave headroom, but catch regressions)
+          if [ "$img" = "gptme:latest" ] && [ "$SIZE_MB" -gt 900 ]; then
+            echo "::warning::Base image $img is ${SIZE_MB}MB (limit: 900MB)"
+          fi
+        done
+
   build-pyinstaller:
     name: PyInstaller binaries on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -113,6 +154,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Install poetry
       run: pipx install poetry
@@ -159,3 +202,27 @@ jobs:
         path: |
           dist/gptme-server*
         retention-days: 7
+
+    - name: Upload to GitHub release
+      if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        TAG="${{ inputs.tag || github.ref_name }}"
+        VERSION="${TAG#v}"
+        OS_SUFFIX="${{ runner.os }}-${{ runner.arch }}"
+        OS_SUFFIX=$(echo "$OS_SUFFIX" | tr '[:upper:]' '[:lower:]')
+        ASSET_BASE="gptme-server-bin-${VERSION}-${OS_SUFFIX}"
+        # Include version + lowercase platform in release asset names so scheduled
+        # dev releases don't publish ambiguous binaries like `gptme-server-Linux-X64`.
+        # Wrap Unix binaries in tar.gz so downloads have an obvious file type.
+        for f in dist/gptme-server dist/gptme-server.exe; do
+          [ -f "$f" ] || continue
+          if [[ "$f" == *.exe ]]; then
+            cp "$f" "dist/${ASSET_BASE}.exe"
+          else
+            tar -C dist -czf "dist/${ASSET_BASE}.tar.gz" "$(basename "$f")"
+          fi
+        done
+        gh release upload "$TAG" "dist/${ASSET_BASE}"* --clobber

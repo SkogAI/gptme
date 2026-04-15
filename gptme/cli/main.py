@@ -1,0 +1,784 @@
+import atexit
+import cProfile
+import importlib
+import logging
+import os
+import pstats
+import signal
+import sys
+import traceback
+from datetime import datetime, timezone
+from itertools import islice
+from pathlib import Path
+from typing import Literal
+
+import click
+from click.core import ParameterSource
+
+try:
+    pick = importlib.import_module("pick").pick
+except (ImportError, AttributeError):
+    pick = None
+
+import gptme
+
+from ..chat import chat
+from ..commands import _gen_help
+from ..config import setup_config_from_cli
+from ..constants import MULTIPROMPT_SEPARATOR
+from ..dirs import get_logs_dir
+from ..init import init_logging
+from ..llm.models import get_recommended_model
+from ..logmanager import ConversationMeta, get_user_conversations
+from ..message import Message
+from ..profiles import get_profile
+from ..prompts import ContextMode, get_prompt
+from ..telemetry import init_telemetry, shutdown_telemetry
+from ..tools import ToolFormat, get_available_tools, init_tools
+from ..util import epoch_to_age
+from ..util.auto_naming import generate_conversation_id
+from ..util.context import md_codeblock
+from ..util.interrupt import handle_keyboard_interrupt, set_interruptible
+from ..util.prompt import add_history
+
+logger = logging.getLogger(__name__)
+
+
+script_path = Path(os.path.realpath(__file__))
+
+
+class CommaSeparatedChoice(click.ParamType):
+    """Click type that validates comma-separated values against a set of choices."""
+
+    name = "TEXT"
+
+    def __init__(
+        self,
+        choices: list[str],
+        allow_prefix: str | None = None,
+        allow_prefixes: list[str] | None = None,
+        metavar: str | None = None,
+    ):
+        self.choices = choices
+        # Support both single prefix and multiple prefixes
+        if allow_prefixes:
+            self.allow_prefixes = allow_prefixes
+        elif allow_prefix:
+            self.allow_prefixes = [allow_prefix]
+        else:
+            self.allow_prefixes = []
+        self._metavar = metavar
+
+    def convert(self, value, param, ctx):
+        parts = [v.strip() for v in value.split(",") if v.strip()]
+        for part in parts:
+            check = part
+            for prefix in self.allow_prefixes:
+                if check.startswith(prefix):
+                    check = check[len(prefix) :]
+                    break
+            # Allow file paths (e.g. path/to/tool.py) to pass through
+            if check.endswith(".py") or "/" in check or "\\" in check:
+                continue
+            if check not in self.choices:
+                self.fail(
+                    f"invalid choice: {part}. (choose from {', '.join(self.choices)})",
+                    param,
+                    ctx,
+                )
+        return value
+
+    def get_metavar(
+        self, param: click.Parameter, ctx: click.Context | None = None
+    ) -> str | None:
+        if self._metavar:
+            return self._metavar
+        return "[" + "|".join(self.choices) + "]"
+
+
+class WorkspacePath(click.ParamType):
+    """Click type for workspace paths: a directory path or '@log'."""
+
+    name = "DIRECTORY"
+
+    def convert(self, value, param, ctx):
+        if value == "@log":
+            return value
+        path = Path(value)
+        if not path.exists():
+            self.fail(f"directory '{value}' does not exist.", param, ctx)
+        if not path.is_dir():
+            self.fail(f"'{value}' is not a directory.", param, ctx)
+        return str(path.resolve())
+
+
+commands_help = "\n".join(_gen_help(incl_langtags=False))
+_available_tools = sorted(
+    tool.name for tool in get_available_tools(include_mcp=False) if tool.is_available
+)
+available_tool_names = ", ".join(_available_tools)
+
+
+docstring = f"""
+gptme is a chat-CLI for LLMs, empowering them with tools to run shell commands, execute code, read and manipulate files, and more.
+
+If PROMPTS are provided, a new conversation will be started with it.
+PROMPTS can be chained with the '{MULTIPROMPT_SEPARATOR}' separator.
+
+\b
+Examples:
+  gptme "hello"                              Start a conversation
+  gptme "fix TODOs" main.py                  Include file or URL in context
+  gptme "review" github.com/org/repo/pull/1  Include a GitHub PR in context
+  gptme --tools none "what is 2+2"           No tools, just chat
+  gptme -t patch,save "fix typo" main.py     Only specific tools (comma-separated)
+  gptme -t +subagent "plan a refactor"       Default tools + subagent
+  gptme -t=-browser "summarize code"         Default tools minus browser
+  gptme --context files "do task"             Skip context_cmd, keep project files
+
+\b
+The interface provides /commands during a conversation:
+{commands_help}
+
+\b
+Utilities (gptme-util):
+  gptme-util tools list       List all tools and their availability
+  gptme-util tools info TOOL  Show detailed tool instructions/examples
+  gptme-util chats list       List past conversations
+  gptme-util chats search Q   Search conversations for query
+  gptme-util chats rename     Rename a conversation
+  gptme-util models list      List available models
+  gptme-util context index    Index project files for RAG
+  gptme-util llm generate     Direct LLM generation without chat
+
+Run 'gptme-util --help' for all utility commands."""
+
+
+@click.command(help=docstring, context_settings={"auto_envvar_prefix": "GPTME"})
+@click.pass_context
+@click.argument(
+    "prompts",
+    default=None,
+    required=False,
+    nargs=-1,
+)
+@click.option(
+    "--name",
+    default="random",
+    help="Conversation ID (used to resume). Defaults to a random name.",
+)
+@click.option(
+    "-m",
+    "--model",
+    default=None,
+    help=f"Model to use, e.g. openai/{get_recommended_model('openai')}, anthropic/{get_recommended_model('anthropic')}. If only provider given then a default is used.",
+)
+@click.option(
+    "-w",
+    "--workspace",
+    "workspace",
+    default=None,
+    type=WorkspacePath(),
+    help="Path to workspace directory, or '@log' to use the log directory.",
+)
+@click.option(
+    "--agent-path",
+    "agent_path",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Path to agent workspace directory.",
+)
+@click.option(
+    "-r",
+    "--resume",
+    is_flag=True,
+    help="Load most recent conversation.",
+)
+@click.option(
+    "-y",
+    "--no-confirm",
+    is_flag=True,
+    help="Skip all confirmation prompts.",
+)
+@click.option(
+    "-n",
+    "--non-interactive",
+    "non_interactive",
+    is_flag=True,
+    help="Non-interactive mode. Implies --no-confirm.",
+)
+@click.option(
+    "--system",
+    "prompt_system",
+    default="full",
+    help="System prompt [full|short|<custom>]. Defaults to 'full'.",
+)
+@click.option(
+    "-t",
+    "--tools",
+    "tool_allowlist",
+    default=None,
+    multiple=True,
+    type=CommaSeparatedChoice(
+        _available_tools + ["none"], allow_prefixes=["+", "-"], metavar="TOOL"
+    ),
+    help=f"Tools to allow. Comma-separated or repeated. Use '+tool' to add to defaults (e.g., '-t +subagent'). Use '-tool' to exclude from defaults (e.g., '-t=-browser'). Use 'none' to disable all tools. Supports .py file paths for custom tools (e.g., '-t path/to/tool.py'). Available: {available_tool_names}.",
+)
+@click.option(
+    "--agent-profile",
+    "agent_profile",
+    default=None,
+    help="Agent profile to use. Profiles provide system prompts, tool access hints, and behavior rules. Use 'gptme-util profile list' to see available profiles.",
+)
+@click.option(
+    "--tool-format",
+    "tool_format",
+    default=None,
+    type=click.Choice(["markdown", "xml", "tool"]),
+    help="Tool format to use.",
+)
+@click.option(
+    "--stream/--no-stream",
+    "stream",
+    default=True,
+    help="Stream responses",
+)
+@click.option(
+    "--show-hidden",
+    is_flag=True,
+    help="Show hidden system messages.",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show verbose output.",
+)
+@click.option(
+    "--multi-tool/--no-multi-tool",
+    "multi_tool",
+    default=None,
+    hidden=True,
+    help="Allow multiple tool calls per LLM response (disables break-on-tooluse). Enables efficient API usage with sequential execution.",
+)
+@click.option(
+    "--version",
+    is_flag=True,
+    help="Show version and configuration information",
+)
+@click.option(
+    "--version-json",
+    "version_json",
+    is_flag=True,
+    hidden=True,
+    help="Show version info as JSON (for scripting)",
+)
+@click.option(
+    "--profile",
+    is_flag=True,
+    help="Enable profiling and save results to gptme-profile-{timestamp}.prof",
+)
+@click.option(
+    "--context",
+    "context_include",
+    multiple=True,
+    type=CommaSeparatedChoice(["all", "files", "cmd"], metavar="[all|files|cmd]"),
+    callback=lambda ctx, param, value: value or None,
+    help="Context to include (default: all). Comma-separated or repeated. Tools and agent config (--agent-path) are always included.",
+)
+@click.option(
+    "--context-include",
+    "context_include",
+    multiple=True,
+    type=CommaSeparatedChoice(["all", "files", "cmd"], metavar="[all|files|cmd]"),
+    hidden=True,
+)
+@click.option(
+    "--output-schema",
+    "output_schema",
+    default=None,
+    hidden=True,
+    help="Schema for structured output in format 'module:ClassName'. The class should be a Pydantic BaseModel.",
+)
+def main(
+    ctx: click.Context,
+    prompts: list[str],
+    prompt_system: str,
+    name: str,
+    model: str | None,
+    tool_allowlist: tuple[str, ...],
+    agent_profile: str | None,
+    tool_format: ToolFormat | None,
+    stream: bool,
+    verbose: bool,
+    no_confirm: bool,
+    non_interactive: bool,
+    show_hidden: bool,
+    version: bool,
+    version_json: bool,
+    resume: bool,
+    workspace: str | None,
+    agent_path: str | None,
+    profile: bool,
+    multi_tool: bool | None,
+    context_include: tuple[str, ...],
+    output_schema: str | None,
+):
+    """Main entrypoint for the CLI."""
+
+    # Apply agent profile if specified
+    selected_profile = None
+    if agent_profile:
+        selected_profile = get_profile(agent_profile)
+        if not selected_profile:
+            print(f"Unknown profile: {agent_profile}")
+            print("Use 'gptme-util profile list' to see available profiles.")
+            sys.exit(1)
+
+        logger.info(f"Using agent profile: {selected_profile.name}")
+
+        # Apply profile tools if no explicit tools specified
+        if (
+            ctx.get_parameter_source("tool_allowlist") == ParameterSource.DEFAULT
+            and selected_profile.tools is not None
+        ):
+            tool_allowlist = tuple(selected_profile.tools)
+
+    # Handle multi-tool flag - controls break_on_tooluse
+    if multi_tool is not None:
+        # Only set GPTME_BREAK_ON_TOOLUSE - multi-tool mode allows multiple tool calls
+        # per LLM response but executes them sequentially (no thread-safety issues)
+        os.environ["GPTME_BREAK_ON_TOOLUSE"] = "0" if multi_tool else "1"
+
+    # Convert tool_allowlist from tuple to string or None
+    # Use get_parameter_source to distinguish between default (None) and explicit empty list
+
+    tool_allowlist_str: str | None
+    if (
+        ctx.get_parameter_source("tool_allowlist") == ParameterSource.DEFAULT
+        and not selected_profile
+    ):
+        # Not provided by user, use None to indicate "use defaults"
+        tool_allowlist_str = None
+    elif tool_allowlist and any(
+        t.strip().lower() == "none" for spec in tool_allowlist for t in spec.split(",")
+    ):
+        # --tools none: disable all tools
+        all_specs = [
+            t.strip() for spec in tool_allowlist for t in spec.split(",") if t.strip()
+        ]
+        non_none = [t for t in all_specs if t.lower() != "none"]
+        if non_none:
+            raise click.UsageError(
+                f"Cannot combine 'none' with other tools: {', '.join(non_none)}"
+            )
+        tool_allowlist_str = ""
+    elif tool_allowlist:
+        # User provided tools - flatten any comma-separated values and join
+        tools_list: list[str] = []
+        for tool_spec in tool_allowlist:
+            # Each tool_spec might be comma-separated
+            tools_list.extend(t.strip() for t in tool_spec.split(",") if t.strip())
+
+        # Check if any tool starts with '+' (additive syntax)
+        additive_mode = any(t.startswith("+") for t in tools_list)
+        # Check if any tool starts with '-' (exclusion syntax)
+        exclusion_mode = any(t.startswith("-") for t in tools_list)
+
+        if additive_mode and exclusion_mode:
+            raise click.UsageError(
+                "Cannot mix '+tool' (additive) and '-tool' (exclusion) syntax. "
+                "Use one or the other."
+            )
+
+        if additive_mode:
+            # Strip '+' prefix from all tools
+            additional_tools = [t.removeprefix("+") for t in tools_list]
+            # Filter out empty strings (e.g., from '+' alone)
+            additional_tools = [t for t in additional_tools if t]
+
+            if additional_tools:
+                # Prefix with '+' to signal additive mode to config layer
+                tool_allowlist_str = "+" + ",".join(additional_tools)
+            else:
+                # Just '+' means use defaults
+                tool_allowlist_str = None
+        elif exclusion_mode:
+            # Guard: bare tool names mixed with '-' exclusion tools is ambiguous
+            bare_tools = [t for t in tools_list if not t.startswith("-")]
+            if bare_tools:
+                raise click.UsageError(
+                    f"Cannot mix bare tool names ({', '.join(bare_tools)}) with '-tool' exclusion syntax. "
+                    "Prefix all tools with '-' to exclude them."
+                )
+            # Strip '-' prefix from all tools
+            excluded_tools = [t.removeprefix("-") for t in tools_list]
+            # Filter out empty strings
+            excluded_tools = [t for t in excluded_tools if t]
+
+            if excluded_tools:
+                # Prefix with '-' to signal exclusion mode to config layer
+                tool_allowlist_str = "-" + ",".join(excluded_tools)
+            else:
+                tool_allowlist_str = None
+        else:
+            # Normal mode - replace defaults with specified tools
+            tool_allowlist_str = ",".join(tools_list) if tools_list else None
+    else:
+        # User explicitly provided empty list (e.g., no -t flags with multiple=True)
+        tool_allowlist_str = None
+
+    if profile:
+        print("Profiling enabled...")
+        pr = cProfile.Profile()
+        pr.enable()
+
+        profile_dir = Path("profiles")
+        profile_dir.mkdir(exist_ok=True)
+        profile_path = (
+            profile_dir
+            / f"gptme-{datetime.now(tz=timezone.utc).strftime('%Y%m%d-%H%M%S')}.prof"
+        )
+
+        def save_profile():
+            pr.disable()
+            pr.dump_stats(profile_path)
+            print(f"\nProfile saved to {profile_path}")
+            print(f"View with: snakeviz {profile_path}")
+
+            # Print top 20 functions
+            stats = pstats.Stats(pr)
+            stats.sort_stats("cumulative")
+            print("\nTop 20 functions by cumulative time:")
+            stats.print_stats(20)
+
+        atexit.register(save_profile)
+
+    interactive = not non_interactive
+    if version or version_json:
+        from ..info import format_version_info
+
+        print(format_version_info(verbose=verbose, output_json=version_json))
+
+        # hint about utilities (non-JSON only)
+        if not version_json:
+            print()
+            print("Utilities: gptme-util (run 'gptme-util --help' for more)")
+        exit(0)
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        interactive = False
+
+    # init logging
+    init_logging(verbose)
+
+    if not interactive:
+        no_confirm = True
+
+    if no_confirm:
+        logger.info("Skipping all confirmation prompts.")
+
+    # if stdin is not a tty, we might be getting piped input, which we should include in the prompt
+    was_piped = False
+    piped_input = None
+    if not sys.stdin.isatty():
+        # fetch prompt from stdin
+        piped_input = _read_stdin()
+        if piped_input:
+            was_piped = True
+
+            # Attempt to switch to interactive mode
+            # https://github.com/prompt-toolkit/python-prompt-toolkit/issues/502#issuecomment-466591259
+            sys.stdin = sys.stdout
+        else:
+            # If stdin is not a tty and we have prompts provided as arguments,
+            # automatically switch to non-interactive mode to avoid termios errors
+            if prompts:
+                logger.info(
+                    "stdin is not a TTY and prompts provided, switching to non-interactive mode"
+                )
+                interactive = False
+                no_confirm = True
+
+    # add prompts to prompt-toolkit history
+    for prompt in prompts:
+        if prompt and len(prompt) > 1000:
+            # skip adding long prompts to history (slows down startup, unlikely to be useful)
+            continue
+        add_history(prompt)
+
+    # join prompts, grouped by `-` if present, since that's the separator for "chained"/multiple-round prompts
+    sep = "\n\n" + MULTIPROMPT_SEPARATOR
+    prompts = [p.strip() for p in "\n\n".join(prompts).split(sep) if p]
+    # TODO: referenced file paths in multiprompts should be read when run, not when parsed
+    prompt_msgs = [Message("user", p) for p in prompts]
+
+    def inject_stdin(prompt_msgs, piped_input: str | None) -> list[Message]:
+        # if piped input, append it to first prompt, or create a new prompt if none exists
+        if not piped_input:
+            return prompt_msgs
+        stdin_msg = Message("user", md_codeblock("stdin", piped_input))
+        if not prompt_msgs:
+            prompt_msgs.append(stdin_msg)
+        else:
+            prompt_msgs[0] = prompt_msgs[0].replace(
+                content=f"{prompt_msgs[0].content}\n\n{stdin_msg.content}"
+            )
+        return prompt_msgs
+
+    if resume:
+        logdir = get_logdir_resume()
+        prompt_msgs = inject_stdin(prompt_msgs, piped_input)
+    # don't run pick in tests/non-interactive mode, or if the user specifies a name
+    elif (
+        interactive
+        and name == "random"
+        and not prompt_msgs
+        and not was_piped
+        and sys.stdin.isatty()
+    ):
+        logdir = pick_log()
+    else:
+        logdir = get_logdir(name)
+        prompt_msgs = inject_stdin(prompt_msgs, piped_input)
+
+    # Register atexit handler to show conversation ID on exit
+    def goodbye_handler():
+        print(f"\nGoodbye! (resume with: gptme --name {logdir.name})")
+
+    atexit.register(goodbye_handler)
+
+    if workspace == "@log":
+        workspace_path: Path | None = logdir / "workspace"
+        assert workspace_path  # mypy not smart enough to see its not None
+        workspace_path.mkdir(parents=True, exist_ok=True)
+    else:
+        workspace_path = Path(workspace) if workspace else Path.cwd()
+
+    # Setup complete configuration from CLI arguments and workspace
+    config = setup_config_from_cli(
+        workspace=workspace_path,
+        logdir=logdir,
+        model=model,
+        tool_allowlist=tool_allowlist_str,
+        tool_format=tool_format,
+        stream=stream,
+        interactive=interactive,
+        agent_path=Path(agent_path) if agent_path else None,
+    )
+    assert config.chat and config.chat.tool_format
+
+    # init telemetry with agent name and interactive mode
+    agent_config = config.chat.agent_config
+    agent_name = agent_config.name if agent_config else None
+    init_telemetry(
+        service_name="gptme-cli",
+        agent_name=agent_name,
+        interactive=interactive,
+    )
+
+    # early init tools to generate system prompt
+    # We pass the tool_allowlist CLI argument. If it's not provided, init_tools
+    # will load it from the environment variable TOOL_ALLOWLIST or the chat config.
+    logger.debug(f"Using tools: {config.chat.tools}")
+    tools = init_tools(config.chat.tools)
+
+    # Check if we're resuming an existing conversation
+    # If so, skip generating initial messages (including expensive context_cmd)
+    # as they're already in the loaded log
+    log_file = logdir / "conversation.jsonl"
+    is_existing_conversation = (
+        resume and log_file.exists() and log_file.stat().st_size > 0
+    )
+
+    if is_existing_conversation:
+        logger.debug(
+            "Resuming existing conversation, skipping initial prompt generation"
+        )
+        initial_msgs = []
+    else:
+        # Infer context mode: --context-include implies selective mode
+        effective_context_mode: ContextMode | None = (
+            "selective" if context_include else None
+        )
+
+        # get initial system prompt
+        initial_msgs = get_prompt(
+            tools=tools,
+            prompt=prompt_system,
+            interactive=config.chat.interactive,
+            tool_format=config.chat.tool_format,
+            model=config.chat.model,
+            workspace=workspace_path,
+            agent_path=config.chat.agent,
+            context_mode=effective_context_mode,
+            context_include=[item for val in context_include for item in val.split(",")]
+            if context_include
+            else None,
+        )
+
+    # Append profile system prompt if using a profile
+    if selected_profile and selected_profile.system_prompt:
+        profile_msg = Message(
+            "system",
+            f"# Agent Profile: {selected_profile.name}\n\n{selected_profile.system_prompt}",
+        )
+        initial_msgs.append(profile_msg)
+
+    # register a handler for Ctrl-C
+    set_interruptible()  # prepare, user should be able to Ctrl+C until user prompt ready
+    signal.signal(signal.SIGINT, handle_keyboard_interrupt)
+
+    # Parse output_schema if provided (format: "module:ClassName")
+    output_schema_type: type | None = None
+    if output_schema:
+        try:
+            if ":" in output_schema:
+                module_name, class_name = output_schema.rsplit(":", 1)
+
+                module = importlib.import_module(module_name)
+                output_schema_type = getattr(module, class_name)
+            else:
+                logger.warning(
+                    f"Invalid output_schema format: '{output_schema}'. "
+                    "Expected 'module:ClassName' (e.g. 'mymodule:MyModel')"
+                )
+        except (ImportError, AttributeError) as e:
+            logger.warning(
+                f"Could not load output_schema '{output_schema}': {e}. "
+                "Verify the module is installed and the class name is correct."
+            )
+
+    # Validate non-interactive mode requires a prompt or existing conversation
+    if not interactive and not prompt_msgs and not is_existing_conversation:
+        logger.error(
+            "Non-interactive mode requires a prompt. Provide a prompt as an argument, "
+            "use --resume to continue an existing conversation, or pipe input via stdin.\n\n"
+            "Examples:\n"
+            "  gptme --non-interactive 'hello world'\n"
+            "  gptme --non-interactive --resume\n"
+            "  echo 'hello' | gptme --non-interactive"
+        )
+        sys.exit(1)
+
+    try:
+        chat(
+            prompt_msgs,
+            initial_msgs,
+            logdir,
+            config.chat.workspace,
+            config.chat.model,
+            config.chat.stream,
+            no_confirm,
+            config.chat.interactive,
+            show_hidden,
+            config.chat.tools,
+            config.chat.tool_format,
+            output_schema_type,
+        )
+    except (RuntimeError, Exception) as e:
+        logger.error("Fatal error occurred")
+        if verbose:
+            logger.exception(e)
+        else:
+            logger.error(e)
+            # Print last call site in gptme code for context
+            tb = traceback.extract_tb(sys.exc_info()[2])
+
+            # Get actual gptme package directory
+
+            gptme_dir = Path(gptme.__file__).parent.resolve()
+
+            # Filter for frames actually in gptme source code
+            gptme_frames = [
+                frame for frame in tb if Path(frame.filename).is_relative_to(gptme_dir)
+            ]
+
+            if gptme_frames:
+                last_frame = gptme_frames[-1]
+                logger.error(
+                    f"  at {last_frame.filename}:{last_frame.lineno} in {last_frame.name}"
+                )
+        sys.exit(1)
+    finally:
+        shutdown_telemetry()
+
+
+def pick_log(limit=20) -> Path:  # pragma: no cover
+    # let user select between starting a new conversation and loading a previous one
+    # using the library
+    title = "New conversation or load previous? "
+    NEW_CONV = "New conversation"
+    LOAD_MORE = "Load more"
+    gen_convs = get_user_conversations()
+    convs: list[ConversationMeta] = []
+
+    # load conversations
+    convs.extend(islice(gen_convs, limit))
+
+    try:
+        terminal_width = os.get_terminal_size().columns
+    except OSError:
+        terminal_width = 80  # Default fallback for Windows/non-TTY
+
+    prev_convs: list[str] = []
+    for conv in convs:
+        name = conv.name
+        metadata = f"{epoch_to_age(conv.modified)}  {conv.messages:4d} msgs"
+        spacing = terminal_width - len(name) - len(metadata) - 6
+        prev_convs.append(" ".join([name, spacing * " ", metadata]))
+
+    options = (
+        [
+            NEW_CONV,
+        ]
+        + prev_convs
+        + [LOAD_MORE]
+    )
+
+    index: int
+    if pick is None:
+        # Fallback when pick library is unavailable (e.g. Windows)
+        from ..util import console
+
+        console.print(f"[bold]{title}[/bold]")
+        for i, option in enumerate(options):
+            console.print(f"  {i}: {option}")
+        index = int(input("Select option number: "))
+    else:
+        _, index = pick(options, title)
+    if index == 0:
+        return get_logdir("random")
+    if index == len(options) - 1:
+        return pick_log(limit + 100)
+    return get_logdir(convs[index - 1].id)
+
+
+def get_logdir(logdir: Path | str | Literal["random"]) -> Path:
+    logs_dir = get_logs_dir()
+    if logdir == "random":
+        logdir = logs_dir / generate_conversation_id(name="random", logs_dir=logs_dir)
+    elif isinstance(logdir, str):
+        logdir = logs_dir / logdir
+
+    logdir.mkdir(parents=True, exist_ok=True)
+    return logdir
+
+
+def get_logdir_resume() -> Path:
+    if conv := next(get_user_conversations(), None):
+        return Path(conv.path).parent
+    raise ValueError("No previous conversations to resume")
+
+
+def _read_stdin() -> str:
+    chunk_size = 1024  # 1 KB
+    all_data = ""
+
+    while True:
+        chunk = sys.stdin.read(chunk_size)
+        if not chunk:
+            break
+        all_data += chunk
+
+    return all_data

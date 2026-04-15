@@ -18,7 +18,6 @@ def cmd_summarize(ctx: CommandContext) -> None:
     from ..logmanager import prepare_messages  # fmt: skip
     from ..message import print_msg  # fmt: skip
 
-    ctx.manager.undo(1, quiet=True)
     msgs = prepare_messages(ctx.manager.log.messages)
     msgs = [m for m in msgs if not m.hide]
     print_msg(llm.summarize(msgs))
@@ -28,19 +27,20 @@ def _complete_replay(partial: str, _prev_args: list[str]) -> list[tuple[str, str
     """Complete replay command options."""
     from ..tools import get_tools  # fmt: skip
 
-    completions: list[tuple[str, str]] = []
     options = [
         ("last", "Replay only the last assistant message"),
         ("all", "Replay all assistant messages"),
     ]
-    for opt, desc in options:
-        if opt.startswith(partial.lower()):
-            completions.append((opt, desc))
+    completions: list[tuple[str, str]] = [
+        (opt, desc) for opt, desc in options if opt.startswith(partial.lower())
+    ]
 
     # Also suggest tool names
-    for tool in get_tools():
-        if tool.name.startswith(partial.lower()):
-            completions.append((tool.name, f"Replay all {tool.name} operations"))
+    completions.extend(
+        (tool.name, f"Replay all {tool.name} operations")
+        for tool in get_tools()
+        if tool.name.startswith(partial.lower())
+    )
 
     return completions
 
@@ -50,9 +50,6 @@ def cmd_replay(ctx: CommandContext) -> None:
     """Replay the conversation or specific tool operations."""
     from ..message import print_msg  # fmt: skip
     from ..tools import ToolUse, execute_msg  # fmt: skip
-
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
 
     # Check if replaying a specific tool
     if ctx.args and ctx.args[0].lower() not in ["last", "all"]:
@@ -70,7 +67,7 @@ def cmd_replay(ctx: CommandContext) -> None:
         print("Replay options:")
         print("  last - Replay only the last assistant message")
         print("  all  - Replay all assistant messages")
-        print("  <tool> - Replay all operations for a specific tool (e.g., todowrite)")
+        print("  <tool> - Replay all operations for a specific tool (e.g., todo)")
         scope = input("Choose (last/all/<tool>): ").strip().lower()
         if scope not in ["last", "all"]:
             # Try as tool name
@@ -103,7 +100,7 @@ def cmd_replay(ctx: CommandContext) -> None:
         print(f"Replaying all {len(assistant_messages)} assistant messages...")
 
     for msg in messages_to_replay:
-        for reply_msg in execute_msg(msg, ctx.confirm):
+        for reply_msg in execute_msg(msg):
             print_msg(reply_msg, oneline=False)
 
 
@@ -113,14 +110,14 @@ def _replay_tool(log, tool_name: str) -> None:
 
     tool = get_tool(tool_name)
     if not tool:
-        print(f"Error: Tool '{tool_name}' not found or not loaded.")
+        print(f"Tool '{tool_name}' is not available. Use /tools to see loaded tools.")
         return
 
     print(f"Replaying all '{tool_name}' operations...")
     count = 0
 
     for msg in log:
-        for tooluse in ToolUse.iter_from_content(msg.content):  # noqa: F821 - ToolUse imported above
+        for tooluse in ToolUse.iter_from_content(msg.content):
             if tooluse.tool == tool_name and tooluse.content:
                 count += 1
                 # Execute the tool operation
@@ -132,12 +129,12 @@ def _replay_tool(log, tool_name: str) -> None:
 
                 for line in lines:
                     # Use the tool's execute function directly
-                    # For tools like todowrite, this will update internal state
+                    # For tools like todo, this will update internal state
                     try:
                         parts = shlex.split(line)
                         if parts:
                             # Import the tool's helper function if it exists
-                            # For todowrite, this would be _todowrite
+                            # For todo, this would be _todowrite
                             helper_name = f"_{tool_name}"
                             tool_module = __import__(
                                 f"gptme.tools.{tool_name}",
@@ -154,7 +151,9 @@ def _replay_tool(log, tool_name: str) -> None:
                         )
 
     if count == 0:
-        print(f"No '{tool_name}' operations found to replay.")
+        print(
+            f"No '{tool_name}' operations found to replay. Use /replay all to see all operations."
+        )
     else:
         print(f"✅ Replayed {count} '{tool_name}' operations")
 
@@ -164,8 +163,6 @@ def cmd_export(ctx: CommandContext) -> None:
     """Export conversation as HTML."""
     from ..util.export import export_chat_to_html  # fmt: skip
 
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
     # Get output path from args or use default
     output_path = (
         Path(ctx.args[0])

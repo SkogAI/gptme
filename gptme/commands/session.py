@@ -26,7 +26,6 @@ def _complete_log(partial: str, _prev_args: list[str]) -> list[tuple[str, str]]:
 @command("log", completer=_complete_log)
 def cmd_log(ctx: CommandContext) -> None:
     """Show the conversation log."""
-    ctx.manager.undo(1, quiet=True)
     ctx.manager.log.print(show_hidden="--hidden" in ctx.args)
 
 
@@ -41,16 +40,13 @@ def _complete_rename(partial: str, _prev_args: list[str]) -> list[tuple[str, str
 @command("rename", completer=_complete_rename)
 def cmd_rename(ctx: CommandContext) -> None:
     """Rename the conversation."""
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
     # rename the conversation
     print("Renaming conversation")
     if ctx.args:
         new_name = ctx.args[0]
     else:
-        print("(enter empty name to auto-generate)")
-        new_name = input("New name: ").strip()
-    _rename(ctx.manager, new_name, ctx.confirm)
+        new_name = input("New name (leave empty to auto-generate): ").strip()
+    _rename(ctx.manager, new_name)
 
 
 def _complete_fork(partial: str, _prev_args: list[str]) -> list[tuple[str, str]]:
@@ -69,7 +65,6 @@ def _complete_fork(partial: str, _prev_args: list[str]) -> list[tuple[str, str]]
 @command("fork", completer=_complete_fork)
 def cmd_fork(ctx: CommandContext) -> None:
     """Fork the conversation."""
-    ctx.manager.undo(1, quiet=True)
     new_name = ctx.args[0] if ctx.args else input("New name: ")
     ctx.manager.fork(new_name)
     print(f"✅ Forked conversation to: {ctx.manager.logdir}")
@@ -91,9 +86,11 @@ def _complete_delete(partial: str, prev_args: list[str]) -> list[tuple[str, str]
 
     # Get recent conversations
     conversations = list_conversations(limit=20)
-    for conv in conversations:
-        if conv.id.startswith(partial) or conv.name.lower().startswith(partial.lower()):
-            completions.append((conv.id, conv.name or ""))
+    completions.extend(
+        (conv.id, conv.name or "")
+        for conv in conversations
+        if conv.id.startswith(partial) or conv.name.lower().startswith(partial.lower())
+    )
 
     return completions
 
@@ -108,8 +105,6 @@ def cmd_delete(ctx: CommandContext) -> None:
         /delete --force <id> - Delete without confirmation
     """
     from ..logmanager import delete_conversation, list_conversations  # fmt: skip
-
-    ctx.manager.undo(1, quiet=True)
 
     # Check for --force flag
     force = "--force" in ctx.args or "-f" in ctx.args
@@ -141,7 +136,11 @@ def cmd_delete(ctx: CommandContext) -> None:
 
     # Confirm deletion unless --force
     if not force:
-        if not ctx.confirm(f"Delete conversation '{conv_id}'? This cannot be undone."):
+        response = input(
+            f"Delete conversation '{conv_id}'? This cannot be undone. [y/N] "
+        )
+        confirmed = response.lower().strip() in ("y", "yes")
+        if not confirmed:
             print("Cancelled.")
             return
 
@@ -155,16 +154,13 @@ def cmd_delete(ctx: CommandContext) -> None:
 @command("edit")
 def cmd_edit(ctx: CommandContext) -> Generator["Message", None, None]:
     """Edit previous messages."""
-    # first undo the '/edit' command itself
-    ctx.manager.undo(1, quiet=True)
     yield from _edit(ctx.manager)
 
 
 @command("undo")
 def cmd_undo(ctx: CommandContext) -> None:
     """Undo the last action(s)."""
-    # undo the '/undo' command itself
-    ctx.manager.undo(1, quiet=True)
+    # auto_undo already removed the '/undo' command itself
     # if int, undo n messages
     n = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 1
     ctx.manager.undo(n)
@@ -173,7 +169,6 @@ def cmd_undo(ctx: CommandContext) -> None:
 @command("clear", aliases=["cls"])
 def cmd_clear(ctx: CommandContext) -> None:
     """Clear the terminal screen."""
-    ctx.manager.undo(1, quiet=True)
     # ANSI escape code to clear screen and move cursor to home position
     print("\033[2J\033[H", end="")
 
@@ -182,9 +177,6 @@ def cmd_clear(ctx: CommandContext) -> None:
 def cmd_exit(ctx: CommandContext) -> None:
     """Exit the program."""
     from ..hooks import HookType, trigger_hook
-
-    ctx.manager.undo(1, quiet=True)
-    ctx.manager.write()
 
     # Trigger session end hooks before exiting
     logdir = ctx.manager.logdir
@@ -205,10 +197,13 @@ def cmd_restart(ctx: CommandContext) -> None:
     - Recovering from state issues
     """
     from ..tools.restart import _do_restart
+    from ..util.prompt import prompt_alert
 
-    ctx.manager.undo(1, quiet=True)
-
-    if not ctx.confirm("Restart gptme? This will exit and restart the process."):
+    response = prompt_alert(
+        "Restart gptme? This will exit and restart the process. [y/N]"
+    )
+    confirmed = response in ("y", "yes")
+    if not confirmed:
         print("Restart cancelled.")
         return
 
@@ -231,7 +226,7 @@ def _edit(
     from ..util.useredit import edit_text_with_editor  # fmt: skip
 
     # generate editable toml of all messages
-    t = msgs_to_toml(reversed(manager.log))  # type: ignore
+    t = msgs_to_toml(reversed(manager.log))
     res = None
     while not res:
         t = edit_text_with_editor(t, "toml")
@@ -248,7 +243,7 @@ def _edit(
     print("Applied edited messages, write /log to see the result")
 
 
-def _rename(manager: "LogManager", new_name: str, confirm) -> None:
+def _rename(manager: "LogManager", new_name: str) -> None:
     """Rename a conversation."""
     from ..config import ChatConfig  # fmt: skip
     from ..logmanager import prepare_messages  # fmt: skip
@@ -257,9 +252,18 @@ def _rename(manager: "LogManager", new_name: str, confirm) -> None:
     if new_name in ["", "auto"]:
         msgs = prepare_messages(manager.log.messages)[1:]  # skip system message
         new_name = generate_llm_name(msgs)
-        assert " " not in new_name, f"Invalid name: {new_name}"
+        if " " in new_name:
+            raise ValueError(f"Generated name contains spaces: '{new_name}'")
         print(f"Generated name: {new_name}")
-        if not confirm("Confirm?"):
+        if sys.stdin.isatty():
+            from ..util.prompt import prompt_alert
+
+            response = prompt_alert("Confirm? [y/N]")
+            confirmed = response in ("y", "yes")
+        else:
+            # Non-interactive mode - auto-approve
+            confirmed = True
+        if not confirmed:
             print("Aborting")
             return
 

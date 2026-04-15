@@ -8,11 +8,13 @@ with workspace and git information derived from the active conversation.
 
 import json
 import logging
+import re
 import subprocess
+import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import flask
 from pydantic import BaseModel, Field
@@ -144,6 +146,15 @@ class TaskListResponse(BaseModel):
     tasks: list[TaskResponse] = Field(..., description="List of tasks")
 
 
+# Task IDs must be alphanumeric with hyphens/underscores, no path separators
+_TASK_ID_PATTERN = re.compile(r"[a-zA-Z0-9_-]+")
+
+
+def _validate_task_id(task_id: str) -> bool:
+    """Check that task_id doesn't contain path traversal characters."""
+    return bool(_TASK_ID_PATTERN.fullmatch(task_id))
+
+
 def get_tasks_dir() -> Path:
     """Get the tasks storage directory."""
     return get_logs_dir().parent / "tasks"
@@ -151,6 +162,10 @@ def get_tasks_dir() -> Path:
 
 def load_task(task_id: str) -> Task | None:
     """Load a task from storage."""
+    if not _validate_task_id(task_id):
+        logger.warning(f"Rejected load_task with invalid task_id: {task_id!r}")
+        return None
+
     tasks_dir = get_tasks_dir()
     task_file = tasks_dir / f"{task_id}.json"
 
@@ -168,6 +183,9 @@ def load_task(task_id: str) -> Task | None:
 
 def save_task(task: Task) -> None:
     """Save a task to storage."""
+    if not _validate_task_id(task.id):
+        raise ValueError(f"Invalid task_id: {task.id!r}")
+
     tasks_dir = get_tasks_dir()
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,8 +199,12 @@ def save_task(task: Task) -> None:
         raise
 
 
-def list_tasks() -> list[Task]:
-    """List all tasks from storage."""
+def list_tasks(include_archived: bool = False) -> list[Task]:
+    """List tasks from storage.
+
+    Args:
+        include_archived: If True, include archived tasks. Default False.
+    """
     tasks_dir = get_tasks_dir()
 
     if not tasks_dir.exists():
@@ -192,7 +214,7 @@ def list_tasks() -> list[Task]:
     for task_file in tasks_dir.glob("*.json"):
         task_id = task_file.stem
         task = load_task(task_id)
-        if task:
+        if task and (include_archived or not task.archived):
             tasks.append(task)
 
     return sorted(tasks, key=lambda t: t.created_at, reverse=True)
@@ -332,9 +354,9 @@ def determine_task_status(
 
             if pr_merged or pr_status == "MERGED":
                 return "completed"
-            elif pr_status == "CLOSED":
+            if pr_status == "CLOSED":
                 return "failed"  # Closed without merge
-            elif pr_status == "OPEN":
+            if pr_status == "OPEN":
                 # PR is open, waiting for review
                 return "pending"
 
@@ -444,8 +466,6 @@ def get_git_status(workspace_path: Path) -> dict[str, Any]:
                 if lines:
                     summary_line = lines[-1]
                     if "changed" in summary_line:
-                        import re
-
                         # Extract numbers from summary
                         files_match = re.search(r"(\d+) files? changed", summary_line)
                         added_match = re.search(
@@ -559,6 +579,9 @@ def get_git_status(workspace_path: Path) -> dict[str, Any]:
 
 def create_task_conversation(task: Task) -> str:
     """Create a conversation for a task."""
+    if not _validate_task_id(task.id):
+        raise ValueError(f"Invalid task_id: {task.id!r}")
+
     # Use simple incremental suffix instead of timestamp
     suffix = len(task.conversation_ids)
     conversation_id = f"{task.id}-{suffix}"
@@ -578,7 +601,7 @@ def create_task_conversation(task: Task) -> str:
 
     # Create initial system messages
     messages = get_prompt(
-        tools=[t for t in get_toolchain(None)],
+        tools=list(get_toolchain(None)),
         interactive=True,
         tool_format="markdown",
         model=None,
@@ -606,6 +629,9 @@ def create_task_conversation(task: Task) -> str:
 
 def setup_task_workspace(task_id: str, target_repo: str | None = None) -> Path:
     """Setup workspace for task. All conversations for this task will share this workspace."""
+    if not _validate_task_id(task_id):
+        raise ValueError(f"Invalid task_id: {task_id!r}")
+
     # Use task-level workspace that all conversations for this task will share
     task_dir = get_tasks_dir() / task_id
     workspace = task_dir / "workspace"
@@ -613,8 +639,6 @@ def setup_task_workspace(task_id: str, target_repo: str | None = None) -> Path:
 
     if target_repo and "/" in target_repo:
         # Validate target_repo format (owner/repo)
-        import re
-
         if not re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", target_repo):
             logger.error(f"Invalid target_repo format: {target_repo}")
             return workspace
@@ -643,9 +667,8 @@ def setup_task_workspace(task_id: str, target_repo: str | None = None) -> Path:
                 return workspace
 
         return repo_path
-    else:
-        # Return empty workspace
-        return workspace
+    # Return empty workspace
+    return workspace
 
 
 # API Endpoints
@@ -661,14 +684,17 @@ def setup_task_workspace(task_id: str, target_repo: str | None = None) -> Path:
 def api_tasks_list():
     """List all tasks.
 
-    List all tasks with their cached status information.
+    List tasks with their cached status information.
+    Archived tasks are excluded by default; include ?archived=true to show them.
     """
     try:
-        tasks = list_tasks()
+        archived_str = flask.request.args.get("archived", "false")
+        include_archived = archived_str.lower() in ("true", "1")
+        tasks = list_tasks(include_archived=include_archived)
 
         # Return with stored status (no side effects in GET)
         tasks_info = [asdict(task) for task in tasks]
-        return flask.jsonify(tasks_info)
+        return flask.jsonify({"tasks": tasks_info})
 
     except Exception as e:
         logger.error(f"Error listing tasks: {e}")
@@ -689,26 +715,48 @@ def api_tasks_create():
     A conversation will be automatically created for the task.
     """
     req_json = flask.request.json
-    if not req_json:
+    if not req_json or not isinstance(req_json, dict):
         return flask.jsonify({"error": "No JSON data provided"}), 400
 
     if "content" not in req_json:
         return flask.jsonify({"error": "Missing required field: content"}), 400
 
+    if not isinstance(req_json["content"], str):
+        return flask.jsonify({"error": "content must be a string"}), 400
+
+    # Validate target_type if provided
+    valid_target_types = get_args(TargetType)
+    target_type = req_json.get("target_type", "stdout")
+    if target_type not in valid_target_types:
+        return flask.jsonify(
+            {"error": f"target_type must be one of: {', '.join(valid_target_types)}"}
+        ), 400
+
+    # Validate target_repo if provided
+    target_repo = req_json.get("target_repo")
+    if target_repo is not None and not isinstance(target_repo, str):
+        return flask.jsonify({"error": "target_repo must be a string"}), 400
+
+    # Validate metadata if provided
+    metadata = req_json.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return flask.jsonify({"error": "metadata must be an object"}), 400
+
     try:
-        # Generate task ID
-        task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        # Generate task ID with a short random suffix to prevent collisions
+        # when two tasks are created within the same second.
+        task_id = f"task-{datetime.now(tz=timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
         # Create task
         task = Task(
             id=task_id,
             content=req_json["content"],
-            created_at=datetime.now().isoformat(),
+            created_at=datetime.now(tz=timezone.utc).isoformat(),
             status="pending",
-            target_type=req_json.get("target_type", "stdout"),
-            target_repo=req_json.get("target_repo"),
+            target_type=target_type,
+            target_repo=target_repo,
             conversation_ids=[],
-            metadata=req_json.get("metadata", {}),
+            metadata=metadata,
         )
 
         # Create initial conversation
@@ -783,8 +831,28 @@ def api_tasks_update(task_id: str):
         return flask.jsonify({"error": f"Task not found: {task_id}"}), 404
 
     req_json = flask.request.json
-    if not req_json:
-        return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not req_json or not isinstance(req_json, dict):
+        return flask.jsonify({"error": "Request body must be a JSON object"}), 400
+
+    # Validate field types before applying
+    if "content" in req_json and not isinstance(req_json["content"], str):
+        return flask.jsonify({"error": "content must be a string"}), 400
+
+    valid_target_types = get_args(TargetType)
+    if "target_type" in req_json and req_json["target_type"] not in valid_target_types:
+        return flask.jsonify(
+            {"error": f"target_type must be one of: {', '.join(valid_target_types)}"}
+        ), 400
+
+    if (
+        "target_repo" in req_json
+        and req_json["target_repo"] is not None
+        and not isinstance(req_json["target_repo"], str)
+    ):
+        return flask.jsonify({"error": "target_repo must be a string or null"}), 400
+
+    if "metadata" in req_json and not isinstance(req_json["metadata"], dict):
+        return flask.jsonify({"error": "metadata must be an object"}), 400
 
     try:
         # Update allowed fields

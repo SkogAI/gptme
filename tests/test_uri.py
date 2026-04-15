@@ -1,11 +1,14 @@
 """Tests for URI support in Message.files."""
 
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
 
 from gptme.message import Message
 from gptme.util.uri import URI, is_uri, parse_file_reference
+
+_has_flask = find_spec("flask") is not None
 
 
 class TestURI:
@@ -40,11 +43,11 @@ class TestURI:
 
     def test_uri_invalid(self):
         """Test that invalid URIs raise ValueError."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid URI"):
             URI("not-a-uri")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid URI"):
             URI("/local/path")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid URI"):
             URI("relative/path.txt")
 
     def test_uri_equality(self):
@@ -183,6 +186,7 @@ class TestMessageWithURI:
         assert all(isinstance(f, Path) for f in msg.files)
 
 
+@pytest.mark.skipif(not _has_flask, reason="flask not installed (server extra)")
 class TestAbsToRelWorkspace:
     """Test _abs_to_rel_workspace handles URIs correctly."""
 
@@ -190,7 +194,7 @@ class TestAbsToRelWorkspace:
         """URIs should be returned as-is, not converted to paths."""
         from pathlib import Path
 
-        from gptme.server.api import _abs_to_rel_workspace
+        from gptme.server.api_v2_common import _abs_to_rel_workspace
 
         workspace = Path("/tmp/workspace")
         uri = URI("https://example.com/doc.pdf")
@@ -203,7 +207,7 @@ class TestAbsToRelWorkspace:
         """MCP URIs should be returned as-is."""
         from pathlib import Path
 
-        from gptme.server.api import _abs_to_rel_workspace
+        from gptme.server.api_v2_common import _abs_to_rel_workspace
 
         workspace = Path("/tmp/workspace")
         uri = URI("memo://resource/123")
@@ -216,7 +220,7 @@ class TestAbsToRelWorkspace:
         """Regular paths should still be converted to relative."""
         from pathlib import Path
 
-        from gptme.server.api import _abs_to_rel_workspace
+        from gptme.server.api_v2_common import _abs_to_rel_workspace
 
         workspace = Path("/tmp/workspace")
         abs_path = Path("/tmp/workspace/subdir/file.txt")
@@ -229,7 +233,7 @@ class TestAbsToRelWorkspace:
         """Paths outside workspace should be returned as-is."""
         from pathlib import Path
 
-        from gptme.server.api import _abs_to_rel_workspace
+        from gptme.server.api_v2_common import _abs_to_rel_workspace
 
         workspace = Path("/tmp/workspace")
         outside_path = Path("/other/location/file.txt")

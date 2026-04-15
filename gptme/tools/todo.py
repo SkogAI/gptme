@@ -7,7 +7,7 @@ complementing the existing persistent task management system in gptme-agent-temp
 Key principles:
 - Working Memory Layer: Ephemeral todos for current conversation context
 - Complements Persistent Tasks: Works alongside existing task files without conflicts
-- Simple State Model: pending, in_progress, completed
+- Simple State Model: pending, in_progress, completed, paused
 - Conversation Scoped: Resets between conversations, doesn't persist to disk
 - Auto-replay: Automatically restores todo state when resuming conversations
 """
@@ -16,19 +16,19 @@ import logging
 import shlex
 from collections import Counter
 from collections.abc import Generator
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dateutil.parser import isoparse
 
 from ..hooks import HookType
 from ..logmanager import Log
 from ..message import Message
-from .base import ConfirmFunc, ToolSpec, ToolUse
+from .base import ToolSpec, ToolUse
 
 logger = logging.getLogger(__name__)
 
 # Conversation-scoped storage for the current todo list
-# TODO: support persistence to support resuming conversations
+# State is restored on resume via auto-replay (replay_todo_on_session_start hook)
 _current_todos: dict[str, dict] = {}
 
 
@@ -45,8 +45,8 @@ class TodoItem:
         self.id = id
         self.text = text
         self.state = state  # pending, in_progress, completed, paused
-        self.created = created or datetime.now()
-        self.updated = datetime.now()
+        self.created = created or datetime.now(tz=timezone.utc)
+        self.updated = datetime.now(tz=timezone.utc)
 
     def to_dict(self) -> dict:
         return {
@@ -67,7 +67,7 @@ class TodoItem:
 
 def _generate_todo_id() -> str:
     """Generate a simple incremental ID for new todos."""
-    existing_ids = [int(id) for id in _current_todos.keys() if id.isdigit()]
+    existing_ids = [int(id) for id in _current_todos if id.isdigit()]
     return str(max(existing_ids, default=0) + 1)
 
 
@@ -81,7 +81,7 @@ def has_incomplete_todos() -> bool:
         True if there are any pending or in_progress todos.
     """
     for todo in _current_todos.values():
-        if todo["state"] in ("pending", "in_progress"):
+        if todo["state"] in ("pending", "in_progress", "paused"):
             return True
     return False
 
@@ -95,7 +95,7 @@ def get_incomplete_todos_summary() -> str:
     incomplete = [
         todo
         for todo in _current_todos.values()
-        if todo["state"] in ("pending", "in_progress")
+        if todo["state"] in ("pending", "in_progress", "paused")
     ]
     if not incomplete:
         return ""
@@ -107,7 +107,7 @@ def get_incomplete_todos_summary() -> str:
 
     lines = []
     for todo in incomplete:
-        state_emoji = "🔄" if todo["state"] == "in_progress" else "🔲"
+        state_emoji = {"in_progress": "🔄", "paused": "⏸️"}.get(todo["state"], "🔲")
         lines.append(f"  {state_emoji} {todo['text']}")
 
     return "\n".join(lines)
@@ -146,10 +146,10 @@ def _format_todo_list() -> str:
     return "\n".join(output)
 
 
-def replay_todowrite_on_session_start(
+def replay_todo_on_session_start(
     logdir, workspace, initial_msgs, **kwargs
 ) -> Generator[Message, None, None]:
-    """Hook function that replays todowrite operations at session start.
+    """Hook function that replays todo write operations at session start.
 
     This ensures todo state is restored when resuming a conversation.
 
@@ -164,17 +164,17 @@ def replay_todowrite_on_session_start(
     if not initial_msgs:
         return
 
-    # Check if there are any todowrite operations in the log
-    has_todowrite = any(
-        tooluse.tool == "todowrite"
+    # Check if there are any todo write operations in the log
+    has_todo_write = any(
+        tooluse.tool == "todo" and tooluse.args and tooluse.args[0] == "write"
         for msg in initial_msgs
         for tooluse in ToolUse.iter_from_content(msg.content)
     )
 
-    if not has_todowrite:
+    if not has_todo_write:
         return
 
-    logger.info("Detected todowrite operations, replaying to restore state...")
+    logger.info("Detected todo write operations, replaying to restore state...")
 
     try:
         # Import here to avoid circular dependency
@@ -183,25 +183,37 @@ def replay_todowrite_on_session_start(
         # Create a minimal Log object for replay
         log = Log(initial_msgs)
 
-        # Replay todowrite operations
-        _replay_tool(log, "todowrite")
+        # Replay todo operations (the replay will filter to write subcommand)
+        _replay_tool(log, "todo")
 
         yield Message("system", "Restored todo state from previous session", hide=True)
 
     except Exception as e:
-        logger.exception(f"Error replaying todowrite operations: {e}")
+        logger.exception(f"Error replaying todo operations: {e}")
         yield Message(
             "system", f"Warning: Failed to restore todo state: {e}", hide=True
         )
 
 
+def _todo(operation: str, *args: str) -> str:
+    """Helper function for todo replay - routes to appropriate handler.
+
+    This exists for compatibility with _replay_tool which looks for _{tool_name} helpers.
+    """
+    operation = operation.lower()
+    if operation == "read":
+        return _todoread()
+    # Treat as a write operation (add, update, remove, clear)
+    return _todowrite(operation, *args)
+
+
 def _todoread() -> str:
-    """Helper function for todoread - used by tests and execute function."""
+    """Helper function for todo read - used by tests and execute function."""
     return _format_todo_list()
 
 
 def _todowrite(operation: str, *args: str) -> str:
-    """Helper function for todowrite - used by tests and execute function."""
+    """Helper function for todo write - used by tests and execute function."""
     operation = operation.lower()
 
     if operation == "add":
@@ -216,7 +228,7 @@ def _todowrite(operation: str, *args: str) -> str:
 
         return f"Added todo {todo_id}: {todo_text}"
 
-    elif operation == "update":
+    if operation == "update":
         if len(args) < 2:
             return 'Error: update requires ID and state/text. Usage: update ID state OR update ID "new text"'
 
@@ -227,17 +239,18 @@ def _todowrite(operation: str, *args: str) -> str:
         update_value = " ".join(args[1:]).strip("\"'")
 
         # Check if it's a state update or text update
-        valid_states = ["pending", "in_progress", "completed"]
+        valid_states = ["pending", "in_progress", "completed", "paused"]
         if update_value in valid_states:
             _current_todos[todo_id]["state"] = update_value
-            _current_todos[todo_id]["updated"] = datetime.now().isoformat()
+            _current_todos[todo_id]["updated"] = datetime.now(
+                tz=timezone.utc
+            ).isoformat()
             return f"Updated todo {todo_id} state to: {update_value}"
-        else:
-            _current_todos[todo_id]["text"] = update_value
-            _current_todos[todo_id]["updated"] = datetime.now().isoformat()
-            return f"Updated todo {todo_id} text to: {update_value}"
+        _current_todos[todo_id]["text"] = update_value
+        _current_todos[todo_id]["updated"] = datetime.now(tz=timezone.utc).isoformat()
+        return f"Updated todo {todo_id} text to: {update_value}"
 
-    elif operation == "remove":
+    if operation == "remove":
         if not args:
             return "Error: remove requires ID. Usage: remove ID"
 
@@ -249,7 +262,7 @@ def _todowrite(operation: str, *args: str) -> str:
         del _current_todos[todo_id]
         return f"Removed todo {todo_id}: {todo_text}"
 
-    elif operation == "clear":
+    if operation == "clear":
         if args and args[0].lower() == "completed":
             # Clear only completed todos
             completed_ids = [
@@ -261,150 +274,136 @@ def _todowrite(operation: str, *args: str) -> str:
                 del _current_todos[todo_id]
             count = len(completed_ids)
             return f"Cleared {count} completed todos"
-        else:
-            # Clear all todos
-            count = len(_current_todos)
-            _current_todos.clear()
-            return f"Cleared {count} todos"
+        # Clear all todos
+        count = len(_current_todos)
+        _current_todos.clear()
+        return f"Cleared {count} todos"
+
+    return f"Error: Unknown operation '{operation}'. Use: add, update, remove, clear"
+
+
+def execute_todo(
+    code: str | None,
+    args: list[str] | None,
+    kwargs: dict[str, str] | None,
+) -> Generator[Message, None, None]:
+    """Execute todo command with read/write subcommands."""
+    if not args:
+        # Default to read if no subcommand
+        yield Message("system", _todoread())
+        return
+
+    subcommand = args[0].lower()
+
+    if subcommand == "read":
+        yield Message("system", _todoread())
+        return
+
+    elif subcommand == "write":
+        if not code:
+            yield Message(
+                "system",
+                'Error: todo write requires operations. Usage: add "todo text" | update ID state | remove ID | clear',
+            )
+            return
+
+        # Split code into lines for multiple operations
+        lines = [line.strip() for line in code.strip().split("\n") if line.strip()]
+
+        if not lines:
+            yield Message(
+                "system",
+                'Error: todo write requires operations. Usage: add "todo text" | update ID state | remove ID | clear',
+            )
+            return
+
+        results = []
+
+        # Process each line as a separate operation
+        for line in lines:
+            parts = shlex.split(line)
+            if not parts:
+                continue
+
+            operation = parts[0]
+            operation_args = parts[1:]
+
+            # Use the helper function
+            result = _todowrite(operation, *operation_args)
+            results.append(result)
+
+        # Combine results
+        yield Message("system", "\n".join(results))
 
     else:
-        return (
-            f"Error: Unknown operation '{operation}'. Use: add, update, remove, clear"
-        )
-
-
-def execute_todoread(
-    code: str | None,
-    args: list[str] | None,
-    kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
-) -> Generator[Message, None, None]:
-    """Execute todoread command."""
-    result = _todoread()
-    yield Message("system", result)
-
-
-def execute_todowrite(
-    code: str | None,
-    args: list[str] | None,
-    kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
-) -> Generator[Message, None, None]:
-    """Execute todowrite command."""
-    if not code:
         yield Message(
             "system",
-            'Error: todowrite requires an operation. Usage: add "todo text" | update ID state | remove ID | clear',
+            f"Error: Unknown subcommand '{subcommand}'. Use: todo read | todo write",
         )
-        return
-
-    # Split code into lines for multiple operations
-    lines = [line.strip() for line in code.strip().split("\n") if line.strip()]
-
-    if not lines:
-        yield Message(
-            "system",
-            'Error: todowrite requires an operation. Usage: add "todo text" | update ID state | remove ID | clear',
-        )
-        return
-
-    results = []
-
-    # Process each line as a separate operation
-    for line in lines:
-        parts = shlex.split(line)
-        if not parts:
-            continue
-
-        operation = parts[0]
-        operation_args = parts[1:]
-
-        # Use the helper function
-        result = _todowrite(operation, *operation_args)
-        results.append(result)
-
-    # Combine results
-    yield Message("system", "\n".join(results))
 
 
-def examples_todoread(tool_format):
-    """Generate examples for todoread tool."""
+def examples_todo(tool_format):
+    """Generate examples for todo tool."""
     return f"""
 > User: What's on my todo list?
 > Assistant: Let me check the current todo list.
-{ToolUse("todoread", [], "").to_output(tool_format)}
+{ToolUse("todo", ["read"], "").to_output(tool_format)}
 > System: Todo List:
 ...
 
-> User: I've been working on a complex task, can you show me progress?
-> Assistant: I'll check the todo list to see our progress.
-{ToolUse("todoread", [], "").to_output(tool_format)}
-""".strip()
-
-
-def examples_todowrite(tool_format):
-    """Generate examples for todowrite tool."""
-    return f"""
 > Assistant: I'll break this complex task into steps.
-{ToolUse("todowrite", [], '''
-add "Set up project structure
-add "Implement core functionality
-'''.strip()).to_output(tool_format)}
+{
+        ToolUse(
+            "todo",
+            ["write"],
+            '''
+add "Set up project structure"
+add "Implement core functionality"
+'''.strip(),
+        ).to_output(tool_format)
+    }
 
 > Assistant: Starting the first task.
-{ToolUse("todowrite", [], "update 1 in_progress").to_output(tool_format)}
+{ToolUse("todo", ["write"], "update 1 in_progress").to_output(tool_format)}
 
 > Assistant: Completed the project setup.
-{ToolUse("todowrite", [], '''
+{
+        ToolUse(
+            "todo",
+            ["write"],
+            '''
 update 1 completed
 update 2 in_progress
-'''.strip()).to_output(tool_format)}
+'''.strip(),
+        ).to_output(tool_format)
+    }
 
 > Assistant: Clearing completed todos to focus on remaining work.
-{ToolUse("todowrite", [], "clear completed").to_output(tool_format)}
+{ToolUse("todo", ["write"], "clear completed").to_output(tool_format)}
 """.strip()
 
 
-# Tool specifications
-todoread = ToolSpec(
-    name="todoread",
-    desc="Read and display the current todo list",
-    block_types=["todoread"],
-    instructions="""
-Use this tool to read and display the current todo list.
-
-This shows all todos organized by state (pending, in_progress, completed)
-and provides a summary of progress.
-
-Use this frequently to:
-- Check current progress
-- See what needs to be done next
-- Review completed work
-- Plan next steps
-
-The todo list is conversation-scoped and resets between conversations.
-For long-term persistent tasks, use the task management system instead.
-    """.strip(),
-    examples=examples_todoread,
-    execute=execute_todoread,
-)
-
-todowrite = ToolSpec(
-    name="todowrite",
-    desc="Write, update, or manage todos in the current conversation",
-    block_types=["todowrite"],
+# Tool specification
+todo = ToolSpec(
+    name="todo",
+    desc="Manage an in-session todo list (ephemeral, not persisted across conversations)",
+    block_types=["todo"],
     instructions="""
 Use this tool to manage todos in the current conversation context.
 
-Operations:
+Subcommands:
+- `todo read` - Display the current todo list
+- `todo write` - Modify todos (with operations in content block)
+
+Write operations (in content block):
 - add "todo text" - Add a new todo item
-- update ID state - Update todo state (pending/in_progress/completed)
+- update ID state - Update todo state (pending/in_progress/completed/paused)
 - update ID "new text" - Update todo text
 - remove ID - Remove a todo item
 - clear - Clear all todos
 - clear completed - Clear only completed todos
 
-States: pending, in_progress, completed
+States: pending, in_progress, completed, paused
 
 Use this tool frequently for complex multi-step tasks to:
 - Break down large tasks into smaller steps
@@ -418,12 +417,12 @@ For persistent cross-conversation tasks, use the task management system.
 Auto-replay: Todo operations are automatically replayed when resuming conversations
 to restore your todo list state.
     """.strip(),
-    examples=examples_todowrite,
-    execute=execute_todowrite,
+    examples=examples_todo,
+    execute=execute_todo,
     hooks={
         "replay_todos": (
             HookType.SESSION_START.value,
-            replay_todowrite_on_session_start,
+            replay_todo_on_session_start,
             10,  # High priority: run early in session start
         )
     },
@@ -431,8 +430,7 @@ to restore your todo list state.
 
 
 __all__ = [
-    "todoread",
-    "todowrite",
+    "todo",
     "has_incomplete_todos",
     "get_incomplete_todos_summary",
 ]

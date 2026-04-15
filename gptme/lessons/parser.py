@@ -26,6 +26,14 @@ class LessonMetadata:
     name: str | None = None
     description: str | None = None
 
+    # Skill dependency declarations (agentskills.io trajectory)
+    # Lists other skills/tools this skill requires to function correctly.
+    # Used for: auto-installation, dependency graphs, circular detection.
+    depends: list[str] = field(default_factory=list)
+
+    # Stable lesson identifier (optional)
+    id: str | None = None
+
     # Lesson format fields
     keywords: list[str] = field(default_factory=list)
     patterns: list[str] = field(default_factory=list)
@@ -138,8 +146,6 @@ def _glob_to_keywords(glob_pattern: str) -> list[str]:
     }
 
     # Extract file extension
-    import re
-
     ext_match = re.search(r"\*\.(\w+)", glob_pattern)
     if ext_match:
         ext = f".{ext_match.group(1)}"
@@ -183,7 +189,12 @@ def _translate_cursor_metadata(frontmatter: dict) -> LessonMetadata:
 
     # Translate globs to keywords
     # Note: YAML parses empty values (e.g., "globs:") as None, not missing
+    # Validate: bare string "globs: *.py" must become ["*.py"], not char iteration
     globs = frontmatter.get("globs") or []
+    if isinstance(globs, str):
+        globs = [globs]
+    elif not isinstance(globs, list):
+        globs = []
     keywords = []
     for glob in globs:
         keywords.extend(_glob_to_keywords(glob))
@@ -200,10 +211,16 @@ def _translate_cursor_metadata(frontmatter: dict) -> LessonMetadata:
 
     # Extract other Cursor-specific fields
     # Note: YAML parses empty values as None, not missing
+    # Validate: bare string "triggers: file_change" must become ["file_change"]
     triggers = frontmatter.get("triggers") or []
+    if isinstance(triggers, str):
+        triggers = [triggers]
+    elif not isinstance(triggers, list):
+        triggers = []
     version = frontmatter.get("version")
 
     return LessonMetadata(
+        id=frontmatter.get("id"),
         name=name,
         description=description,
         keywords=list(dict.fromkeys(keywords)),  # Remove duplicates
@@ -323,6 +340,7 @@ def parse_lesson(path: Path) -> Lesson:
                         # Extract Anthropic skill format fields
                         name = frontmatter.get("name")
                         description = frontmatter.get("description")
+                        lesson_id = frontmatter.get("id")
 
                         # Extract lesson format fields
                         match_data = frontmatter.get("match", {})
@@ -344,12 +362,35 @@ def parse_lesson(path: Path) -> Lesson:
                             k for k in raw_keywords if isinstance(k, str) and k.strip()
                         ]
 
+                        # Extract depends (skill dependency declarations)
+                        raw_depends = frontmatter.get("depends", [])
+                        if isinstance(raw_depends, str):
+                            raw_depends = [raw_depends]
+                        elif not isinstance(raw_depends, list):
+                            # YAML null → None, or other scalars
+                            raw_depends = []
+                        depends = [
+                            d for d in raw_depends if isinstance(d, str) and d.strip()
+                        ]
+
+                        # Validate and filter tools (must be non-empty strings)
+                        raw_tools = match_data.get("tools", [])
+                        if isinstance(raw_tools, str):
+                            raw_tools = [raw_tools]
+                        elif not isinstance(raw_tools, list):
+                            raw_tools = []
+                        tools = [
+                            t for t in raw_tools if isinstance(t, str) and t.strip()
+                        ]
+
                         metadata = LessonMetadata(
                             name=name,
                             description=description,
+                            id=lesson_id,
+                            depends=depends,
                             keywords=keywords,
                             patterns=patterns,
-                            tools=match_data.get("tools", []),
+                            tools=tools,
                             status=status,
                         )
             except yaml.YAMLError as e:

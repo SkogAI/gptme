@@ -34,16 +34,16 @@ def _complete_model(partial: str, _prev_args: list[str]) -> list[tuple[str, str]
                 desc = f"{model_count} models" if model_count else "dynamic"
                 completions.append((provider_prefix, desc))
 
-    # Get full model list (cached in get_model_list)
+    # Get full model list (cached in get_model_list), excluding deprecated
     try:
-        models = get_model_list(dynamic_fetch=True)
+        models = get_model_list(dynamic_fetch=True, include_deprecated=False)
         for model_meta in models:
             full_name = model_meta.full
             if full_name.startswith(partial):
                 is_current = current and current.full == full_name
                 desc = "(current)" if is_current else ""
                 completions.append((full_name, desc))
-    except Exception:
+    except (ImportError, ValueError, AttributeError, OSError):
         # Fall back to empty list on error (provider prefixes will still show)
         pass
 
@@ -58,16 +58,15 @@ def _complete_model(partial: str, _prev_args: list[str]) -> list[tuple[str, str]
     return unique_completions[:30]  # Limit to 30 completions
 
 
-@command("model", aliases=["models"], completer=_complete_model)
+@command("model", completer=_complete_model)
 def cmd_model(ctx: CommandContext) -> None:
-    """List or switch models."""
+    """Show or switch the current model."""
     from ..config import ChatConfig  # fmt: skip
     from ..llm.models import (  # fmt: skip
         get_default_model,
         set_default_model,
     )
 
-    ctx.manager.undo(1, quiet=True)
     if ctx.args:
         new_model = ctx.args[0]
         set_default_model(new_model)
@@ -78,7 +77,9 @@ def cmd_model(ctx: CommandContext) -> None:
         print(f"Set model to {new_model}")
     else:
         model = get_default_model()
-        assert model
+        if not model:
+            print("No model configured. Use `/model <model>` to set one.")
+            return
         print(f"Current model: {model.full}")
         print(
             f"  price: input ${model.price_input}/Mtok, output ${model.price_output}/Mtok"
@@ -88,24 +89,123 @@ def cmd_model(ctx: CommandContext) -> None:
             f"  (streaming: {model.supports_streaming}, vision: {model.supports_vision})"
         )
 
-        _print_available_models()
 
-
-@command("tools")
-def cmd_tools(ctx: CommandContext) -> None:
-    """Show available tools."""
-    from ..message import len_tokens  # fmt: skip
-    from ..tools import get_tool_format, get_tools  # fmt: skip
-
+@command("models")
+def cmd_models(ctx: CommandContext) -> None:
+    """List available models."""
     ctx.manager.undo(1, quiet=True)
-    print("Available tools:")
-    for tool in get_tools():
-        print(
-            f"""
-  # {tool.name}
-    {tool.desc.rstrip(".")}
-    tokens (example): {len_tokens(tool.get_examples(get_tool_format()), "gpt-4")}"""
+    _print_available_models()
+
+
+def _complete_tools(partial: str, _prev_args: list[str]) -> list[tuple[str, str]]:
+    """Complete tool names for /tools command."""
+    from ..tools import get_available_tools  # fmt: skip
+
+    subcommands = [
+        ("load", "Load a tool mid-conversation"),
+    ]
+    # If first arg, suggest subcommands and tool names
+    if not _prev_args:
+        completions = subcommands[:]
+        for tool in get_available_tools():
+            completions.append((tool.name, tool.desc[:60]))
+        return [(name, desc) for name, desc in completions if name.startswith(partial)]
+    # If after "load", suggest unloaded tools (only available ones with satisfied deps)
+    if _prev_args and _prev_args[0] == "load":
+        from ..tools import get_tools  # fmt: skip
+
+        loaded_names = {t.name for t in get_tools()}
+        return [
+            (t.name, t.desc[:60])
+            for t in get_available_tools()
+            if t.name not in loaded_names
+            and t.is_available
+            and t.name.startswith(partial)
+        ]
+    return []
+
+
+@command("tools", completer=_complete_tools)
+def cmd_tools(ctx: CommandContext):
+    """Show available tools or load new ones mid-conversation.
+
+    Usage:
+        /tools              List loaded tools (with hint about others)
+        /tools <name>       Show detailed info for a specific tool
+        /tools --all        Show all available tools including unloaded
+        /tools load <name>  Load a tool into the current conversation
+    """
+    from ..message import Message  # fmt: skip
+    from ..tools import get_available_tools, get_tool, get_tools, load_tool  # fmt: skip
+    from ..tools.base import get_tool_format  # fmt: skip
+    from ..util.tool_format import format_tool_info, format_tools_list  # fmt: skip
+
+    show_all = ctx.args and ctx.args[0] == "--all"
+    args = [a for a in ctx.args if a != "--all"] if ctx.args else []
+
+    # Handle /tools load <name>
+    if args and args[0] == "load":
+        if len(args) < 2:
+            print("Usage: /tools load <name>")
+            print("Available unloaded tools:")
+            loaded_names = {t.name for t in get_tools()}
+            for t in sorted(get_available_tools(), key=lambda t: t.name):
+                if t.name not in loaded_names:
+                    print(f"  {t.name}: {t.desc}")
+            return
+
+        tool_name = args[1]
+        try:
+            new_tool = load_tool(tool_name)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+
+        print(f"Tool '{new_tool.name}' loaded successfully.")
+
+        # Build a system message with the tool's instructions
+        tool_format = get_tool_format()
+        prompt = new_tool.get_tool_prompt(examples=True, tool_format=tool_format)
+        yield Message(
+            "system",
+            f"The following tool has been loaded and is now available:\n{prompt}\n",
         )
+        return
+
+    if args:
+        # Show info for specific tool
+        tool_name = args[0]
+        # Look in both loaded and available tools
+        tool = get_tool(tool_name)
+        if not tool:
+            # Check if it's an available but not loaded tool
+            available_dict = {t.name: t for t in get_available_tools()}
+            if tool_name in available_dict:
+                tool = available_dict[tool_name]
+            else:
+                print(f"Tool '{tool_name}' not found.")
+                print("Loaded tools:", ", ".join(t.name for t in get_tools()))
+                print("Available tools:", ", ".join(available_dict.keys()))
+                return
+        print(format_tool_info(tool))
+    else:
+        # List tools
+        loaded = get_tools()
+        available = get_available_tools()
+
+        if show_all:
+            print(format_tools_list(available, show_all=True))
+        else:
+            print(format_tools_list(loaded, show_all=False))
+
+            # Show hint about other available tools
+            loaded_names = {t.name for t in loaded}
+            unloaded = [t for t in available if t.name not in loaded_names]
+            if unloaded:
+                unloaded_names = ", ".join(sorted(t.name for t in unloaded))
+                print(
+                    f"\nOther available tools (use '/tools load <name>' to add): {unloaded_names}"
+                )
 
 
 @command("context")
@@ -115,8 +215,6 @@ def cmd_context(ctx: CommandContext) -> None:
     from ..tools import ToolUse  # fmt: skip
     from ..util import console  # fmt: skip
     from ..util.tokens import len_tokens  # fmt: skip
-
-    ctx.manager.undo(1, quiet=True)
 
     # Try to use the current model's tokenizer, fallback to gpt-4
     current_model = get_default_model()
@@ -171,6 +269,32 @@ def cmd_context(ctx: CommandContext) -> None:
 
     console.log(f"\n[bold]Total Context:[/bold] {total_tokens:,} tokens")
 
+    # Show context window utilization if model info is available
+    if current_model and current_model.context > 0:
+        context_limit = current_model.context
+        remaining = max(0, context_limit - total_tokens)
+        utilization = (total_tokens / context_limit * 100) if context_limit > 0 else 0
+
+        # Color-code utilization: green < 50%, yellow 50-80%, red > 80%
+        if utilization > 80:
+            color = "red"
+        elif utilization > 50:
+            color = "yellow"
+        else:
+            color = "green"
+
+        console.log(
+            f"[bold]Context Window:[/bold] [{color}]{utilization:.0f}%[/{color}] "
+            f"used ({total_tokens:,} / {context_limit:,}), "
+            f"{remaining:,} remaining"
+        )
+        if current_model.max_output:
+            effective_remaining = max(0, remaining - current_model.max_output)
+            console.log(
+                f"[dim]  max output: {current_model.max_output:,} tokens, "
+                f"effective input capacity: {effective_remaining:,}[/dim]"
+            )
+
     if is_approximate:
         console.log(f"[dim](approximate, using {tokenizer_model} tokenizer)[/dim]")
 
@@ -187,8 +311,6 @@ def cmd_tokens(ctx: CommandContext) -> None:
         gather_conversation_costs,
         gather_session_costs,
     )
-
-    ctx.manager.undo(1, quiet=True)
 
     session = gather_session_costs()
     conversation = gather_conversation_costs(ctx.manager.log.messages)

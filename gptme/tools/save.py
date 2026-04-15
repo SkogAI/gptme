@@ -7,10 +7,10 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Literal
 
+from ..hooks import confirm
 from ..message import Message
 from ..util.ask_execute import execute_with_confirmation
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -30,7 +30,7 @@ instructions_format = {
 }
 
 instructions_append = """
-Append the given content to a file.`.
+Append the given content to a file.
 """.strip()
 
 instructions_format_append = {
@@ -62,11 +62,28 @@ def examples_append(tool_format):
 """.strip()
 
 
+def _read_text_safe(path: Path) -> str | None:
+    """Read file text, returning None when the file is missing, unreadable, or not UTF-8 text."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, PermissionError, OSError):
+        return None
+
+
+def _get_preview_lang(path: Path) -> str | None:
+    """Use diff highlighting only when the existing file can be previewed as text."""
+    if not path.exists():
+        return None
+    return "diff" if _read_text_safe(path) is not None else None
+
+
 def preview_save(content: str, path: Path | None) -> str | None:
     """Prepare preview content for save operation."""
     assert path
     if path.exists():
-        current = path.read_text()
+        current = _read_text_safe(path)
+        if current is None:
+            return content  # can't diff binary files, show full content
         p = Patch(current, content)
         diff_str = p.diff_minimal()
         return diff_str if diff_str.strip() else None
@@ -77,7 +94,9 @@ def preview_append(content: str, path: Path | None) -> str | None:
     """Prepare preview content for append operation."""
     assert path
     if path.exists():
-        current = path.read_text()
+        current = _read_text_safe(path)
+        if current is None:
+            return content  # can't diff binary files, show new content only
         if not current.endswith("\n"):
             current += "\n"
     else:
@@ -96,7 +115,7 @@ def check_for_placeholders(content: str) -> bool:
 
 
 def execute_save_impl(
-    content: str, path: Path | None, confirm: ConfirmFunc
+    content: str, path: Path | None
 ) -> Generator[Message, None, None]:
     """Actual save implementation."""
     from ..hooks import HookType, trigger_hook
@@ -134,14 +153,9 @@ def execute_save_impl(
         content += "\n"
 
     # Check if file exists and store original content for comparison
-    overwrite = False
-    original_content = None
-    if path.exists():
-        original_content = path.read_text()
-        if not confirm(f"File {path_display} exists, overwrite?"):
-            yield Message("system", "Save aborted: user refused to overwrite the file.")
-            return
-        overwrite = True
+    # Note: User already confirmed via execute_with_confirmation() with diff preview
+    overwrite = path.exists()
+    original_content = _read_text_safe(path) if overwrite else None
 
     # Check if folder exists
     missing_parent_created = False
@@ -155,7 +169,7 @@ def execute_save_impl(
         missing_parent_created = True
 
     # Save the file
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
     # Trigger post-save hooks (file.save.post)
@@ -203,12 +217,24 @@ def execute_save_impl(
 
 
 def execute_append_impl(
-    content: str, path: Path | None, confirm: ConfirmFunc
+    content: str, path: Path | None
 ) -> Generator[Message, None, None]:
     """Actual append implementation."""
     assert path
     path_display = path
-    path = path.expanduser()
+    path = path.expanduser().resolve()
+
+    # Path traversal protection: validate relative paths stay within cwd
+    # (matches the same check in execute_save_impl)
+    if not path_display.is_absolute():
+        cwd = Path.cwd().resolve()
+        try:
+            path.relative_to(cwd)
+        except ValueError as err:
+            raise ValueError(
+                f"Path traversal detected: {path_display} resolves to {path} "
+                f"which is outside current directory {cwd}"
+            ) from err
 
     # Check if folder exists first
     if not path.parent.exists():
@@ -234,11 +260,11 @@ def execute_append_impl(
         content += "\n"
 
     # Add newline before content if existing file doesn't end with one
-    before = path.read_text()
+    before = _read_text_safe(path) or ""
     if before and not before.endswith("\n"):
         content = "\n" + content
 
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(content)
     yield Message("system", f"Appended to {path_display}")
 
@@ -247,7 +273,6 @@ def _validate_and_execute(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
     operation: Literal["save", "append"],
 ) -> Generator[Message, None, None]:
     """Common validation and execution logic for save and append operations."""
@@ -283,7 +308,7 @@ def _validate_and_execute(
         yield Message("system", "No path provided")
         return
 
-    preview_lang = "diff" if path.exists() else None
+    preview_lang = _get_preview_lang(path)
     confirm_msg = f"Save to {path}?" if operation == "save" else f"Append to {path}?"
     execute_fn = execute_save_impl if operation == "save" else execute_append_impl
     preview_fn = preview_save if operation == "save" else preview_append
@@ -292,7 +317,6 @@ def _validate_and_execute(
         code,
         args,
         kwargs,
-        confirm,
         execute_fn=execute_fn,
         get_path_fn=get_path,
         preview_fn=preview_fn,
@@ -306,20 +330,18 @@ def execute_save(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Save code to a file."""
-    yield from _validate_and_execute(code, args, kwargs, confirm, "save")
+    yield from _validate_and_execute(code, args, kwargs, "save")
 
 
 def execute_append(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Append code to a file."""
-    yield from _validate_and_execute(code, args, kwargs, confirm, "append")
+    yield from _validate_and_execute(code, args, kwargs, "append")
 
 
 tool_save = ToolSpec(

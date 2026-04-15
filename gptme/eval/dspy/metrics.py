@@ -58,13 +58,13 @@ class TrajectoryAnalyzer:
     def _analyze_tool_usage(self) -> dict[str, Any]:
         """Simplified tool usage analysis."""
         if self._messages:
-            tool_calls = []
-            for message in self._messages:
-                if message.role == "assistant" and message.content:
-                    codeblocks = Codeblock.iter_from_markdown(message.content)
-                    for cb in codeblocks:
-                        if tool := get_tool_for_langtag(cb.lang):
-                            tool_calls.append(tool.name)
+            tool_calls = [
+                tool.name
+                for message in self._messages
+                if message.role == "assistant" and message.content
+                for cb in Codeblock.iter_from_markdown(message.content)
+                if (tool := get_tool_for_langtag(cb.lang))
+            ]
 
             return {
                 "tool_calls": len(tool_calls),
@@ -184,10 +184,10 @@ def create_trajectory_feedback_metric(
 
         # Generate concise feedback
         feedback = f"""=== TRAJECTORY ANALYSIS ===
-Tool Usage: {analysis['tool_usage']['effectiveness']} ({analysis['tool_usage']['tool_calls']} calls)
-Reasoning: {analysis['reasoning']['quality']} (avg {analysis['reasoning']['avg_length']:.0f} chars)
-Error Handling: {analysis['error_handling']['effectiveness']} ({analysis['error_handling']['recoveries']}/{analysis['error_handling']['errors']} recovered)
-Task Completion: {analysis['task_completion']['success_rate']:.1%} success rate
+Tool Usage: {analysis["tool_usage"]["effectiveness"]} ({analysis["tool_usage"]["tool_calls"]} calls)
+Reasoning: {analysis["reasoning"]["quality"]} (avg {analysis["reasoning"]["avg_length"]:.0f} chars)
+Error Handling: {analysis["error_handling"]["effectiveness"]} ({analysis["error_handling"]["recoveries"]}/{analysis["error_handling"]["errors"]} recovered)
+Task Completion: {analysis["task_completion"]["success_rate"]:.1%} success rate
 
 === RECOMMENDATIONS ==="""
 
@@ -237,7 +237,7 @@ def create_task_success_metric(
         if not hasattr(pred, "eval_result") or not pred.eval_result:
             return 0.0
 
-        result: EvalResult = pred.eval_result  # type: ignore
+        result: EvalResult = pred.eval_result
 
         # Calculate success rate based on passed expectations
         total_expectations = len(result.results)
@@ -274,12 +274,13 @@ def create_tool_usage_metric() -> Callable[[Any, Any, Any | None], float]:
         - Whether tools were used efficiently
         - Whether tool usage followed best practices
         """
-        # Get messages from pred (added by GptmeModule) - must be present
-        messages: list[Message] = pred.messages  # type: ignore
+        # Get messages from pred (added by GptmeModule)
+        messages: list[Message] = getattr(pred, "messages", None) or []
         if not messages:
-            raise ValueError(
+            logger.warning(
                 "No messages available for tool usage analysis - evaluation may have failed"
             )
+            return 0.0
 
         # Count tool calls
         tool_calls = []

@@ -140,7 +140,7 @@ def process_image_file(
 
     logger = logging.getLogger(__name__)
 
-    ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif"]
+    ALLOWED_FILE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"]
 
     f = Path(file_path)
     if expand_user:
@@ -170,7 +170,7 @@ def process_image_file(
     try:
         data_bytes = f.read_bytes()
     except Exception as e:
-        logger.error("Error reading file %s: %s", file_path, str(e))
+        logger.error("Error reading file %s: %s", file_path, e)
         content_parts.append(
             {
                 "type": "text",

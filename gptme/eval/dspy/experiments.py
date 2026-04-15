@@ -6,7 +6,7 @@ Refactored to use composition and single responsibility principle.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +37,9 @@ class ExperimentReporter:
         return "\n\n".join(filter(None, sections))
 
     def _header_section(self) -> str:
-        return f"""# Prompt Optimization Report: {self.data['experiment_name']}
-**Model:** {self.data['model']}
-**Timestamp:** {self.data['timestamp']}"""
+        return f"""# Prompt Optimization Report: {self.data["experiment_name"]}
+**Model:** {self.data["model"]}
+**Timestamp:** {self.data["timestamp"]}"""
 
     def _baseline_section(self) -> str:
         if "baseline" not in self.data:
@@ -47,9 +47,9 @@ class ExperimentReporter:
 
         baseline = self.data["baseline"]
         return f"""## Baseline Performance
-- Average Score: {baseline.get('average_score', 'N/A')}
-- Task Success Rate: {baseline.get('task_success_rate', 'N/A')}
-- Tool Usage Score: {baseline.get('tool_usage_score', 'N/A')}"""
+- Average Score: {baseline.get("average_score", "N/A")}
+- Task Success Rate: {baseline.get("task_success_rate", "N/A")}
+- Tool Usage Score: {baseline.get("tool_usage_score", "N/A")}"""
 
     def _optimizations_section(self) -> str:
         if "optimizations" not in self.data:
@@ -151,7 +151,7 @@ class ExperimentRunner:
         random.seed(42)  # Consistent fake results
 
         results = {}
-        for name in prompts.keys():
+        for name in prompts:
             # Slightly vary scores to simulate realistic differences
             base_score = 0.75 + hash(name) % 100 / 1000  # Deterministic but varied
             results[name] = {
@@ -198,7 +198,7 @@ class ExperimentRunner:
             "tool_usage_score": baseline_results["tool_usage_score"],
             "judge_score": baseline_results["judge_score"],
             "num_examples": baseline_results["num_examples"],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "detailed_results": baseline_results,
         }
 
@@ -228,14 +228,13 @@ class ExperimentRunner:
                 if key in fake_results:
                     fake_results[key] = min(0.95, fake_results[key] + 0.05)
             return fake_optimized_prompt, fake_results
-        else:
-            optimizer = PromptOptimizer(model=self.model, **optimizer_config)
-            return optimizer.optimize_prompt(
-                base_prompt=base_prompt,
-                eval_specs=eval_specs,
-                train_size=train_size,
-                val_size=val_size,
-            )
+        optimizer = PromptOptimizer(model=self.model, **optimizer_config)
+        return optimizer.optimize_prompt(
+            base_prompt=base_prompt,
+            eval_specs=eval_specs,
+            train_size=train_size,
+            val_size=val_size,
+        )
 
     def compare_prompts(
         self,
@@ -247,11 +246,10 @@ class ExperimentRunner:
         if self.dry_run:
             logger.info("🧪 DRY RUN: Using fake comparison results")
             return self._generate_fake_comparison(prompts, num_examples)
-        else:
-            optimizer = PromptOptimizer(model=self.model)
-            return optimizer.compare_prompts(
-                prompts=prompts, eval_specs=eval_specs, num_examples=num_examples
-            )
+        optimizer = PromptOptimizer(model=self.model)
+        return optimizer.compare_prompts(
+            prompts=prompts, eval_specs=eval_specs, num_examples=num_examples
+        )
 
 
 class OptimizationExperiment:
@@ -268,7 +266,7 @@ class OptimizationExperiment:
         self.results: dict[str, Any] = {
             "experiment_name": name,
             "model": model,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         }
 
     def run_baseline_evaluation(
@@ -309,7 +307,7 @@ class OptimizationExperiment:
             "base_prompt": base_prompt,
             "optimized_prompt": optimized_prompt,
             "results": optimization_results,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         }
 
         if "optimizations" not in self.results:
@@ -353,7 +351,7 @@ class OptimizationExperiment:
 
         self.results["comparisons"] = {
             "results": comparison_results,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "num_examples": num_examples,
         }
 

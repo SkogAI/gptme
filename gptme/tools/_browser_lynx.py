@@ -2,9 +2,13 @@
 Browser tool by calling lynx --dump
 """
 
+import logging
 import os
 import subprocess
+import tempfile
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_url_scheme(url: str) -> None:
@@ -27,45 +31,54 @@ def read_url(url: str, cookies: dict | None = None) -> str:
     _validate_url_scheme(url)
 
     env = os.environ.copy()
-    # TODO: create and set LYNX_CFG to use custom lynx config file (needed to save cookies, which I need to debug how cookies should be read)
-    # env["LYNX_CFG"] = str(Path("~/.config/lynx/lynx.cfg").expanduser())
+    cmd = ["lynx", "--dump", url, "--display_charset=utf-8"]
+
+    cookie_file = None
     if cookies:
-        # save them to file to be read by lynx
-        pass
-    #     with open(Path("~/.lynx_cookies").expanduser(), "w") as f:
-    #         for k, v in cookies.items():
-    #             f.write(f"{k}\t{v}\n")
-    p = subprocess.run(
-        ["lynx", "--dump", url, "--display_charset=utf-8"],
-        env=env,
-        check=True,
-        capture_output=True,
-    )
-    # should be utf-8, but we can't be sure
-    return p.stdout.decode("utf-8", errors="replace")
+        # Create Netscape-format cookie file for lynx
+        parsed = urlparse(url)
+        domain = parsed.hostname or ""
+        fd, cookie_file = tempfile.mkstemp(suffix=".txt", prefix="lynx_cookies_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                for name, value in cookies.items():
+                    # Format: domain, tail-match, path, secure, expiry, name, value
+                    f.write(f".{domain}\tTRUE\t/\tFALSE\t0\t{name}\t{value}\n")
+        except Exception:
+            os.unlink(cookie_file)
+            cookie_file = None
+            raise
+        cmd.extend([f"-cookie_file={cookie_file}", "-accept_all_cookies"])
+
+    try:
+        p = subprocess.run(
+            cmd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+        return p.stdout
+    finally:
+        if cookie_file and os.path.exists(cookie_file):
+            os.unlink(cookie_file)
 
 
 def search(query: str, engine: str = "duckduckgo") -> str:
     if engine == "google":
-        # TODO: we need to figure out a way to remove the consent banner to access google search results
-        #       otherwise google is not usable
+        # Use SOCS cookie (newer Google consent format) to bypass GDPR banner,
+        # and gl=us to avoid region-specific consent redirects.
         return read_url(
-            f"https://www.google.com/search?q={query}&hl=en",
-            cookies={"CONSENT+": "YES+42"},
+            f"https://www.google.com/search?q={query}&hl=en&gl=us",
+            cookies={
+                "SOCS": "CAISHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LyaBg",
+                "CONSENT": "PENDING+987",
+            },
         )
-    elif engine == "duckduckgo":
+    if engine == "duckduckgo":
         return read_url(f"https://lite.duckduckgo.com/lite/?q={query}")
     raise ValueError(f"Unknown search engine: {engine}")
-
-
-def test_read_url():
-    content = read_url("https://gptme.org/")
-    assert "Getting Started" in content
-    content = read_url("https://github.com/gptme/gptme/issues/205")
-    assert "lynx-backed browser tool" in content
-
-
-def test_search():
-    # result = search("Python", "google")
-    result = search("Erik Bjäreholt", "duckduckgo")
-    assert "erik.bjareholt.com" in result

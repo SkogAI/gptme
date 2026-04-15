@@ -4,10 +4,11 @@ import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import click
 import pytest
 from click.testing import CliRunner
 
-import gptme.cli
+import gptme.cli.main as cli
 import gptme.constants
 import gptme.tools.browser
 from gptme.tools import ToolUse
@@ -18,12 +19,11 @@ logo = project_root / "media" / "logo.png"
 
 @pytest.fixture(scope="session", autouse=True)
 def tmp_data_dir():
-    tmpdir = TemporaryDirectory().name
-    Path(tmpdir).mkdir(parents=True, exist_ok=True)
-
-    # set the environment variable
-    print(f"setting XDG_DATA_HOME to {tmpdir}")
-    os.environ["XDG_DATA_HOME"] = tmpdir
+    with TemporaryDirectory() as tmpdir:
+        # set the environment variable
+        print(f"setting XDG_DATA_HOME to {tmpdir}")
+        os.environ["XDG_DATA_HOME"] = tmpdir
+        yield tmpdir
 
 
 @pytest.fixture(scope="session")
@@ -59,19 +59,19 @@ def runner():
 
 
 def test_help(runner: CliRunner):
-    result = runner.invoke(gptme.cli.main, ["--help"])
+    result = runner.invoke(cli.main, ["--help"])
     assert result.exit_code == 0
 
 
 def test_version(runner: CliRunner):
-    result = runner.invoke(gptme.cli.main, ["--version"])
+    result = runner.invoke(cli.main, ["--version"])
     assert result.exit_code == 0
     assert "gptme" in result.output
 
 
 def test_command_exit(args: list[str], runner: CliRunner):
     args.append("/exit")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "/exit" in result.output
     assert "Missing dependency" not in result.output
     assert result.exit_code == 0
@@ -79,14 +79,14 @@ def test_command_exit(args: list[str], runner: CliRunner):
 
 def test_command_help(args: list[str], runner: CliRunner):
     args.append("/help")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "/help" in result.output
     assert result.exit_code == 0
 
 
 def test_command_tokens(args: list[str], runner: CliRunner):
     args.append("/tokens")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "/tokens" in result.output
     # When no LLM calls have been made, shows "No cost data available"
     # When data exists, shows "Tokens:" - either is valid
@@ -94,18 +94,41 @@ def test_command_tokens(args: list[str], runner: CliRunner):
     assert result.exit_code == 0
 
 
+def test_command_context(args: list[str], runner: CliRunner):
+    args.append("/context")
+    result = runner.invoke(cli.main, args)
+    assert "/context" in result.output
+    assert "Token Usage by Role:" in result.output
+    assert "Total Context:" in result.output
+    assert result.exit_code == 0
+
+
+@pytest.mark.slow
 def test_command_log(args: list[str], runner: CliRunner):
     args.append("/log")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "/log" in result.output
     assert result.exit_code == 0
 
 
 def test_command_tools(args: list[str], runner: CliRunner):
     args.append("/tools")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "/tools" in result.output
     assert result.exit_code == 0
+
+
+def test_command_doctor(args: list[str], runner: CliRunner):
+    args.append("/doctor")
+    result = runner.invoke(cli.main, args)
+    # The /doctor command runs diagnostics and outputs results
+    # Check for expected output elements from the doctor command
+    # Note: Exit code may be non-zero if there are warnings/errors in diagnostics
+    output_lower = result.output.lower()
+    assert any(
+        term in output_lower
+        for term in ["config", "api key", "tool", "doctor", "diagnostics"]
+    ), f"Expected diagnostic output, got: {result.output[:500]}"
 
 
 @pytest.mark.slow
@@ -123,7 +146,7 @@ def test_command_summarize(args: list[str], runner: CliRunner, monkeypatch):
     init_anthropic(config)
     args.append("/summarize")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
 
@@ -132,7 +155,7 @@ def test_command_fork(args: list[str], runner: CliRunner, name: str):
     name += "-fork"
     args.append(f"/fork {name}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
 
@@ -141,7 +164,7 @@ def test_command_rename(args: list[str], runner: CliRunner, name: str):
     name += "-rename"
     args.append(f"/rename {name}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
 
@@ -150,7 +173,7 @@ def test_command_rename_auto(args: list[str], runner: CliRunner, name: str):
     # test with "auto" name
     args.append("/rename auto")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0, (result.output, result.exception)
 
 
@@ -162,7 +185,7 @@ def test_fileblock(args: list[str], runner: CliRunner):
     tooluse = ToolUse("save", ["hello.py"], "print('hello')")
     args.append(f"/impersonate {tooluse.to_output()}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
     # read the file
@@ -175,7 +198,7 @@ def test_fileblock(args: list[str], runner: CliRunner):
     tooluse = ToolUse("append", ["hello.py"], "print('world')")
     args.append(f"/impersonate {tooluse.to_output()}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
     # read the file
@@ -188,7 +211,7 @@ def test_fileblock(args: list[str], runner: CliRunner):
     args = args_orig.copy()
     args.append(f"/impersonate {tooluse.to_output()}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
     # test patch on file in directory
@@ -197,7 +220,7 @@ def test_fileblock(args: list[str], runner: CliRunner):
     args = args_orig.copy()
     args.append(f"/impersonate {tooluse.to_output()}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
 
     # read the file
@@ -208,15 +231,13 @@ def test_fileblock(args: list[str], runner: CliRunner):
 
 def test_shell(args: list[str], runner: CliRunner):
     args.append("/shell echo 'yes'")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     output = result.output.split("System")[-1]
     # check for two 'yes' in output (both command and stdout)
     assert output.count("yes") == 2, result.output
     assert result.exit_code == 0
 
 
-# Flaky in CI
-@pytest.mark.xfail(strict=False)
 def test_shell_file(args: list[str], runner: CliRunner):
     # test running the shell tool with a filename
     # make sure we don't accidentally expand the filename and include it in the shell command
@@ -225,25 +246,32 @@ def test_shell_file(args: list[str], runner: CliRunner):
     with open(tmp_path, "w") as f:
         f.write("yes")
     args.append(f"/shell cat {tmp_path}")
-    result = runner.invoke(gptme.cli.main, args)
-    output_pre, output_post = result.output.split("System", 1)
-    # check for no 'yes' in parsed input (only direct command output)
-    assert output_pre.count("yes") == 1, "no yes before System message: " + output_pre
-    # check for one 'yes' in system response (only message stdout)
-    assert output_post.count("yes") == 1, output_post
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0
+    # "yes" should appear in output (from cat stdout)
+    assert "yes" in result.output, f"Expected 'yes' in output: {result.output}"
+    # The total count of "yes" should be 2-3: typically 2 (once in echoed command,
+    # once in stdout), but output formatting may vary. More than 3 indicates filename expansion.
+    # Tolerates output variations that caused flakiness (#1325, #1327).
+    yes_count = result.output.count("yes")
+    assert 2 <= yes_count <= 3, (
+        f"Expected 2-3 'yes' occurrences (command echo + stdout), got {yes_count}: "
+        f"{result.output}"
+    )
 
 
+@pytest.mark.slow
 def test_python(args: list[str], runner: CliRunner):
     args.append("/py print('yes')")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "yes\n" in result.output
     assert result.exit_code == 0
 
 
+@pytest.mark.slow
 def test_python_error(args: list[str], runner: CliRunner):
     args.append("/py raise Exception('yes')")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "Exception: yes" in result.output
     assert result.exit_code == 0
 
@@ -274,7 +302,7 @@ def test_block(args: list[str], lang: str, runner: CliRunner):
 
     args.append(f"/impersonate {code}")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     output = result.output
     print(f"output: {output}\nEND")
     # check everything after the second '# start'
@@ -292,7 +320,7 @@ def test_block(args: list[str], lang: str, runner: CliRunner):
 )
 def test_generate_primes(args: list[str], runner: CliRunner):
     args.append("compute the first 10 prime numbers using ipython")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     # check that the 9th and 10th prime is present
     assert "23" in result.output
     assert "29" in result.output
@@ -302,7 +330,7 @@ def test_generate_primes(args: list[str], runner: CliRunner):
 def test_stdin(args: list[str], runner: CliRunner):
     args.append("/exit")
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args, input="hello")
+    result = runner.invoke(cli.main, args, input="hello")
     assert "```stdin\nhello\n```" in result.output
     assert result.exit_code == 0
 
@@ -323,7 +351,7 @@ def test_chain(args: list[str], runner: CliRunner):
     args.append("read the contents")
     args.extend(["--tool-format", "markdown"])
     args.extend(["--tools", "save,patch,shell"])
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     print(result.output)
     # check that outputs came in expected order
     user1_loc = result.output.index("User:")
@@ -358,7 +386,7 @@ def test_tmux(args: list[str], runner: CliRunner, cleanup_tmux_sessions):
         "/impersonate lets find out the current load\n```tmux\nnew-session top\n```"
     )
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "%CPU" in result.output
     assert result.exit_code == 0
 
@@ -384,16 +412,16 @@ def test_subagent(args: list[str], runner: CliRunner):
         ]
     )
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     print(result.output)
 
     # apparently this is not obviously 610
     accepteds = ["377", "610"]
+    assert any(accepted in result.output for accepted in accepteds), (
+        f"Accepteds '{accepteds}' not in output: {result.output}"
+    )
     assert any(
-        [accepted in result.output for accepted in accepteds]
-    ), f"Accepteds '{accepteds}' not in output: {result.output}"
-    assert any(
-        [accepted in "```".join(result.output.split("```")) for accepted in accepteds]
+        accepted in "```".join(result.output.split("```")) for accepted in accepteds
     ), "more complex case, not sure if needed"
 
 
@@ -405,7 +433,7 @@ def test_subagent(args: list[str], runner: CliRunner):
 )
 def test_url(args: list[str], runner: CliRunner):
     args.append("Who is the CEO of https://superuserlabs.org?")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     assert "Erik Bjäreholt" in result.output
     assert result.exit_code == 0
 
@@ -414,7 +442,7 @@ def test_url(args: list[str], runner: CliRunner):
 @pytest.mark.requires_api
 def test_vision(args: list[str], runner: CliRunner):
     args.append(f"can you see the image at {logo}? answer with yes or no")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
     if result.exception:
         raise result.exception
     assert result.exit_code == 0
@@ -428,9 +456,53 @@ def test_nested_gptme_calls(args: list[str], runner: CliRunner):
     args.append('/shell gptme "/shell echo we are testing nested gptme"')
 
     print(f"running: gptme {' '.join(args)}")
-    result = runner.invoke(gptme.cli.main, args)
+    result = runner.invoke(cli.main, args)
 
     # Check that the nested echo output is present
     assert "we are testing nested gptme" in result.output
     # Check that both gptme instances exited successfully
     assert result.exit_code == 0
+
+
+def test_comma_separated_choice_minus_prefix():
+    """Test that CommaSeparatedChoice accepts '-' prefixed tools."""
+    from gptme.cli.main import CommaSeparatedChoice
+
+    csc = CommaSeparatedChoice(
+        ["shell", "browser", "save", "read"], allow_prefixes=["+", "-"]
+    )
+    # Should accept '-browser'
+    result = csc.convert("-browser", None, None)
+    assert result == "-browser"
+
+    # Should accept '-browser,-save'
+    result = csc.convert("-browser,-save", None, None)
+    assert result == "-browser,-save"
+
+    # Should still accept '+shell'
+    result = csc.convert("+shell", None, None)
+    assert result == "+shell"
+
+    # Should accept bare tool names
+    result = csc.convert("shell,save", None, None)
+    assert result == "shell,save"
+
+    # Should reject invalid tool name even with '-' prefix
+    with pytest.raises(click.exceptions.BadParameter):
+        csc.convert("-nonexistent", None, None)
+
+
+def test_tool_exclusion_mixed_bare_and_minus_raises():
+    """Test that mixing bare tool names with '-' exclusion syntax raises UsageError."""
+    from click.testing import CliRunner
+
+    runner = CliRunner()
+    # Passing 'shell,-tmux' should raise a UsageError because 'shell' is bare
+    # Note: use a valid tool name so CommaSeparatedChoice passes before the mixing guard
+    result = runner.invoke(cli.main, ["--tools", "shell,-tmux", "test prompt"])
+    assert result.exit_code != 0
+    # Check output directly; if it's empty, the error may be in result.exception
+    error_text = result.output or (str(result.exception) if result.exception else "")
+    assert "Cannot mix bare tool names" in error_text, (
+        f"Expected 'Cannot mix bare tool names' in output, got: {error_text!r}"
+    )

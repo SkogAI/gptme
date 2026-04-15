@@ -1,6 +1,7 @@
 import errno
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -14,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import get_config
+from ..constants import CONTENT_SIZE_INFO_THRESHOLD, CONTENT_SIZE_WARN_THRESHOLD
 from ..message import Message
 from ..tools import has_tool
-from ..tools.browser import read_url
 from .gh import (
     get_github_issue_content,
     get_github_pr_content,
@@ -26,6 +27,119 @@ from .gh import (
 from .uri import URI
 
 logger = logging.getLogger(__name__)
+
+
+def _is_interactive_mode() -> bool:
+    """Check if we're in interactive CLI mode.
+
+    Returns True if the cli_confirm hook is registered, indicating
+    interactive mode with confirmation enabled.
+    """
+    try:
+        from ..hooks import HookType, get_hooks
+
+        hooks = get_hooks(HookType.TOOL_CONFIRM)
+        return any(h.name == "cli_confirm" and h.enabled for h in hooks)
+    except (ImportError, AttributeError):
+        return False
+
+
+def _confirm_urls(urls: list[str]) -> list[str]:
+    """Prompt user to confirm which URLs to read.
+
+    Args:
+        urls: List of URLs found in the message
+
+    Returns:
+        List of URLs the user confirmed to read
+    """
+    from rich import print as rprint
+
+    from .prompt import prompt_alert
+
+    if not urls:
+        return []
+
+    if len(urls) == 1:
+        rprint(f"[yellow]Found URL in message:[/yellow] {urls[0]}")
+    else:
+        rprint(f"[yellow]Found {len(urls)} URLs in message:[/yellow]")
+        for i, url in enumerate(urls, 1):
+            rprint(f"  {i}. {url}")
+
+    try:
+        response = prompt_alert("Read URL(s)? [Y/n/select numbers]")
+    except (EOFError, KeyboardInterrupt):
+        return []
+
+    if response in ("n", "no"):
+        logger.info("User declined to read URLs")
+        return []
+
+    if response in ("", "y", "yes"):
+        return urls
+
+    # Parse number selection (e.g., "1,3" or "1 3" or "1-3")
+    selected: list[str] = []
+    for part in re.split(r"[,\s]+", response):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start, end = map(int, part.split("-", 1))
+                selected.extend(
+                    urls[i - 1] for i in range(start, end + 1) if 1 <= i <= len(urls)
+                )
+            except ValueError:
+                continue
+        else:
+            try:
+                idx = int(part)
+                if 1 <= idx <= len(urls):
+                    selected.append(urls[idx - 1])
+            except ValueError:
+                continue
+
+    if not selected:
+        # If parsing failed or no valid selection, treat empty as abort
+        logger.info("No valid URL selection, skipping all")
+        return []
+
+    return selected
+
+
+def _check_content_size(content: str, source: str) -> str:
+    """Check content size and log/truncate if necessary.
+
+    Args:
+        content: The content to check
+        source: Description of the source (URL or file path) for logging
+
+    Returns:
+        The content, potentially truncated
+    """
+    size = len(content)
+
+    if size > CONTENT_SIZE_WARN_THRESHOLD:
+        # Truncate with warning
+        logger.warning(
+            f"Content from {source} is very large ({size:,} chars), "
+            f"truncating to {CONTENT_SIZE_WARN_THRESHOLD:,} chars"
+        )
+        truncation_note = (
+            f"\n\n[Content truncated from {size:,} to "
+            f"{CONTENT_SIZE_WARN_THRESHOLD:,} characters]"
+        )
+        return (
+            content[: CONTENT_SIZE_WARN_THRESHOLD - len(truncation_note)]
+            + truncation_note
+        )
+    if size > CONTENT_SIZE_INFO_THRESHOLD:
+        # Log info for large-ish content
+        logger.info(f"Content from {source} is large: {size:,} chars")
+
+    return content
 
 
 def use_fresh_context() -> bool:
@@ -111,6 +225,12 @@ def embed_attached_file_content(
 ) -> Message:
     """Embed attached file contents inline in a message.
 
+    This is the canonical path for reading text file attachments into message
+    content. It runs in prepare_messages() before messages reach LLM providers.
+    Text files are embedded as codeblocks and removed from msg.files.
+    Non-text files (images, binaries) remain in msg.files for provider-specific
+    handling in _process_file().
+
     If the message has file_hashes, attempts to read from content-addressed
     storage first (preserving the file version at message creation time).
     Falls back to the original file path if stored content is not available.
@@ -166,9 +286,10 @@ def embed_attached_file_content(
                     files_text[f] = md_codeblock(f, "<file was modified after message>")
     # Get list of display paths for the return value
     display_files = [f for _, f in files_with_originals]
+    file_content = "\n\n".join(files_text.values())
     return replace(
         msg,
-        content=msg.content + "\n\n".join(files_text.values()),
+        content=msg.content + ("\n\n" + file_content if file_content else ""),
         files=[f for f in display_files if f not in files_text],
     )
 
@@ -182,10 +303,10 @@ def git_branch() -> str | None:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=10,
             )
-            if branch.returncode == 0:
-                return branch.stdout.strip()
-        except subprocess.CalledProcessError:
+            return branch.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             logger.error("Failed to get git branch")
             return None
     return None
@@ -202,14 +323,16 @@ def gh_pr_status() -> str | None:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=30,
             )
             p_diff = subprocess.run(
                 ["gh", "pr", "diff"],
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=60,
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to get PR info: {e}")
             return None
 
@@ -237,18 +360,33 @@ def git_status() -> str | None:
     """Get git status if in a repository."""
     try:
         git_status = subprocess.run(
-            ["git", "status", "-vv"], capture_output=True, text=True, check=True
+            ["git", "status"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
         )
-        if git_status.returncode == 0:
-            logger.debug("Including git status in context")
-            return md_codeblock("git status -vv", git_status.stdout)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.debug("Including git status in context")
+        output = git_status.stdout
+        if len(output) > 10000:
+            output = output[:10000] + "\n... (truncated)"
+        return md_codeblock("git status", output)
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         logger.debug("Not in a git repository or git not available")
     return None
 
 
-def get_mentioned_files(msgs: list[Message], workspace: Path | None) -> list[Path]:
-    """Count files mentioned in messages."""
+def get_mentioned_files(msgs: list[Message], workspace: Path | None) -> dict[Path, int]:
+    """Get files mentioned in messages with their mention counts.
+
+    Returns:
+        Dict mapping file paths to mention counts,
+        ordered by (mention_count, mtime) descending.
+    """
     workspace_abs = workspace.resolve() if workspace else None
     files: Counter[Path] = Counter()
     for msg in msgs:
@@ -274,7 +412,7 @@ def get_mentioned_files(msgs: list[Message], workspace: Path | None) -> list[Pat
         except FileNotFoundError:
             return (files[f], 0)
 
-    return sorted(files.keys(), key=file_score, reverse=True)
+    return {f: files[f] for f in sorted(files.keys(), key=file_score, reverse=True)}
 
 
 # gather_fresh_context removal: Logic moved to gptme.hooks.context
@@ -288,9 +426,10 @@ def get_changed_files() -> list[Path]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=10,
         )
         return [Path(f) for f in p.stdout.splitlines()]
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         logger.debug(f"Error getting git diff files: {e}")
         return []
 
@@ -327,12 +466,13 @@ def include_paths(msg: Message, workspace: Path | None = None) -> Message:
        - includes all files in msg.files
        - contents are applied right before sending to LLM (only paths stored in the log)
 
+    In interactive mode, asks for confirmation before reading URLs to prevent
+    accidental context bloat from pasted logs containing URLs.
+
     Args:
         msg: Message to process
         workspace: If provided, paths will be stored relative to this directory
     """
-    # TODO: add support for directories?
-
     # Skip processing for non-user messages
     if msg.role != "user":
         return msg
@@ -345,26 +485,74 @@ def include_paths(msg: Message, workspace: Path | None = None) -> Message:
     if is_message_command(msg.content):
         return msg
 
+    # Collect all potential paths/URLs first
+    potential_paths = _find_potential_paths(msg.content)
+
+    # Separate URLs from file paths for confirmation
+    urls_found = []
+    file_paths = []
+    for word in potential_paths:
+        try:
+            p = urllib.parse.urlparse(word)
+            if p.scheme in ("http", "https") and p.netloc:
+                urls_found.append(word)
+            else:
+                file_paths.append(word)
+        except ValueError:
+            file_paths.append(word)
+
+    # In interactive mode, ask for confirmation before reading URLs
+    confirmed_urls: list[str] | None = None
+    if urls_found and _is_interactive_mode():
+        confirmed_urls = _confirm_urls(urls_found)
+        if not confirmed_urls:
+            logger.info(f"Skipping {len(urls_found)} URL(s) - not confirmed by user")
+    elif urls_found:
+        # Non-interactive mode: read all URLs
+        confirmed_urls = urls_found
+
     append_msg = ""
     files = []
 
-    # Find potential paths in message
-    for word in _find_potential_paths(msg.content):
-        logger.debug(f"potential path/url: {word=}")
+    # Process file paths
+    for word in file_paths:
+        logger.debug(f"potential path: {word=}")
         # If not using fresh context, include text file contents in the message
-        if not use_fresh_context() and (contents := _resource_to_codeblock(word)):
+        if not use_fresh_context() and (
+            contents := _resource_to_codeblock(word, confirmed_urls=None)
+        ):
             append_msg += "\n\n" + contents
         else:
-            # if we found an non-text file, include it in msg.files
+            # if we found a non-text file, include it in msg.files
             file = _parse_prompt_files(word)
             if file:
                 # Store path relative to workspace if provided
                 file = file.expanduser()
                 if workspace and not file.is_absolute():
-                    file = file.absolute().relative_to(workspace)
+                    try:
+                        file = file.absolute().relative_to(workspace)
+                    except ValueError:
+                        file = file.absolute()
+                logger.debug(f"auto-attaching file: {file}")
                 files.append(file)
 
+    # Process URLs (only confirmed ones in interactive mode)
+    for url in urls_found:
+        if confirmed_urls is not None and url not in confirmed_urls:
+            logger.debug(f"Skipping unconfirmed URL: {url}")
+            continue
+        logger.debug(f"potential url: {url=}")
+        if not use_fresh_context() and (
+            contents := _resource_to_codeblock(url, confirmed_urls=confirmed_urls)
+        ):
+            append_msg += "\n\n" + contents
+
     if files:
+        logger.debug(
+            "include_paths: attaching %d file(s) to message: %s",
+            len(files),
+            [str(f) for f in files],
+        )
         msg = msg.replace(files=msg.files + files)
 
     # append the message with the file contents
@@ -386,16 +574,19 @@ def _find_potential_paths(content: str) -> list[str]:
         List of potential paths/URLs found in the message
     """
     # Remove code blocks to avoid matching paths inside them
-    # TODO: also remove paths inside XML tags
     re_codeblock = r"````?[\s\S]*?\n````?"
-    assert re.match(
-        re_codeblock, md_codeblock("test", "test")
-    ), "Code block regex should match the md_codeblock format with quadruple backticks"
+    assert re.match(re_codeblock, md_codeblock("test", "test")), (
+        "Code block regex should match the md_codeblock format with quadruple backticks"
+    )
     assert re.match(
         re_codeblock, md_codeblock("test", "test").replace("````", "```")
     ), "Code block regex should match the md_codeblock format with triple backticks"
 
     content_no_codeblocks = re.sub(re_codeblock, "", content)
+
+    # Also remove paths inside XML tags (e.g. user pastes XML/tool output into prompt)
+    re_xml_tags = r"<([a-zA-Z_][a-zA-Z0-9_-]*)(?:\s[^>]*)?>[\s\S]*?</\1>"
+    content_no_xml = re.sub(re_xml_tags, "", content_no_codeblocks)
 
     # List current directory contents for relative path matching
     cwd_files = [f.name for f in Path.cwd().iterdir()]
@@ -403,28 +594,48 @@ def _find_potential_paths(content: str) -> list[str]:
     paths = []
 
     def is_path_like(word: str) -> bool:
-        """Helper to check if a word looks like a path"""
+        """Helper to check if a word looks like a path.
+
+        Supports the ``@`` prefix convention (e.g. ``@src/file.py``) used by
+        Claude Code and other AI tools to reference files and directories.
+        """
+        # Strip one leading @ for detection (actual stripping happens in caller)
+        w = word.removeprefix("@") if word.startswith("@") else word
+
+        def _is_path_like_bare(s: str) -> bool:
+            return (
+                # Absolute/home/relative paths
+                any(s.startswith(p) for p in ["/", "~/", "./"])
+                # URLs
+                or s.startswith("http")
+                # Contains slash (for backtick-wrapped paths)
+                or "/" in s
+                # Files in current directory or subdirectories
+                or any(s.split("/", 1)[0] == file for file in cwd_files)
+            )
+
         return (
-            # Absolute/home/relative paths
-            any(word.startswith(s) for s in ["/", "~/", "./"])
-            # URLs
-            or word.startswith("http")
-            # Contains slash (for backtick-wrapped paths)
-            or "/" in word
-            # Files in current directory or subdirectories
-            or any(word.split("/", 1)[0] == file for file in cwd_files)
+            # @-prefixed reference: stripped form must also look like a path
+            # (prevents @username social handles from matching)
+            (word.startswith("@") and _is_path_like_bare(w))
+            # Plain path reference
+            or _is_path_like_bare(w)
         )
 
+    def _strip_at_prefix(word: str) -> str:
+        """Strip leading @ from path references (e.g. @src/file.py -> src/file.py)."""
+        return word.removeprefix("@")
+
     # First find backtick-wrapped content
-    for match in re.finditer(r"`([^`]+)`", content_no_codeblocks):
+    for match in re.finditer(r"`([^`]+)`", content_no_xml):
         word = match.group(1).strip()
         word = word.rstrip("?").rstrip(".").rstrip(",").rstrip("!")
         if is_path_like(word):
-            paths.append(word)
+            paths.append(_strip_at_prefix(word))
 
     # Then find non-backtick-wrapped words
     # Remove backtick-wrapped content first to avoid double-processing
-    content_no_backticks = re.sub(r"`[^`]+`", "", content_no_codeblocks)
+    content_no_backticks = re.sub(r"`[^`]+`", "", content_no_xml)
     for word in re.split(r"\s+", content_no_backticks):
         word = word.strip()
         word = word.rstrip("?").rstrip(".").rstrip(",").rstrip("!")
@@ -432,31 +643,133 @@ def _find_potential_paths(content: str) -> list[str]:
             continue
 
         if is_path_like(word):
-            paths.append(word)
+            paths.append(_strip_at_prefix(word))
 
     return paths
 
 
-def _resource_to_codeblock(prompt: str) -> str | None:
+def _binary_file_metadata(path: Path, prompt: str) -> str | None:
+    """Return metadata about a binary file as a codeblock instead of silently ignoring it."""
+    try:
+        size = path.stat().st_size
+        mime, _ = mimetypes.guess_type(str(path))
+
+        lines = [f"Binary file: {path.name}"]
+        lines.append(f"Size: {_human_readable_size(size)}")
+        if mime:
+            lines.append(f"Type: {mime}")
+
+        # Try the `file` command for richer metadata
+        if shutil.which("file"):
+            try:
+                result = subprocess.run(
+                    ["file", "--brief", str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    lines.append(f"Details: {result.stdout.strip()}")
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        return md_codeblock(prompt, "\n".join(lines))
+    except OSError:
+        return None
+
+
+def _human_readable_size(size_bytes: int) -> str:
+    """Format byte size as human-readable string."""
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _dir_to_listing(path: Path, prompt: str, max_entries: int = 50) -> str:
+    """Generate a file listing for a directory, returned as a codeblock.
+
+    Uses ``git ls-files`` when inside a git repo (respects .gitignore),
+    falls back to ``Path.iterdir()`` otherwise.  Output is truncated to
+    *max_entries* to prevent context bloat.
+    """
+    entries: list[str] | None = None
+    try:
+        # Try git ls-files first (respects .gitignore, lists tracked + untracked)
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            entries = sorted(result.stdout.strip().splitlines())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    if entries is None:
+        # Fallback: list directory recursively.
+        # Only exclude .git/ internals to avoid noise; dotfiles like
+        # .pre-commit-config.yaml, .github/, .env etc. are legitimate project files.
+        try:
+            entries = sorted(
+                str(p.relative_to(path))
+                for p in path.rglob("*")
+                if p.is_file() and ".git" not in p.relative_to(path).parts
+            )
+        except PermissionError:
+            entries = []
+
+    total = len(entries)
+    if total == 0:
+        return md_codeblock(prompt, "(empty directory)")
+
+    truncated = entries[:max_entries]
+    listing = "\n".join(truncated)
+    if total > max_entries:
+        listing += f"\n... ({total - max_entries} more files)"
+
+    return md_codeblock(prompt, listing)
+
+
+def _resource_to_codeblock(
+    prompt: str, confirmed_urls: list[str] | None = None
+) -> str | None:
     """
     Takes a string that might be a path or URL,
     and if so, returns the contents of that file wrapped in a codeblock.
+
+    Args:
+        prompt: A string that might be a file path or URL
+        confirmed_urls: If provided, only these URLs will be read (skip others).
+                       If None, all URLs are read (for backward compatibility).
     """
 
     try:
         # check if prompt is a path, if so, replace it with the contents of that file
         f = Path(prompt).expanduser()
         if f.exists() and f.is_file():
-            return md_codeblock(prompt, f.read_text())
+            file_content = f.read_text()
+            file_content = _check_content_size(file_content, str(f))
+            return md_codeblock(prompt, file_content)
+        if f.exists() and f.is_dir():
+            return _dir_to_listing(f, prompt)
     except OSError as oserr:
         # some prompts are too long to be a path, so we can't read them
         if oserr.errno == errno.ENAMETOOLONG:
             return None
         raise
     except UnicodeDecodeError:
-        # some files are not text files (images, audio, PDFs, binaries, etc), so we can't read them
-        # TODO: but can we handle them better than just printing the path? maybe with metadata from `file`?
-        # logger.warning(f"Failed to read file {prompt}: not a text file")
+        # Binary file — return metadata instead of contents
+        # Skip visual formats (images, PDF) already handled via msg.files
+        f = Path(prompt).expanduser()
+        if f.suffix[1:].lower() not in ("png", "jpg", "jpeg", "gif", "webp", "pdf"):
+            return _binary_file_metadata(f, prompt)
         return None
 
     # check if any word in prompt is a path or URL,
@@ -467,6 +780,9 @@ def _resource_to_codeblock(prompt: str) -> str | None:
     for word in words:
         f = Path(word).expanduser()
         if f.exists() and f.is_file():
+            paths.append(word)
+            continue
+        if f.exists() and f.is_dir():
             paths.append(word)
             continue
         try:
@@ -484,10 +800,15 @@ def _resource_to_codeblock(prompt: str) -> str | None:
         if urls:
             logger.debug(f"{urls=}")
     for path in paths:
-        result += _resource_to_codeblock(path) or ""
+        result += _resource_to_codeblock(path, confirmed_urls) or ""
 
     for url in urls:
-        content = None
+        # Skip URLs that weren't confirmed (if confirmation list is provided)
+        if confirmed_urls is not None and url not in confirmed_urls:
+            logger.debug(f"Skipping unconfirmed URL: {url}")
+            continue
+
+        content: str | None = None
 
         # First try to handle GitHub issues/PRs with specialized tools
         github_info = parse_github_url(url)
@@ -502,6 +823,10 @@ def _resource_to_codeblock(prompt: str) -> str | None:
         # If GitHub handling failed or not a GitHub issue/PR, fall back to browser
         if not content and has_tool("browser"):
             try:
+                from ..tools.browser import (
+                    read_url,  # deferred to avoid circular import
+                )
+
                 # Transform GitHub blob URLs to raw URLs
                 transformed_url = transform_github_url(url)
                 if transformed_url != url:
@@ -513,6 +838,8 @@ def _resource_to_codeblock(prompt: str) -> str | None:
             logger.warning("Browser tool not available, skipping URL read")
 
         if content:
+            # Check content size and potentially truncate
+            content = _check_content_size(content, url)
             result += md_codeblock(url, content)
 
     return result
@@ -539,6 +866,6 @@ def _parse_prompt_files(prompt: str) -> Path | None:
             return None
     except OSError as oserr:  # pragma: no cover
         # some prompts are too long to be a path, so we can't read them
-        if oserr.errno != errno.ENAMETOOLONG:
+        if oserr.errno == errno.ENAMETOOLONG:
             return None
         raise

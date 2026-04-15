@@ -357,3 +357,120 @@ modified lines
         assert "Path traversal detected" in messages[0].content
     finally:
         os.chdir(original_cwd)
+
+
+def test_apply_rst_heading_underlines():
+    """Test that RST heading underlines (===================) don't trigger separator detection.
+
+    Regression test for https://github.com/gptme/gptme/issues/1201
+    """
+    content = """System Dependencies
+===================
+
+Some gptme features require additional dependencies.
+"""
+
+    codeblock = """
+<<<<<<< ORIGINAL
+Some gptme features require additional dependencies.
+=======
+Some gptme features require system packages.
+>>>>>>> UPDATED
+"""
+    result = apply(codeblock, content)
+    assert "system packages" in result
+    assert "===================" in result  # RST underline preserved
+
+
+def test_apply_rst_heading_in_updated_content():
+    """Test that adding RST headings in updated content works.
+
+    Regression test for https://github.com/gptme/gptme/issues/1201
+    """
+    content = """Some text here.
+"""
+
+    # Patch that adds an RST heading
+    codeblock = """
+<<<<<<< ORIGINAL
+Some text here.
+=======
+System Dependencies
+===================
+
+Some text here.
+>>>>>>> UPDATED
+"""
+    result = apply(codeblock, content)
+    assert "System Dependencies" in result
+    assert "===================" in result
+
+
+def test_apply_multiple_hunks_error_message():
+    """Test that multi-hunk failures show which hunk failed."""
+    from gptme.tools.patch import apply
+
+    original = """def foo():
+    pass
+
+def bar():
+    pass
+"""
+    # First hunk will succeed, second will fail
+    patch = """<<<<<<< ORIGINAL
+def foo():
+    pass
+=======
+def foo():
+    return 1
+>>>>>>> UPDATED
+<<<<<<< ORIGINAL
+def nonexistent():
+    pass
+=======
+def nonexistent():
+    return 2
+>>>>>>> UPDATED
+"""
+    try:
+        apply(patch, original)
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as e:
+        error_msg = str(e)
+        # Should indicate which hunk failed and how many succeeded
+        assert "2/2" in error_msg or "Hunk 2" in error_msg
+        assert (
+            "1 hunk" in error_msg.lower() or "applied successfully" in error_msg.lower()
+        )
+
+
+def test_execute_patch_size_warning(temp_file):
+    """Test that a warning fires when the patch is large (>1000 chars) and bigger than the result.
+
+    Regression test: old condition was `1000 < full_file_len < patch_len`, which missed the case
+    where the patch removes lots of content leaving a tiny result (<1000 chars). The fix checks
+    `1000 < patch_len > full_file_len` so that it's the PATCH size, not the result size, that
+    determines whether the warning fires.
+    """
+    # Build a large (>1000 char) patch that replaces many lines with a single short line
+    long_original = "\n".join(
+        f"line {i}: some content to make this patch big enough" for i in range(25)
+    )
+    patch = f"""<<<<<<< ORIGINAL
+{long_original}
+=======
+short
+>>>>>>> UPDATED"""
+
+    assert len(patch) > 1000, (
+        f"patch must be >1000 chars for test validity, got {len(patch)}"
+    )
+    result_len = len("short\n")
+    assert result_len < 1000, (
+        "result must be <1000 chars to exercise the fixed condition"
+    )
+
+    with temp_file(long_original) as f:
+        result = next(execute_patch(patch, [f], None)).content
+
+    assert "Note: The patch was big" in result

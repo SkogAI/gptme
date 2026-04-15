@@ -1,47 +1,32 @@
-"""
-V2 API sessions and real-time conversation management.
+"""V2 API session route handlers.
 
-Handles session management, step execution, tool confirmation, and event streaming
-for real-time conversation interactions.
+Flask Blueprint with endpoints for real-time conversation interaction:
+event streaming, step execution, tool confirmation, elicitation, and interrupt.
+
+Data models live in session_models.py; execution logic in session_step.py.
 """
 
 import dataclasses
 import logging
-import os
-import threading
+import time
 import uuid
-from collections import defaultdict
-from collections.abc import Generator, Iterable
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from enum import Enum
-from pathlib import Path
+from collections.abc import Generator
+from datetime import datetime, timezone
 
 import flask
 from flask import request
 
-from gptme.config import ChatConfig, Config
-
+from ..config import ChatConfig, Config
 from ..dirs import get_logs_dir
-from ..executor import prepare_execution_environment
-from ..hooks import HookType, trigger_hook
-from ..llm import _chat_complete, _stream
 from ..llm.models import get_default_model
-from ..logmanager import LogManager, prepare_messages
+from ..logmanager import LogManager
 from ..message import Message
-from ..session import BaseSession
-from ..telemetry import trace_function
-from ..tools import ToolUse, get_tools
-from .api_v2_common import (
-    ConfigChangedEvent,
-    ErrorEvent,
-    EventType,
-    msg2dict,
-)
+from .api_v2_common import _validate_branch, _validate_conversation_id
 from .auth import require_auth
 from .constants import DEFAULT_FALLBACK_MODEL
 from .openapi_docs import (
     CONVERSATION_ID_PARAM,
+    ElicitRespondRequest,
     ErrorResponse,
     InterruptRequest,
     StatusResponse,
@@ -50,551 +35,61 @@ from .openapi_docs import (
     api_doc,
 )
 
+# Re-export public symbols so existing imports (e.g. ``from .api_v2_sessions
+# import SessionManager``) continue to work without changes.
+from .session_models import (
+    ConversationSession,
+    SessionManager,
+    ToolExecution,
+    ToolStatus,
+)
+from .session_step import (  # noqa: F401
+    _append_and_notify,
+    _get_use_acp_default,
+    _run_health_check,
+    _start_acp_step_thread,
+    _start_step_thread,
+    close_acp_runtime_bg,
+    resolve_hook_confirmation,
+    resolve_hook_elicitation,
+    start_acp_health_monitor,
+    start_tool_execution,
+    stop_acp_health_monitor,
+)
+
 logger = logging.getLogger(__name__)
 
 
-# Session Management
-# ------------------
+def _get_request_json_object() -> dict | tuple[flask.Response, int]:
+    """Return request JSON as an object or a 400 error response.
 
-
-class ToolStatus(Enum):
-    """Status of a tool execution."""
-
-    PENDING = "pending"
-    EXECUTING = "executing"
-    COMPLETED = "completed"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-
-
-@dataclass
-class ToolExecution:
-    """Tracks a tool execution."""
-
-    tool_id: str
-    tooluse: ToolUse
-    status: ToolStatus = ToolStatus.PENDING
-    auto_confirm: bool = False
-
-
-@dataclass
-class ConversationSession(BaseSession):
-    """Session for a conversation.
-
-    Extends BaseSession with server-specific fields for event streaming,
-    tool execution tracking, and client management.
-
-    Inherited from BaseSession:
-        id: str - Session identifier
-        conversation_id: str | None - Conversation/log identifier
-        active: bool - Whether session is active
-        created_at: datetime - Session creation timestamp
-        last_activity: datetime - Last activity timestamp
-
-    Server-specific fields:
-        generating: bool - Whether LLM is currently generating
-        events: list - Event queue for SSE streaming
-        pending_tools: dict - Tools awaiting confirmation
-        auto_confirm_count: int - Auto-confirm counter
-        clients: set - Connected client IDs
-        event_flag: Event - Threading event for notifications
+    Session endpoints expect JSON objects. Arrays/strings/numbers would make
+    later `.get()` access crash with AttributeError and return 500s.
     """
-
-    # Server-specific fields (all have defaults, required for dataclass inheritance)
-    generating: bool = False
-    events: list[EventType] = field(default_factory=list)
-    pending_tools: dict[str, ToolExecution] = field(default_factory=dict)
-    auto_confirm_count: int = 0
-    clients: set[str] = field(default_factory=set)
-    event_flag: threading.Event = field(default_factory=threading.Event)
-
-
-class SessionManager:
-    """Manages conversation sessions."""
-
-    _sessions: dict[str, ConversationSession] = {}
-    _conversation_sessions: dict[str, set[str]] = defaultdict(set)
-
-    @classmethod
-    def create_session(cls, conversation_id: str) -> ConversationSession:
-        """Create a new session for a conversation."""
-        session_id = str(uuid.uuid4())
-        session = ConversationSession(id=session_id, conversation_id=conversation_id)
-        cls._sessions[session_id] = session
-        cls._conversation_sessions[conversation_id].add(session_id)
-        return session
-
-    @classmethod
-    def get_session(cls, session_id: str) -> ConversationSession | None:
-        """Get a session by ID."""
-        return cls._sessions.get(session_id)
-
-    @classmethod
-    def get_sessions_for_conversation(
-        cls, conversation_id: str
-    ) -> list[ConversationSession]:
-        """Get all sessions for a conversation."""
-        return [
-            cls._sessions[sid]
-            for sid in cls._conversation_sessions.get(conversation_id, set())
-            if sid in cls._sessions
-        ]
-
-    @classmethod
-    def add_event(cls, conversation_id: str, event: EventType) -> None:
-        """Add an event to all sessions for a conversation."""
-        for session in cls.get_sessions_for_conversation(conversation_id):
-            session.events.append(event)
-            session.touch()  # Update last_activity timestamp
-            session.event_flag.set()  # Signal that new events are available
-
-    @classmethod
-    def clean_inactive_sessions(cls, max_age_minutes: int = 60) -> None:
-        """Clean up inactive sessions."""
-        cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
-        to_remove = []
-
-        for session_id, session in cls._sessions.items():
-            if session.last_activity < cutoff and not session.generating:
-                to_remove.append(session_id)
-
-        for session_id in to_remove:
-            cls.remove_session(session_id)
-
-    @classmethod
-    def remove_session(cls, session_id: str) -> None:
-        """Remove a session."""
-        if session_id in cls._sessions:
-            conversation_id = cls._sessions[session_id].conversation_id
-            assert (
-                conversation_id is not None
-            ), "Server sessions must have conversation_id"
-
-            # Trigger SESSION_END hook when removing the last session for a conversation
-            is_last_session = (
-                conversation_id in cls._conversation_sessions
-                and len(cls._conversation_sessions[conversation_id]) == 1
-                and session_id in cls._conversation_sessions[conversation_id]
-            )
-
-            if is_last_session:
-                try:
-                    # Load the conversation to trigger the hook
-                    from ..logmanager import LogManager
-
-                    manager = LogManager.load(conversation_id, lock=True)
-
-                    logger.debug(
-                        f"Last session for conversation {conversation_id}, triggering SESSION_END hook"
-                    )
-                    if session_end_msgs := trigger_hook(
-                        HookType.SESSION_END,
-                        manager=manager,
-                    ):
-                        for msg in session_end_msgs:
-                            manager.append(
-                                msg
-                            )  # Just append, no notify needed during cleanup
-                except Exception as e:
-                    logger.warning(f"Failed to trigger SESSION_END hook: {e}")
-
-            if conversation_id in cls._conversation_sessions:
-                cls._conversation_sessions[conversation_id].discard(session_id)
-                if not cls._conversation_sessions[conversation_id]:
-                    del cls._conversation_sessions[conversation_id]
-            del cls._sessions[session_id]
-
-    @classmethod
-    def remove_all_sessions_for_conversation(cls, conversation_id: str) -> None:
-        """Remove all sessions for a conversation."""
-        for session in cls.get_sessions_for_conversation(conversation_id):
-            cls.remove_session(session.id)
-
-
-# Helper Functions for Generation
-# ------------------------------
-
-
-def _append_and_notify(manager: LogManager, session: ConversationSession, msg: Message):
-    """Append a message and notify clients."""
-    manager.append(msg)
-    assert (
-        session.conversation_id is not None
-    ), "Server sessions must have conversation_id"
-    SessionManager.add_event(
-        session.conversation_id,
-        {
-            "type": "message_added",
-            "message": msg2dict(msg, manager.workspace),
-        },
-    )
-
-
-def auto_generate_display_name(messages: list[Message], model: str) -> str | None:
-    """Generate a display name for the conversation based on the messages."""
-    from ..util.auto_naming import (
-        auto_generate_display_name as _auto_generate_display_name,
-    )
-
-    return _auto_generate_display_name(messages, model)
-
-
-@trace_function("api_v2.step", attributes={"component": "api_v2"})
-def step(
-    conversation_id: str,
-    session: ConversationSession,
-    model: str,
-    workspace: Path,
-    branch: str = "main",
-    auto_confirm: bool = False,
-    stream: bool = True,
-) -> None:
-    """
-    Generate a response and detect tools.
-
-    This function handles generating a response from the LLM and detecting tools
-    in the response. When tools are detected, it creates a pending tool record
-    and either waits for confirmation or auto-confirms based on settings.
-
-    It's designed to be used both for initial generation and for continuing
-    after tool execution is complete.
-
-    Args:
-        conversation_id: The conversation ID
-        session: The current session
-        model: Model to use
-        workspace: Workspace to use
-        branch: Branch to use (default: "main")
-        auto_confirm: Whether to auto-confirm tools (default: False)
-        stream: Whether to stream the response (default: True)
-    """
-
-    # Load chat config and prepare execution environment
-    logdir = get_logs_dir() / conversation_id
-    chat_config = ChatConfig.load_or_create(logdir, ChatConfig())
-    prepare_execution_environment(
-        workspace=workspace,
-        tools=chat_config.tools,
-        chat_config=chat_config,
-    )
-
-    # Load conversation
-    manager = LogManager.load(
-        conversation_id,
-        branch=branch,
-        lock=False,
-    )
-
-    # Set the model as default before triggering hooks
-    # This ensures hooks like token_awareness can access the model
-    from ..llm.models import set_default_model
-
-    set_default_model(model)
-
-    # Trigger SESSION_START hook for new conversations
-    assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
-    if len(assistant_messages) == 0:
-        logger.debug("New conversation detected, triggering SESSION_START hook")
-        if session_start_msgs := trigger_hook(
-            HookType.SESSION_START,
-            logdir=logdir,
-            workspace=workspace,
-            initial_msgs=manager.log.messages,
-        ):
-            for msg in session_start_msgs:
-                _append_and_notify(manager, session, msg)
-            # Write messages to disk to ensure they're persisted
-            manager.write()
-            logger.debug("Wrote SESSION_START hook messages to disk")
-
-    # TODO: This is not the best way to manage the chdir state, since it's
-    # essentially a shared global across chats (bad), but the fix at least
-    # addresses the issue where chats don't start in the directory they should.
-    # If we are attempting to make a step in a conversation with only one or fewer user
-    # messages, make sure we first chdir to the workspace directory (so that
-    # the conversation starts in the right folder).
-    user_messages = [msg for msg in manager.log.messages if msg.role == "user"]
-    if len(user_messages) <= 1:
-        logger.debug(
-            f"One or fewer user messages found, changing directory to workspace: {workspace}"
-        )
-        os.chdir(workspace)
-
-    # Trigger STEP_PRE hook BEFORE preparing messages
-    # This ensures hook messages are included in the LLM input
-    if pre_msgs := trigger_hook(
-        HookType.STEP_PRE,
-        manager=manager,
-    ):
-        for msg in pre_msgs:
-            _append_and_notify(manager, session, msg)
-        # Write messages to disk to ensure they're persisted
-        manager.write()
-        logger.debug("Wrote step.pre hook messages to disk")
-
-    # Prepare messages for the model
-    msgs = prepare_messages(manager.log.messages)
-    if not msgs:
-        error_event: ErrorEvent = {
-            "type": "error",
-            "error": "No messages to process",
-        }
-        SessionManager.add_event(conversation_id, error_event)
-        session.generating = False
-        return
-
-    # Notify clients about generation status
-    SessionManager.add_event(conversation_id, {"type": "generation_started"})
-
-    tool_format = chat_config.tool_format
-    tools = None
-    if tool_format == "tool":
-        tools = [t for t in get_tools() if t.is_runnable]
-
-    try:
-        # Stream tokens from the model
-        output = ""
-        tooluses = []
-        # Handle streaming vs non-streaming differently
-        chunks: Iterable[str]
-        if stream:
-            chunks = _stream(msgs, model, tools)
-        else:
-            response, _metadata = _chat_complete(msgs, model, tools)
-            chunks = [response]  # Wrap in list to iterate
-
-        for token in (char for chunk in chunks for char in chunk):
-            # check if interrupted
-            if not session.generating:
-                output += " [INTERRUPTED]"
-                break
-
-            output += token
-
-            # Send token to clients
-            SessionManager.add_event(
-                conversation_id, {"type": "generation_progress", "token": token}
-            )
-
-            # Check for complete tool uses on \n
-            if "\n" in token:
-                if tooluses := list(ToolUse.iter_from_content(output)):
-                    break
-        else:
-            tooluses = list(ToolUse.iter_from_content(output))
-
-        # Persist the assistant message
-        msg = Message("assistant", output)
-        _append_and_notify(manager, session, msg)
-        # Write immediately after assistant message to ensure it's persisted
-        manager.write()
-        logger.debug("Persisted assistant message and wrote to disk")
-
-        # Trigger TURN_POST hook (turn.post - after message processing completes)
-        if post_msgs := trigger_hook(
-            HookType.TURN_POST,
-            manager=manager,
-        ):
-            for msg in post_msgs:
-                _append_and_notify(manager, session, msg)
-
-        # Write messages to disk to ensure they're persisted
-        # This fixes race condition where messages might not be available when log is retrieved
-        manager.write()
-        logger.debug("Wrote messages to disk")
-
-        # Auto-generate display name for first assistant response if not already set
-        # TODO: Consider implementing via hook system to streamline with CLI implementation
-        # See: gptme/chat.py for CLI's implementation
-        # Try auto-naming on first few assistant messages until we get a name
-        # This allows retry when initial context is insufficient
-        assistant_messages = [m for m in manager.log.messages if m.role == "assistant"]
-        if len(assistant_messages) <= 3 and not chat_config.name:
-            try:
-                display_name = auto_generate_display_name(manager.log.messages, model)
-                if display_name:
-                    chat_config.name = display_name
-                    chat_config.save()
-                    logger.info(f"Auto-generated display name: {display_name}")
-
-                    # Notify clients about config change
-                    config_event: ConfigChangedEvent = {
-                        "type": "config_changed",
-                        "config": chat_config.to_dict(),
-                        "changed_fields": ["name"],
-                    }
-                    SessionManager.add_event(conversation_id, config_event)
-                else:
-                    logger.info(
-                        "Auto-naming failed, leaving conversation name unset for future retry"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to auto-generate display name: {e}")
-
-        # Signal message generation complete
-        logger.debug("Generation complete")
-        SessionManager.add_event(
-            conversation_id,
-            {
-                "type": "generation_complete",
-                "message": msg2dict(msg, manager.workspace),
-            },
-        )
-
-        if len(tooluses) > 1:
-            logger.warning(
-                "Multiple tools per message not yet supported, expect issues"
-            )
-
-        # Handle tool use
-        for tooluse in tooluses:
-            # Create a tool execution record
-            tool_id = str(uuid.uuid4())
-
-            tool_exec = ToolExecution(
-                tool_id=tool_id,
-                tooluse=tooluse,
-                auto_confirm=session.auto_confirm_count > 0 or auto_confirm,
-            )
-            session.pending_tools[tool_id] = tool_exec
-
-            # Notify about pending tool
-            SessionManager.add_event(
-                conversation_id,
-                {
-                    "type": "tool_pending",
-                    "tool_id": tool_id,
-                    "tooluse": {
-                        "tool": tooluse.tool,
-                        "args": tooluse.args,
-                        "content": tooluse.content,
-                    },
-                    "auto_confirm": tool_exec.auto_confirm,
-                },
-            )
-
-            # If auto-confirm is enabled, execute the tool
-            if tool_exec.auto_confirm:
-                if session.auto_confirm_count > 0:
-                    session.auto_confirm_count -= 1
-                start_tool_execution(
-                    conversation_id, session, tool_id, tooluse, model, chat_config
-                )
-
-        # Mark session as not generating
-        session.generating = False
-
-    except Exception as e:
-        logger.exception(f"Error during step execution: {e}")
-        SessionManager.add_event(conversation_id, {"type": "error", "error": str(e)})
-        session.generating = False
-
-
-def start_tool_execution(
-    conversation_id: str,
-    session: ConversationSession,
-    tool_id: str,
-    edited_tooluse: ToolUse | None,
-    model: str,
-    chat_config: ChatConfig,
-) -> threading.Thread:
-    """Execute a tool and handle its output."""
-
-    # This function would ideally run asynchronously to not block the request
-    # For simplicity, we'll run it in a thread
-    @trace_function("api_v2.execute_tool", attributes={"component": "api_v2"})
-    def execute_tool_thread() -> None:
-        # Prepare execution environment (config, tools, hooks, .env)
-        prepare_execution_environment(
-            workspace=chat_config.workspace,
-            tools=None,
-            chat_config=chat_config,
-        )
-
-        # Load the conversation
-        manager = LogManager.load(conversation_id, lock=False)
-
-        tool_exec = session.pending_tools[tool_id]
-        tool_exec.status = ToolStatus.EXECUTING
-
-        # use explicit tooluse if set (may be modified), else use the one from the pending tool
-        tooluse: ToolUse = edited_tooluse or tool_exec.tooluse
-
-        # Remove the tool from pending
-        if tool_id in session.pending_tools:
-            del session.pending_tools[tool_id]
-
-        # Notify about tool execution
-        SessionManager.add_event(
-            conversation_id, {"type": "tool_executing", "tool_id": tool_id}
-        )
-        logger.info(f"Tool {tool_id} executing")
-
-        # Execute the tool
-        try:
-            logger.info(f"Executing tool: {tooluse.tool}")
-            tool_outputs = list(
-                tooluse.execute(lambda _: True, manager.log, manager.workspace)
-            )
-            logger.info(f"Tool execution complete, outputs: {len(tool_outputs)}")
-
-            # Store the tool outputs
-            for tool_output in tool_outputs:
-                _append_and_notify(manager, session, tool_output)
-        except Exception as e:
-            logger.exception(f"Error executing tool {tooluse.__class__.__name__}: {e}")
-            tool_exec.status = ToolStatus.FAILED
-
-            msg = Message("system", f"Error: {str(e)}")
-            _append_and_notify(manager, session, msg)
-
-        # This implements auto-stepping similar to the CLI behavior
-        _start_step_thread(conversation_id, session, model, chat_config.workspace)
-
-    # Start execution in a thread
-    thread = threading.Thread(target=execute_tool_thread)
-    thread.daemon = True
-    thread.start()
-    return thread
-
-
-def _start_step_thread(
-    conversation_id: str,
-    session: ConversationSession,
-    model: str,
-    workspace: Path,
-    branch: str = "main",
-    auto_confirm: bool = False,
-    stream: bool = True,
-):
-    """Start a step execution in a background thread."""
-
-    def step_thread() -> None:
-        try:
-            # Mark session as generating
-            session.generating = True
-
-            step(
-                conversation_id=conversation_id,
-                session=session,
-                model=model,
-                workspace=workspace,
-                branch=branch,
-                auto_confirm=auto_confirm,
-                stream=stream,
-            )
-
-        except Exception as e:
-            logger.exception(f"Error during step execution: {e}")
-            SessionManager.add_event(
-                conversation_id, {"type": "error", "error": str(e)}
-            )
-            session.generating = False
-
-    # Start step execution in a thread
-    thread = threading.Thread(target=step_thread)
-    thread.daemon = True
-    thread.start()
+    req_json = request.get_json(silent=True)
+    if req_json is None:
+        return {}
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
+    return req_json
+
+
+# Re-export step-level symbols that other modules may import from here.
+# This preserves backward compatibility after the split.
+__all__ = [
+    # Models
+    "ToolStatus",
+    "ToolExecution",
+    "ConversationSession",
+    "SessionManager",
+    # Step execution
+    "start_acp_health_monitor",
+    "stop_acp_health_monitor",
+    "close_acp_runtime_bg",
+    "start_tool_execution",
+    # Blueprint
+    "sessions_api",
+]
 
 
 # API Endpoints
@@ -629,6 +124,8 @@ sessions_api = flask.Blueprint("sessions_api", __name__)
 )
 def api_conversation_events(conversation_id: str):
     """Subscribe to conversation events."""
+    if error := _validate_conversation_id(conversation_id):
+        return error
     session_id = request.args.get("session_id")
     if not session_id:
         # Create a new session if none provided
@@ -647,30 +144,57 @@ def api_conversation_events(conversation_id: str):
             # Add this client to the session
             session.clients.add(client_id)
 
-            # Send initial connection event
-            yield f"data: {flask.json.dumps({'type': 'connected', 'session_id': session_id})}\n\n"
+            # Send initial connection event with pending tool state
+            connected_event = {
+                "type": "connected",
+                "session_id": session_id,
+                "generating": session.generating,
+                "last_error": session.last_error,
+                "pending_tools": [
+                    {
+                        "tool_id": tid,
+                        "tooluse": {
+                            "tool": te.tooluse.tool,
+                            "args": te.tooluse.args,
+                            "content": te.tooluse.content,
+                        },
+                        "auto_confirm": te.auto_confirm,
+                    }
+                    for tid, te in list(session.pending_tools.items())
+                    if te.status == ToolStatus.PENDING
+                ],
+            }
+            yield f"data: {flask.json.dumps(connected_event)}\n\n"
 
             # Send immediate ping to ensure connection is established right away
             yield f"data: {flask.json.dumps({'type': 'ping'})}\n\n"
 
-            # Create an event queue
-            last_event_index = 0
+            # Track position using absolute event indices (offset-aware)
+            last_event_index = session.events_count
 
             while True:
                 # Check if there are new events
-                if last_event_index < (new_index := len(session.events)):
+                if last_event_index < (new_index := session.events_count):
                     # Send any new events
-                    for event in session.events[last_event_index:new_index]:
+                    for event in session.get_events_since(last_event_index):
                         yield f"data: {flask.json.dumps(event)}\n\n"
                     last_event_index = new_index
 
                 # Wait a bit before checking again
                 yield f"data: {flask.json.dumps({'type': 'ping'})}\n\n"
 
-                # Use event.wait() with timeout to avoid busy waiting while allowing ping intervals
-                # 15s timeout for connection keep-alive
-                session.event_flag.wait(timeout=15)
+                # Clear before waiting to avoid race: if an event arrives between
+                # wait() returning and clear(), the signal would be lost, delaying
+                # delivery by up to one full timeout interval.
                 session.event_flag.clear()
+
+                # Re-check after clearing: events may have arrived between the
+                # check above and the clear(), which would otherwise delay
+                # delivery by up to the full wait timeout.
+                if last_event_index < session.events_count:
+                    continue
+
+                session.event_flag.wait(timeout=15)
 
         except GeneratorExit:
             # Client disconnected
@@ -704,6 +228,7 @@ def api_conversation_events(conversation_id: str):
         400: ErrorResponse,
         404: ErrorResponse,
         409: ErrorResponse,
+        500: ErrorResponse,
     },
     parameters=[
         {
@@ -718,9 +243,12 @@ def api_conversation_events(conversation_id: str):
 )
 def api_conversation_step(conversation_id: str):
     """Take a step in the conversation - generate a response or continue after tool execution."""
-    req_json = flask.request.json or {}
+    if error := _validate_conversation_id(conversation_id):
+        return error
+    req_json = _get_request_json_object()
+    if not isinstance(req_json, dict):
+        return req_json
     session_id = req_json.get("session_id")
-    auto_confirm_int_or_bool: int | bool = req_json.get("auto_confirm", False)
 
     if not session_id:
         return flask.jsonify({"error": "session_id is required"}), 400
@@ -734,61 +262,204 @@ def api_conversation_step(conversation_id: str):
 
     stream = req_json.get("stream", chat_config.stream)
 
-    # if auto_confirm set, set auto_confirm_count
-    if isinstance(auto_confirm_int_or_bool, int):
-        session.auto_confirm_count = auto_confirm_int_or_bool
-    elif isinstance(auto_confirm_int_or_bool, bool):
-        session.auto_confirm_count = 1 if auto_confirm_int_or_bool else -1
-    auto_confirm = bool(session.auto_confirm_count > 0)
+    # ACP opt-in: sticky once enabled for a session.
+    # Default can be set server-wide via GPTME_USE_ACP_DEFAULT=true env var.
+    # Validate type explicitly to avoid truthy string surprises (e.g. "false").
+    _acp_default = _get_use_acp_default()
+    use_acp = req_json.get("use_acp", _acp_default)
+    if not isinstance(use_acp, bool):
+        return (
+            flask.jsonify(
+                {
+                    "error": "Invalid 'use_acp' value",
+                    "message": "'use_acp' must be a boolean",
+                }
+            ),
+            400,
+        )
 
-    if session.generating:
-        return flask.jsonify({"error": "Generation already in progress"}), 409
+    if use_acp and not session.use_acp:
+        from .acp_session_runtime import AcpSessionRuntime
 
-    # Get the branch and model
-    branch = req_json.get("branch", "main")
-    default_model = get_default_model()
+        session.use_acp = True
+        session.acp_runtime = AcpSessionRuntime(workspace=chat_config.workspace)
+        # Lazy-start the health monitor on first ACP session — avoids unconditional
+        # background thread and global session-eviction side-effects at app startup.
+        start_acp_health_monitor()
 
-    # Get model from request, config, or default (in that order)
-    model = req_json.get("model")
-    if not model:
-        model = chat_config.model
-    if not model and default_model:
-        model = default_model.full
-    if not model:
-        # Try to get from environment/config as last resort
-        config = Config.from_workspace(workspace=chat_config.workspace)
-        model = config.get_env("MODEL")
-    if not model:
-        return flask.jsonify(
-            {
-                "error": "No model specified and no default model set",
-                "message": (
-                    "Please specify a model in one of the following ways:\n"
-                    "1. Include 'model' in the request JSON\n"
-                    "2. Set MODEL environment variable when starting the server\n"
-                    "3. Use --model flag when starting the server (gptme-server serve --model <model>)\n"
-                    "4. Configure model in workspace chat config"
-                ),
-                "example_models": [
-                    DEFAULT_FALLBACK_MODEL,
-                    "openai/gpt-4",
-                    "openai/gpt-4o-mini",
-                ],
-            }
-        ), 400
+    # Validate auto_confirm type explicitly (bool OR int).
+    # Reject strings/floats/etc. to avoid accidental truthy coercion.
+    auto_confirm = req_json.get("auto_confirm", False)
+    if type(auto_confirm) not in (bool, int):
+        return (
+            flask.jsonify(
+                {
+                    "error": "Invalid 'auto_confirm' value",
+                    "message": "'auto_confirm' must be a boolean or integer",
+                }
+            ),
+            400,
+        )
 
-    # Start step execution in a background thread
-    # Model will be set in the worker thread by step()
-    _start_step_thread(
-        conversation_id=conversation_id,
-        session=session,
-        model=model,
-        workspace=chat_config.workspace,
-        branch=branch,
-        auto_confirm=auto_confirm,
-        stream=stream,
-    )
+    # If auto_confirm set, set auto_confirm_count.
+    # Check bool first: bool is a subclass of int in Python, so isinstance(True, int) is True.
+    # Use type() to distinguish them correctly.
+    if type(auto_confirm) is bool:
+        session.auto_confirm_count = 1 if auto_confirm else -1
+    else:  # int
+        session.auto_confirm_count = auto_confirm
 
+    auto_confirm_enabled = bool(session.auto_confirm_count > 0)
+
+    # Atomically check-and-set generating under a per-session lock.
+    # Without the lock, two concurrent requests on a threaded WSGI server can
+    # both read False before either writes True (classic TOCTOU).  The lock is
+    # held only for the check+set — the expensive model/branch resolution that
+    # follows runs outside it.
+    with session.step_lock:
+        if session.generating:
+            return flask.jsonify({"error": "Generation already in progress"}), 409
+        # Mark generating early to prevent concurrent /step requests from racing
+        # through the setup code below.  _start_step_thread/_start_acp_step_thread
+        # also set this, but ~60 lines of model/branch resolution sit between the
+        # check above and those calls — enough for a second request to slip through
+        # on threaded WSGI servers.
+        session.generating = True
+        session.generating_since = datetime.now(tz=timezone.utc)
+
+    # Wrap setup in try/finally so any unexpected exception (get_default_model,
+    # config I/O, etc.) resets the flag rather than leaving the session
+    # permanently stuck in "generating" state.
+    _step_dispatched = False
+    try:
+        # Get the branch and model
+        branch = req_json.get("branch", "main")
+        if error := _validate_branch(branch):
+            return error
+        default_model = get_default_model()
+
+        # Get model from request, config, or default (in that order).
+        # The frontend only sends model when the user explicitly selected one
+        # (hasExplicitModelSelection), so any value here is a genuine choice.
+        model = req_json.get("model")
+        if model and model != chat_config.model:
+            chat_config.model = model
+            chat_config.save()
+            # Notify frontend so the model badge updates
+            SessionManager.add_event(
+                conversation_id,
+                {
+                    "type": "config_changed",
+                    "config": chat_config.to_dict(),
+                    "changed_fields": ["model"],
+                },
+            )
+        if not model:
+            model = chat_config.model
+        if not model and default_model:
+            model = default_model.full
+        if not model:
+            # Try to get from environment/config as last resort
+            config = Config.from_workspace(workspace=chat_config.workspace)
+            model = config.get_env("MODEL")
+        if not model and not session.use_acp:
+            # In ACP mode the subprocess manages its own model; skip this check
+            return flask.jsonify(
+                {
+                    "error": "No model specified and no default model set",
+                    "message": (
+                        "Please specify a model in one of the following ways:\n"
+                        "1. Include 'model' in the request JSON\n"
+                        "2. Set MODEL environment variable when starting the server\n"
+                        "3. Use --model flag when starting the server (gptme-server serve --model <model>)\n"
+                        "4. Configure model in workspace chat config"
+                    ),
+                    "example_models": [
+                        DEFAULT_FALLBACK_MODEL,
+                        "openai/gpt-4",
+                        "openai/gpt-4o-mini",
+                    ],
+                }
+            ), 400
+
+        # Snapshot acp_runtime to avoid TOCTOU races: concurrent cleanup threads
+        # (e.g. _cleanup_stale_acp_sessions) can set session.acp_runtime = None
+        # between the check and the use.
+        acp_runtime = session.acp_runtime if session.use_acp else None
+
+        # If ACP mode is active, keep session runtime model aligned with the
+        # resolved request/config/default model whenever available.
+        if acp_runtime is not None and model:
+            acp_runtime.model = model
+
+        # Snapshot absolute event count before starting, so we can detect new events below
+        initial_event_count = session.events_count
+
+        # Route through ACP subprocess if the session has opted in
+        if acp_runtime is not None:
+            _start_acp_step_thread(
+                conversation_id=conversation_id,
+                session=session,
+                workspace=chat_config.workspace,
+            )
+        else:
+            # model should be non-None here: the `if not model and not session.use_acp`
+            # check above returns 400 for non-ACP sessions with no model.
+            # Use explicit check instead of assert (which python -O disables).
+            if model is None:
+                return flask.jsonify(
+                    {"error": "Model is required for non-ACP sessions"}
+                ), 400
+            # Start step execution in a background thread
+            # Model will be set in the worker thread by step()
+            _start_step_thread(
+                conversation_id=conversation_id,
+                session=session,
+                model=model,
+                workspace=chat_config.workspace,
+                branch=branch,
+                auto_confirm=auto_confirm_enabled,
+                stream=stream,
+            )
+        _step_dispatched = True
+    finally:
+        if not _step_dispatched:
+            session.generating = False
+            session.generating_since = None
+
+    # Wait briefly for early errors (bad model, auth failure, empty messages, etc.)
+    # so we can return them in the HTTP response instead of swallowing silently.
+    # We poll the session events for up to 5 seconds, looking for either
+    # a "generation_progress" event (success) or an "error" event (failure).
+    _STARTUP_TIMEOUT = 5.0
+    _POLL_INTERVAL = 0.1
+    deadline = time.monotonic() + _STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        # Check new events since we started
+        new_events = session.get_events_since(initial_event_count)
+        for event in new_events:
+            event_type = event.get("type") if isinstance(event, dict) else None
+            if event_type == "error":
+                return flask.jsonify(
+                    {
+                        "status": "error",
+                        "error": event.get("error", "Unknown error"),
+                        "session_id": session_id,
+                    }
+                ), 500
+            if event_type == "generation_progress":
+                # First token received — LLM call succeeded
+                return flask.jsonify(
+                    {
+                        "status": "ok",
+                        "message": "Step started",
+                        "session_id": session_id,
+                    }
+                )
+        session.event_flag.clear()
+        session.event_flag.wait(timeout=_POLL_INTERVAL)
+
+    # Timeout without error or token — generation is slow but not failed
     return flask.jsonify(
         {"status": "ok", "message": "Step started", "session_id": session_id}
     )
@@ -814,8 +485,12 @@ def api_conversation_tool_confirm(conversation_id: str):
     sessions for this conversation. This handles the race condition where the
     client may not have received the session_id yet when confirming a tool.
     """
+    if error := _validate_conversation_id(conversation_id):
+        return error
 
-    req_json = flask.request.json or {}
+    req_json = _get_request_json_object()
+    if not isinstance(req_json, dict):
+        return req_json
     session_id = req_json.get("session_id")
     tool_id = req_json.get("tool_id")
     action = req_json.get("action")
@@ -852,7 +527,18 @@ def api_conversation_tool_confirm(conversation_id: str):
                 404,
             )
 
-    tool_exec = session.pending_tools[tool_id]
+    # Use .get() to avoid KeyError if tool was concurrently removed (e.g., by another
+    # request or the session step thread) between the check above and this access.
+    tool_exec = session.pending_tools.get(tool_id)
+    if tool_exec is None:
+        return (
+            flask.jsonify(
+                {
+                    "error": f"Tool {tool_id} no longer pending (may have been executed or cancelled)"
+                }
+            ),
+            404,
+        )
 
     logdir = get_logs_dir() / conversation_id
     chat_config = ChatConfig.load_or_create(logdir, ChatConfig())
@@ -860,6 +546,10 @@ def api_conversation_tool_confirm(conversation_id: str):
     # Get model from session config, default model, or fallback to "anthropic"
     default_model = get_default_model()
     model = chat_config.model or (default_model.full if default_model else "anthropic")
+
+    # Try to resolve via hook system (for hook-based confirmation flow)
+    # This enables future integration where tools use hooks for confirmation
+    resolve_hook_confirmation(tool_id, action, req_json.get("content"))
 
     if action == "confirm":
         # Execute the tool
@@ -871,11 +561,13 @@ def api_conversation_tool_confirm(conversation_id: str):
         )
         return flask.jsonify({"status": "ok", "message": "Tool confirmed"})
 
-    elif action == "edit":
+    if action == "edit":
         # Edit and then execute the tool
         edited_content = req_json.get("content")
-        if not edited_content:
-            return flask.jsonify({"error": "content is required for edit action"}), 400
+        if not edited_content or not isinstance(edited_content, str):
+            return flask.jsonify(
+                {"error": "content must be a non-empty string for edit action"}
+            ), 400
 
         # Execute with edited content
         start_tool_execution(
@@ -890,7 +582,9 @@ def api_conversation_tool_confirm(conversation_id: str):
     elif action == "skip":
         # Skip the tool execution
         tool_exec.status = ToolStatus.SKIPPED
-        del session.pending_tools[tool_id]
+        session.pending_tools.pop(
+            tool_id, None
+        )  # use pop to avoid KeyError if concurrently removed
 
         # Provide meaningful message to prevent LLM from re-suggesting the same tool
         tool_name = tool_exec.tooluse.tool
@@ -907,8 +601,8 @@ def api_conversation_tool_confirm(conversation_id: str):
     elif action == "auto":
         # Enable auto-confirmation for future tools
         count = req_json.get("count", 1)
-        if count <= 0:
-            return flask.jsonify({"error": "count must be positive"}), 400
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            return flask.jsonify({"error": "count must be a positive integer"}), 400
 
         session.auto_confirm_count = count
 
@@ -920,6 +614,172 @@ def api_conversation_tool_confirm(conversation_id: str):
         return flask.jsonify({"error": f"Unknown action: {action}"}), 400
 
     return flask.jsonify({"status": "ok", "message": f"Tool {action}ed"})
+
+
+@sessions_api.route(
+    "/api/v2/conversations/<string:conversation_id>/rerun",
+    methods=["POST"],
+)
+@require_auth
+@api_doc(
+    summary="Re-run tools from an assistant message (V2)",
+    description="Parse tool uses from an assistant message and set them as pending for execution. "
+    "This re-creates the tool confirmation flow without calling the LLM.",
+    responses={200: StatusResponse, 400: ErrorResponse, 404: ErrorResponse},
+    parameters=[CONVERSATION_ID_PARAM],
+    tags=["sessions"],
+)
+def api_conversation_rerun(conversation_id: str):
+    """Re-run tools from the last assistant message.
+
+    Parses tool uses from the last assistant message content and sets them
+    as pending for confirmation/execution, without calling the LLM.
+    """
+    if error := _validate_conversation_id(conversation_id):
+        return error
+    from ..tools import ToolUse
+
+    req_json = _get_request_json_object()
+    if not isinstance(req_json, dict):
+        return req_json
+    session_id = req_json.get("session_id")
+
+    if not session_id:
+        return flask.jsonify({"error": "session_id is required"}), 400
+
+    session = SessionManager.get_session(session_id)
+    if not session:
+        return flask.jsonify({"error": f"Session not found: {session_id}"}), 404
+
+    if session.generating:
+        return flask.jsonify(
+            {"error": "Cannot rerun while generation is in progress"}
+        ), 409
+
+    # Load conversation and find the last assistant message
+    try:
+        manager = LogManager.load(conversation_id, lock=False)
+    except FileNotFoundError:
+        return flask.jsonify(
+            {"error": f"Conversation not found: {conversation_id}"}
+        ), 404
+
+    # Find the last assistant message
+    last_assistant = None
+    for msg in reversed(list(manager.log.messages)):
+        if msg.role == "assistant":
+            last_assistant = msg
+            break
+
+    if not last_assistant:
+        return flask.jsonify({"error": "No assistant message found"}), 400
+
+    # Parse tool uses from the message content
+    tooluses = list(ToolUse.iter_from_content(last_assistant.content))
+    if not tooluses:
+        return flask.jsonify(
+            {"error": "No tool uses found in the last assistant message"}
+        ), 400
+
+    # Set them as pending (same flow as step() tool detection)
+    for tooluse in tooluses:
+        tool_id = str(uuid.uuid4())
+        tool_exec = ToolExecution(
+            tool_id=tool_id,
+            tooluse=tooluse,
+            auto_confirm=session.auto_confirm_count > 0,
+        )
+        session.pending_tools[tool_id] = tool_exec
+
+        SessionManager.add_event(
+            conversation_id,
+            {
+                "type": "tool_pending",
+                "tool_id": tool_id,
+                "tooluse": {
+                    "tool": tooluse.tool,
+                    "args": tooluse.args,
+                    "content": tooluse.content,
+                },
+                "auto_confirm": tool_exec.auto_confirm,
+            },
+        )
+
+        if tool_exec.auto_confirm:
+            if session.auto_confirm_count > 0:
+                session.auto_confirm_count -= 1
+            logdir = get_logs_dir() / conversation_id
+            chat_config = ChatConfig.load_or_create(logdir, ChatConfig())
+            default_model = get_default_model()
+            model = chat_config.model or (
+                default_model.full if default_model else "anthropic"
+            )
+            start_tool_execution(
+                conversation_id, session, tool_id, tooluse, model, chat_config
+            )
+
+    return flask.jsonify(
+        {
+            "status": "ok",
+            "message": f"Re-running {len(tooluses)} tool(s)",
+            "tool_ids": list(session.pending_tools),
+        }
+    )
+
+
+@sessions_api.route(
+    "/api/v2/conversations/<string:conversation_id>/elicit/respond",
+    methods=["POST"],
+)
+@require_auth
+@api_doc(
+    summary="Respond to elicitation (V2)",
+    description="Respond to an agent's elicitation request with user input. "
+    "Accepts values for text, choice, secret, confirmation, multi_choice, and form types.",
+    request_body=ElicitRespondRequest,
+    responses={200: StatusResponse, 400: ErrorResponse},
+    parameters=[CONVERSATION_ID_PARAM],
+    tags=["sessions"],
+)
+def api_conversation_elicit_respond(conversation_id: str):
+    """Respond to an elicitation request from the agent.
+
+    The agent requested structured input via the elicit tool. The client
+    displays an appropriate UI and sends the user's response here.
+
+    Note: conversation_id is accepted for URL consistency but not validated
+    against elicit_id. The elicitation registry uses globally unique UUIDs,
+    so cross-conversation resolution is not a practical concern.
+    """
+    if error := _validate_conversation_id(conversation_id):
+        return error
+    req_json = _get_request_json_object()
+    if not isinstance(req_json, dict):
+        return req_json
+    elicit_id = req_json.get("elicit_id")
+    action = req_json.get("action")
+
+    if not elicit_id or not action:
+        return (
+            flask.jsonify({"error": "elicit_id and action are required"}),
+            400,
+        )
+
+    if action not in ("accept", "decline", "cancel"):
+        return (
+            flask.jsonify(
+                {
+                    "error": f"Unknown action: {action}. Must be accept, decline, or cancel"
+                }
+            ),
+            400,
+        )
+
+    resolve_hook_elicitation(
+        elicit_id, action, req_json.get("value"), req_json.get("values")
+    )
+
+    return flask.jsonify({"status": "ok", "message": f"Elicitation {action}ed"})
 
 
 @sessions_api.route(
@@ -936,7 +796,11 @@ def api_conversation_tool_confirm(conversation_id: str):
 )
 def api_conversation_interrupt(conversation_id: str):
     """Interrupt the current generation or tool execution."""
-    req_json = flask.request.json or {}
+    if error := _validate_conversation_id(conversation_id):
+        return error
+    req_json = _get_request_json_object()
+    if not isinstance(req_json, dict):
+        return req_json
     session_id = req_json.get("session_id")
 
     if not session_id:
@@ -947,15 +811,14 @@ def api_conversation_interrupt(conversation_id: str):
         return flask.jsonify({"error": f"Session not found: {session_id}"}), 404
 
     if not session.generating and not session.pending_tools:
-        return (
-            flask.jsonify(
-                {"error": "No active generation or tool execution to interrupt"}
-            ),
-            400,
+        # Idempotent: if nothing is generating, treat as already interrupted
+        return flask.jsonify(
+            {"status": "ok", "message": "Already interrupted or not generating"}
         )
 
     # Mark session as not generating
     session.generating = False
+    session.generating_since = None
 
     # Clear pending tools
     session.pending_tools.clear()

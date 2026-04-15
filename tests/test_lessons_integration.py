@@ -27,9 +27,9 @@ class TestDocsLessonsParsing:
 
     def test_docs_lessons_exist(self):
         """Test that docs/lessons directory exists."""
-        assert (
-            DOCS_LESSONS_DIR.exists()
-        ), f"docs/lessons not found at {DOCS_LESSONS_DIR}"
+        assert DOCS_LESSONS_DIR.exists(), (
+            f"docs/lessons not found at {DOCS_LESSONS_DIR}"
+        )
 
         # Check subdirectories exist
         tools_dir = DOCS_LESSONS_DIR / "tools"
@@ -201,6 +201,15 @@ class TestDocsLessonsMatching:
 class TestDocsLessonsAutoInclude:
     """Tests auto-include functionality with docs lessons."""
 
+    @pytest.fixture(autouse=True)
+    def reset_session_stats(self):
+        """Reset lesson session stats before each test to ensure isolation."""
+        from gptme.tools.lessons import _reset_session_stats
+
+        _reset_session_stats()
+        yield
+        _reset_session_stats()
+
     @staticmethod
     def _create_manager(messages):
         """Helper to create a mock manager from a list of messages."""
@@ -211,6 +220,25 @@ class TestDocsLessonsAutoInclude:
         manager = MagicMock()
         manager.log = Log(messages)
         return manager
+
+    @staticmethod
+    def _configure_mock_config(mock_cfg):
+        """Configure mock config to enable auto-include but disable hybrid matching.
+
+        This is needed because:
+        - GPTME_LESSONS_AUTO_INCLUDE should be True to test auto-inclusion
+        - GPTME_LESSONS_USE_HYBRID should be False to avoid ACE/embedding dependencies
+        """
+
+        def get_env_bool_side_effect(key, default=False):
+            if key == "GPTME_LESSONS_AUTO_INCLUDE":
+                return True
+            if key == "GPTME_LESSONS_USE_HYBRID":
+                return False  # Disable hybrid to avoid JSON serialization issues
+            return default
+
+        mock_cfg.get_env_bool.side_effect = get_env_bool_side_effect
+        mock_cfg.get_env.return_value = "5"
 
     def test_extract_recent_tools_from_log(self):
         """Test extracting recent tool usage from conversation log."""
@@ -232,25 +260,23 @@ class TestDocsLessonsAutoInclude:
             Message(role="user", content="How do I use the patch tool?"),
         ]
 
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.get_config") as mock_config:
-                # Setup mocks
-                mock_get_index.return_value = docs_lesson_index
-                mock_cfg = mock_config.return_value
-                mock_cfg.get_env_bool.return_value = True
-                mock_cfg.get_env.return_value = "5"
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.get_config") as mock_config,
+        ):
+            # Setup mocks
+            mock_get_index.return_value = docs_lesson_index
+            self._configure_mock_config(mock_config.return_value)
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(log)) or []
-                )
+            messages = list(auto_include_lessons_hook(self._create_manager(log)) or [])
 
-                assert len(messages) > 0, "Should include lessons"
+            assert len(messages) > 0, "Should include lessons"
 
-                lesson_msg = messages[0]
-                assert isinstance(lesson_msg, Message)
-                assert lesson_msg.role == "system"
-                assert "# Relevant Lessons" in lesson_msg.content
-                assert "Patch" in lesson_msg.content or "patch" in lesson_msg.content
+            lesson_msg = messages[0]
+            assert isinstance(lesson_msg, Message)
+            assert lesson_msg.role == "system"
+            assert "# Relevant Lessons" in lesson_msg.content
+            assert "Patch" in lesson_msg.content or "patch" in lesson_msg.content
 
     def test_auto_include_with_tool_usage(self, docs_lesson_index):
         """Test auto-include based on recent tool usage."""
@@ -260,19 +286,17 @@ class TestDocsLessonsAutoInclude:
             Message(role="user", content="Looks good"),
         ]
 
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.get_config") as mock_config:
-                # Setup mocks
-                mock_get_index.return_value = docs_lesson_index
-                mock_cfg = mock_config.return_value
-                mock_cfg.get_env_bool.return_value = True
-                mock_cfg.get_env.return_value = "5"
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.get_config") as mock_config,
+        ):
+            # Setup mocks
+            mock_get_index.return_value = docs_lesson_index
+            self._configure_mock_config(mock_config.return_value)
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(log)) or []
-                )
+            messages = list(auto_include_lessons_hook(self._create_manager(log)) or [])
 
-                assert len(messages) > 0, "Should include lessons based on tool usage"
+            assert len(messages) > 0, "Should include lessons based on tool usage"
 
     def test_deduplication_from_history(self, docs_lesson_index):
         """Test that lessons aren't included twice."""
@@ -292,25 +316,23 @@ class TestDocsLessonsAutoInclude:
             Message(role="user", content="Use patch again"),
         ]
 
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.get_config") as mock_config:
-                # Setup mocks
-                mock_get_index.return_value = docs_lesson_index
-                mock_cfg = mock_config.return_value
-                mock_cfg.get_env_bool.return_value = True
-                mock_cfg.get_env.return_value = "5"
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.get_config") as mock_config,
+        ):
+            # Setup mocks
+            mock_get_index.return_value = docs_lesson_index
+            self._configure_mock_config(mock_config.return_value)
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(log)) or []
-                )
+            messages = list(auto_include_lessons_hook(self._create_manager(log)) or [])
 
-                # Should not include patch lesson again since it's in history
-                if messages:
-                    assert isinstance(messages[0], Message)
-                    assert (
-                        str(patch_lesson.path) not in messages[0].content
-                        or "# Relevant Lessons" not in messages[0].content
-                    ), "Should not include already-included lessons"
+            # Should not include patch lesson again since it's in history
+            if messages:
+                assert isinstance(messages[0], Message)
+                assert (
+                    str(patch_lesson.path) not in messages[0].content
+                    or "# Relevant Lessons" not in messages[0].content
+                ), "Should not include already-included lessons"
 
 
 class TestDocsLessonsREADME:
@@ -370,7 +392,7 @@ This is a test lesson for .gptme/lessons/ detection.
         )
 
     def test_cursorrules_detection_logged(self, tmp_path, monkeypatch, caplog):
-        """Test that .cursorrules file detection logs helpful message."""
+        """Test that .cursorrules file detection logs helpful message at DEBUG level."""
         from gptme.lessons import LessonIndex
 
         # Create .cursorrules file
@@ -381,7 +403,8 @@ This is a test lesson for .gptme/lessons/ detection.
         monkeypatch.chdir(tmp_path)
 
         # Create index (should detect .cursorrules)
-        with caplog.at_level("INFO"):
+        # Note: logged at DEBUG to avoid spam in normal operation
+        with caplog.at_level("DEBUG"):
             LessonIndex()
 
         # Verify helpful message was logged

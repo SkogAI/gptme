@@ -28,10 +28,7 @@ AUDIO_PLAYERS: list[AudioPlayer] = [
 
 def is_cmd_audio_available() -> bool:
     """Check if audio playback is available via system command-line tools."""
-    for player in AUDIO_PLAYERS:
-        if shutil.which(player["cmd"]):
-            return True
-    return False
+    return any(shutil.which(player["cmd"]) for player in AUDIO_PLAYERS)
 
 
 def play_with_system_command_blocking(file_path: Path, volume: float = 1.0) -> bool:
@@ -77,14 +74,11 @@ def play_with_system_command_blocking(file_path: Path, volume: float = 1.0) -> b
             if result.returncode == 0:
                 log.debug(f"Successfully played audio with {player['cmd']}")
                 return True
-            else:
-                log.debug(
-                    f"{player['cmd']} failed with return code {result.returncode}"
-                )
-                if result.stderr:
-                    stderr = result.stderr.decode().strip()
-                    if stderr:
-                        log.debug(f"{player['cmd']} stderr: {stderr}")
+            log.debug(f"{player['cmd']} failed with return code {result.returncode}")
+            if result.stderr:
+                stderr = result.stderr.decode().strip()
+                if stderr:
+                    log.debug(f"{player['cmd']} stderr: {stderr}")
 
         except subprocess.TimeoutExpired:
             log.warning(f"Audio playback with {player['cmd']} timed out")
@@ -97,7 +91,11 @@ def play_with_system_command_blocking(file_path: Path, volume: float = 1.0) -> b
 def stop_system_audio():
     """Stop any running subprocess audio players."""
     try:
-        subprocess.run(["pkill", "-f", "paplay"], capture_output=True, timeout=2)
-        subprocess.run(["pkill", "-f", "ffplay"], capture_output=True, timeout=2)
+        subprocess.run(
+            ["pkill", "-f", "paplay"], check=False, capture_output=True, timeout=2
+        )
+        subprocess.run(
+            ["pkill", "-f", "ffplay"], check=False, capture_output=True, timeout=2
+        )
     except Exception:
         pass

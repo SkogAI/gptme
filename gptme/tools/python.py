@@ -8,19 +8,22 @@ import dataclasses
 import functools
 import importlib.util
 import io
+import os
 import re
+import site
 import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from logging import getLogger
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from ..constants import DECLINED_CONTENT
+from ..hooks import ConfirmAction, get_confirmation
 from ..message import Message
-from ..util.ask_execute import print_preview
+from ..util.context import md_codeblock
 from . import get_tools
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -28,14 +31,13 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from IPython.core.interactiveshell import InteractiveShell  # fmt: skip
+    from IPython.core.interactiveshell import (
+        ExecutionResult,
+        InteractiveShell,  # fmt: skip
+    )
 
 
 logger = getLogger(__name__)
-
-# TODO: launch the IPython session in the current venv, if any, instead of the pipx-managed gptme venv (for example) in which gptme itself runs
-#       would let us use libraries installed with `pip install` in the current venv
-#       https://github.com/gptme/gptme/issues/29
 
 # IPython instance
 _ipython: "InteractiveShell | None" = None
@@ -55,12 +57,96 @@ def register_function(func: T) -> T:
     return func
 
 
+def _detect_venv(env_only: bool = False) -> Path | None:
+    """Detect the user's virtual environment, if any.
+
+    Checks in order:
+    1. VIRTUAL_ENV environment variable (set when a venv is activated)
+    2. .venv directory in the current working directory (skipped if env_only=True)
+
+    Args:
+        env_only: If True, only check VIRTUAL_ENV (skip cwd-based detection).
+                  Used during early init before os.chdir(workspace) has run.
+    """
+    # Check VIRTUAL_ENV env var (set by `source .venv/bin/activate`)
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        venv_path = Path(virtual_env)
+        if venv_path.is_dir():
+            return venv_path
+
+    if not env_only:
+        # Check for .venv in cwd (only valid after os.chdir(workspace))
+        cwd_venv = Path.cwd() / ".venv"
+        if cwd_venv.is_dir():
+            return cwd_venv
+
+    return None
+
+
+def _get_venv_site_packages(venv_path: Path) -> Path | None:
+    """Get the site-packages directory for a venv."""
+    # Windows: Lib/site-packages (no pythonX.Y subdirectory)
+    win_sp = venv_path / "Lib" / "site-packages"
+    if win_sp.is_dir():
+        return win_sp
+    # Unix: lib/pythonX.Y/site-packages
+    lib_dir = venv_path / "lib"
+    if not lib_dir.is_dir():
+        return None
+    for entry in lib_dir.iterdir():
+        if entry.name.startswith("python") and entry.is_dir():
+            sp = entry / "site-packages"
+            if sp.is_dir():
+                return sp
+    return None
+
+
+def _setup_venv_paths(env_only: bool = False) -> None:
+    """Add the user's venv site-packages to sys.path if available.
+
+    This allows the IPython instance (which runs in-process within gptme's
+    own environment) to import packages from the user's project venv.
+    See: https://github.com/gptme/gptme/issues/29
+
+    Args:
+        env_only: If True, only use VIRTUAL_ENV for detection (skip cwd check).
+    """
+    venv_path = _detect_venv(env_only=env_only)
+    if venv_path is None:
+        return
+
+    # Don't add if this IS gptme's own venv
+    if Path(sys.prefix).resolve() == venv_path.resolve():
+        return
+
+    sp = _get_venv_site_packages(venv_path)
+    if sp is None:
+        logger.warning("Found venv at %s but couldn't locate site-packages", venv_path)
+        return
+
+    sp_resolved = str(sp.resolve())
+    if sp_resolved not in [str(Path(p).resolve()) for p in sys.path]:
+        # Append after gptme's own site-packages so gptme's deps always take
+        # precedence (including lazy-imported modules loaded on-demand)
+        sys.path.append(sp_resolved)
+        # Also process .pth files in the venv (handles editable installs etc.)
+        site.addsitedir(sp_resolved)
+        logger.info("Added user venv site-packages to sys.path: %s", sp_resolved)
+
+
 def _get_ipython():
     global _ipython
     from IPython.core.interactiveshell import InteractiveShell  # fmt: skip
 
     if _ipython is None:
+        _setup_venv_paths()
+
+        # Disable colors in IPython to avoid ANSI escape codes in output
+        # Note: We set IPython's colors mode directly rather than using NO_COLOR
+        # globally, as that would affect other parts of the application (like Rich)
         _ipython = InteractiveShell()
+        _ipython.colors = "NoColor"
         _ipython.push(registered_functions)
 
     return _ipython
@@ -102,20 +188,20 @@ def execute_python(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc = lambda _: True,
 ) -> Generator[Message, None, None]:
     """Executes a python codeblock and returns the output."""
-    from IPython.core.interactiveshell import ExecutionResult  # fmt: skip
 
     if code is not None and args is not None:
         code = code.strip()
     elif kwargs is not None:
         code = kwargs.get("code", "").strip()
 
-    assert code is not None
+    if code is None:
+        raise ValueError("Code content is required to execute Python")
 
-    print_preview(code, "python")
-    if not confirm("Execute this code?"):
+    # Get confirmation via hook system (hook will display preview)
+    confirm_result = get_confirmation()
+    if confirm_result.action != ConfirmAction.CONFIRM:
         # early return - use DECLINED_CONTENT so chat loop detects declined execution
         yield Message("system", DECLINED_CONTENT)
         return
@@ -141,13 +227,15 @@ def execute_python(
         return
 
     if result.result is not None:
-        output += f"Result:\n```\n{result.result}\n```\n\n"
+        # show stdout before result if both exist
+        if captured_stdout:
+            output += md_codeblock("stdout", captured_stdout.rstrip()) + "\n\n"
+        output += f"Result:\n{md_codeblock('', str(result.result))}\n\n"
 
-    # only show stdout if there is no result
     elif captured_stdout:
-        output += f"```stdout\n{captured_stdout.rstrip()}\n```\n\n"
+        output += md_codeblock("stdout", captured_stdout.rstrip()) + "\n\n"
     if captured_stderr:
-        output += f"```stderr\n{captured_stderr.rstrip()}\n```\n\n"
+        output += md_codeblock("stderr", captured_stderr.rstrip()) + "\n\n"
     if result.error_in_exec:
         tb = result.error_in_exec.__traceback__
         while tb and tb.tb_next:
@@ -155,9 +243,9 @@ def execute_python(
         if tb:
             output += f"Exception during execution on line {tb.tb_lineno}:\n  {result.error_in_exec.__class__.__name__}: {result.error_in_exec}"
 
-    # strip ANSI escape sequences
-    # TODO: better to signal to the terminal that we don't want colors?
-    output = re.sub(r"\x1b[^m]*m", "", output)
+    # strip ANSI escape sequences (safety net — colors are disabled at the source
+    # via NO_COLOR=1 and IPython's NoColor setting, but libraries may still emit them)
+    output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output)
     yield Message("system", "Executed code block.\n\n" + output)
 
 
@@ -179,7 +267,7 @@ def get_installed_python_libraries() -> list[str]:
         if importlib.util.find_spec(candidate):
             installed.add(candidate)
 
-    return list(sorted(installed))
+    return sorted(installed)
 
 
 def get_functions():
@@ -209,25 +297,37 @@ def examples(tool_format):
 > Assistant:
 {ToolUse("ipython", [], "2 + 2").to_output(tool_format)}
 > System: Executed code block.
-{ToolUse("result", [], "4").to_output()}
+{md_codeblock("result", "4")}
 
 #### Write a function and call it
 
 > User: compute fib 10
 > Assistant: To compute the 10th Fibonacci number, we can run the following code:
-{ToolUse("ipython", [], '''
+{
+        ToolUse(
+            "ipython",
+            [],
+            '''
 def fib(n):
     if n <= 1:
         return n
     return fib(n - 1) + fib(n - 2)
 fib(10)
-'''.strip()).to_output(tool_format)}
+'''.strip(),
+        ).to_output(tool_format)
+    }
 > System: Executed code block.
-{ToolUse("result", [], "55").to_output()}
+{md_codeblock("result", "55")}
 """.strip()
 
 
 def init() -> ToolSpec:
+    # Set up user's venv paths early so library detection includes user packages.
+    # Only use VIRTUAL_ENV here (not cwd-based detection) because init() runs
+    # before os.chdir(workspace). The cwd-based .venv detection is deferred to
+    # _get_ipython() which runs lazily after workspace chdir has happened.
+    _setup_venv_paths(env_only=True)
+
     # Register python functions from other tools
     for loaded_tool in get_tools():
         if loaded_tool.functions:
@@ -240,17 +340,42 @@ def init() -> ToolSpec:
         or "- no common libraries found"
     )
 
-    _instructions = f"""{instructions}
-
-Available libraries:
+    _appendix_full = f"""Available libraries:
 {python_libraries_str}
 
 Available functions:
-{get_functions()}
-""".strip()
+{get_functions()}"""
 
-    # create a copy with the updated instructions
-    return dataclasses.replace(tool, instructions=_instructions)
+    # Concise function list for tool format (stays within OpenAI's 1024-char limit, see #1697)
+    _appendix_concise = f"Available functions: {', '.join(registered_functions.keys())}"
+
+    # Merge with existing format overrides (markdown already has codeblock note).
+    # NOTE: _appendix_full is placed before existing_markdown intentionally so the
+    # library listing appears first. If a markdown key is ever added to instructions_format,
+    # review this order — the existing content would appear *after* the function list.
+    existing_markdown = tool.instructions_format.get("markdown", "").strip()
+    markdown_appendix = (
+        f"{_appendix_full}\n\n{existing_markdown}"
+        if existing_markdown
+        else _appendix_full
+    )
+
+    instructions_format_updated = {
+        **tool.instructions_format,
+        "markdown": markdown_appendix,
+        "xml": _appendix_full,  # xml gets full library + function listing (same as markdown)
+        "tool": _appendix_concise,
+    }
+
+    # create a copy with the updated instructions:
+    # - instructions: short base text (shared across formats)
+    # - instructions_format: format-specific appendices (full signatures for markdown/xml,
+    #   concise names only for tool to stay within OpenAI's 1024-char limit)
+    return dataclasses.replace(
+        tool,
+        instructions=instructions,
+        instructions_format=instructions_format_updated,
+    )
 
 
 tool = ToolSpec(

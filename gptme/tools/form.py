@@ -11,7 +11,6 @@ from collections.abc import Generator
 
 from ..message import Message
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -43,10 +42,16 @@ def examples(tool_format):
 
 > User: I want to start a new project
 > Assistant: Let me gather some information about your project:
-{ToolUse("form", [], '''name: Project name?
+{
+        ToolUse(
+            "form",
+            [],
+            '''name: Project name?
 description: Brief description?
 language: Primary language [python, javascript, rust, go, other]
-priority: Priority level [low, medium, high]''').to_output(tool_format)}
+priority: Priority level [low, medium, high]''',
+        ).to_output(tool_format)
+    }
 > System: Form submitted:
 ```json
 {{"name": "my-awesome-project", "description": "A CLI tool for productivity", "language": "python", "priority": "high"}}
@@ -56,8 +61,14 @@ priority: Priority level [low, medium, high]''').to_output(tool_format)}
 
 > User: Deploy to production
 > Assistant: Please confirm the deployment details:
-{ToolUse("form", [], '''environment: Target environment [staging, production]
-confirm: Proceed with deployment? [yes/no]''').to_output(tool_format)}
+{
+        ToolUse(
+            "form",
+            [],
+            '''environment: Target environment [staging, production]
+confirm: Proceed with deployment? [yes/no]''',
+        ).to_output(tool_format)
+    }
 > System: Form submitted:
 ```json
 {{"environment": "production", "confirm": true}}
@@ -87,7 +98,7 @@ def parse_field(line: str) -> dict | None:
         options = [opt.strip() for opt in options_str.split(",")]
 
         # Check if it's a boolean field [yes/no]
-        if set(opt.lower() for opt in options) == {"yes", "no"}:
+        if {opt.lower() for opt in options} == {"yes", "no"}:
             return {
                 "name": name,
                 "prompt": prompt or f"{name}?",
@@ -131,7 +142,6 @@ def execute_form(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Present a form to the user and collect their responses."""
     if not code:

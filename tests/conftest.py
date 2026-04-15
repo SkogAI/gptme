@@ -14,14 +14,29 @@ from contextlib import contextmanager
 import pytest
 import requests
 
+import gptme.init as _gptme_init
 from gptme.config import get_config
-from gptme.init import init  # noqa
+from gptme.init import init
 from gptme.tools import clear_tools
 from gptme.tools import shell as shell_module
 from gptme.tools.rag import _has_gptme_rag
 from gptme.tools.subagent import _subagents
 
 logger = logging.getLogger(__name__)
+
+# Set at session start if Anthropic API quota is exhausted
+_anthropic_quota_exhausted = False
+
+# Error patterns that indicate API quota/rate-limit exhaustion
+_QUOTA_ERROR_PATTERNS = [
+    "usage limits",
+    "rate limit",
+    "quota exceeded",
+    "billing hard limit",
+    "insufficient_quota",
+    "exceeded your current quota",
+    "spending limit",
+]
 
 
 def has_api_key() -> bool:
@@ -36,6 +51,41 @@ def has_api_key() -> bool:
     )
 
 
+def _check_anthropic_quota_exhausted() -> bool:
+    """Make a minimal API call to detect if the Anthropic quota is exhausted.
+
+    Returns True if quota is exhausted, False if API is available or key not configured.
+    Runs whenever ANTHROPIC_API_KEY is configured, regardless of MODEL env var.
+    """
+    config = get_config()
+    api_key = config.get_env("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return False
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return False
+    except anthropic.BadRequestError as e:
+        error_str = str(e).lower()
+        if any(p in error_str for p in _QUOTA_ERROR_PATTERNS):
+            logger.warning(f"Anthropic API quota exhausted: {e}")
+            return True
+        return False
+    except anthropic.RateLimitError as e:
+        logger.warning(f"Anthropic API rate limited: {e}")
+        return True
+    except Exception:
+        return False
+
+
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
@@ -48,23 +98,59 @@ def pytest_configure(config):
     os.environ["GPTME_CHAT_HISTORY"] = "false"
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Convert API quota/rate-limit failures to skips for requires_api tests.
+
+    The session-start quota check may pass with a tiny haiku call, but the
+    actual test can hit quota limits with heavier models or longer generations.
+    This hook catches those mid-run failures and converts them to skips.
+    """
+    report = yield
+
+    if (
+        report.when == "call"
+        and report.failed
+        and "requires_api" in item.keywords
+        and call.excinfo is not None
+    ):
+        error_str = str(call.excinfo.value).lower()
+        if any(pattern in error_str for pattern in _QUOTA_ERROR_PATTERNS):
+            report.outcome = "skipped"
+            report.longrepr = f"API quota exhausted during test: {call.excinfo.value}"
+
+    return report
+
+
 def pytest_collection_modifyitems(config, items):
-    """Skip tests marked as requiring API key if no key is configured."""
+    """Skip tests marked as requiring API key if no key is configured or quota exhausted."""
     if not has_api_key():
         # Set environment variables to override LLM provider config
         os.environ["MODEL"] = "local/test"
         os.environ["OPENAI_BASE_URL"] = "http://localhost:666"
 
-        # Skip tests that require an API key if no key is configured
         skip_api = pytest.mark.skip(reason="No API key configured")
+        for item in items:
+            if "requires_api" in item.keywords:
+                item.add_marker(skip_api)
+    elif _anthropic_quota_exhausted:
+        skip_api = pytest.mark.skip(reason="Anthropic API quota exhausted")
         for item in items:
             if "requires_api" in item.keywords:
                 item.add_marker(skip_api)
 
 
 def pytest_sessionstart(session):
+    global _anthropic_quota_exhausted
     # Download the embedding model before running tests.
     download_model()
+    # Check if Anthropic quota is exhausted to skip API tests gracefully.
+    if has_api_key():
+        _anthropic_quota_exhausted = _check_anthropic_quota_exhausted()
+        if _anthropic_quota_exhausted:
+            logger.warning(
+                "⚠️  Anthropic API quota exhausted — requires_api tests will be skipped"
+            )
 
 
 def download_model():
@@ -73,13 +159,13 @@ def download_model():
 
     try:
         # downloads the model if it doesn't exist
-        from chromadb.utils import embedding_functions  # type: ignore # fmt: skip
+        from chromadb.utils import embedding_functions  # fmt: skip
     except ImportError:
         return
 
     ef = embedding_functions.DefaultEmbeddingFunction()
     if ef:
-        ef._download_model_if_not_exists()  # type: ignore
+        ef._download_model_if_not_exists()
 
 
 @pytest.fixture
@@ -108,6 +194,10 @@ def reduce_anthropic_retries(monkeypatch):
 def clear_tools_before():
     # Clear all tools and cache to prevent test conflicts
     clear_tools()
+    # Reset init state so tools are fully re-registered on next init() call.
+    # Without this, the _init_done guard prevents init_tools() from re-running
+    # after clear_tools(), leaving get_tool() returning None for all tools.
+    _gptme_init._init_done = False
 
 
 @pytest.fixture(autouse=True)
@@ -175,7 +265,13 @@ def temp_file():
 
 @pytest.fixture(autouse=True)
 def init_():
-    init(None, interactive=False, tool_allowlist=None, tool_format="markdown")
+    # Pass MODEL from env explicitly to avoid picking up stale config.chat.model
+    # values left by server tests. When _init_done is reset per-test, init_model()
+    # re-runs and would otherwise read the contaminated config instead of the test
+    # environment's MODEL. Server tests now use fully-qualified model names
+    # (e.g. "openai/gpt-4o-mini") to prevent provider validation errors.
+    model = os.environ.get("MODEL")
+    init(model, interactive=False, tool_allowlist=None, tool_format="markdown")
 
 
 @pytest.fixture
@@ -198,6 +294,7 @@ def cleanup_tmux_sessions():
         try:
             result = subprocess.run(
                 ["tmux", "list-sessions", "-F", "#{session_name}"],
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -210,6 +307,7 @@ def cleanup_tmux_sessions():
                     if simple_session_pattern.match(session):
                         subprocess.run(
                             ["tmux", "kill-session", "-t", session],
+                            check=False,
                             capture_output=True,
                             timeout=5,
                         )
@@ -231,7 +329,7 @@ def server_thread():
         "flask", reason="flask not installed, install server extras (-E server)"
     )
 
-    from gptme.server.api import create_app  # fmt: skip
+    from gptme.server.app import create_app  # fmt: skip
 
     app = create_app()
 
@@ -257,12 +355,12 @@ def server_thread():
     # Give server time to start (so we don't get Connection Refused)
     time.sleep(0.5)
 
-    yield port  # Return the port to the test
+    return port  # Return the port to the test
 
 
 @pytest.fixture
 def client():
-    from gptme.server.api import create_app  # fmt: skip
+    from gptme.server.app import create_app  # fmt: skip
 
     app = create_app()
 
@@ -271,7 +369,7 @@ def client():
         yield test_client
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture()
 def setup_conversation(server_thread):
     """Create a conversation and return its ID, session ID, and port."""
     port = server_thread
@@ -294,10 +392,10 @@ def setup_conversation(server_thread):
     assert resp.status_code == 200
     session_id = resp.json()["session_id"]
 
-    yield port, conversation_id, session_id
+    return port, conversation_id, session_id
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture()
 def event_listener(setup_conversation):
     """Set up an event listener for the conversation."""
     port, conversation_id, session_id = setup_conversation

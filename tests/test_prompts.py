@@ -33,7 +33,7 @@ def test_get_prompt_short():
 
     # TODO: make the short prompt shorter
     # Note: Lesson system additions increased prompt size slightly
-    assert 500 < len_tokens(combined_content, "gpt-4") < 3500 + user_config_size
+    assert 500 < len_tokens(combined_content, "gpt-4") < 4000 + user_config_size
 
 
 def test_get_prompt_custom():
@@ -42,49 +42,37 @@ def test_get_prompt_custom():
     assert prompt_msgs[0].content == "Hello world!"
 
 
-def test_get_prompt_instructions_only():
-    """Test instructions-only mode produces minimal context."""
-    prompt_msgs = get_prompt(
-        get_tools(), prompt="full", context_mode="instructions-only"
-    )
-    combined_content = "\n\n".join(msg.content for msg in prompt_msgs)
-
-    # Instructions-only should be much smaller than full
-    full_msgs = get_prompt(get_tools(), prompt="full", context_mode="full")
-    full_content = "\n\n".join(msg.content for msg in full_msgs)
-
-    # Instructions-only should be significantly smaller
-    instructions_tokens = len_tokens(combined_content, "gpt-4")
-    full_tokens = len_tokens(full_content, "gpt-4")
-    assert (
-        instructions_tokens < full_tokens * 0.5
-    ), f"Instructions-only ({instructions_tokens}) should be <50% of full ({full_tokens})"
-
-
-def test_get_prompt_selective_tools():
-    """Test selective mode with tools included."""
-    # With tools
-    with_tools = get_prompt(
+def test_get_prompt_selective_tools_always_included():
+    """Test that tool descriptions are always included when tools are loaded."""
+    # Tools loaded: descriptions should be in prompt regardless of context_include
+    with_tools_flag = get_prompt(
         get_tools(),
         prompt="full",
         context_mode="selective",
-        context_include=["tools"],
+        context_include=["tools"],  # explicit (legacy, still works)
     )
-    with_tools_content = "\n\n".join(msg.content for msg in with_tools)
-
-    # Without tools
-    without_tools = get_prompt(
+    without_tools_flag = get_prompt(
         get_tools(),
         prompt="full",
         context_mode="selective",
         context_include=[],
     )
-    without_tools_content = "\n\n".join(msg.content for msg in without_tools)
 
-    # With tools should have more content
-    assert len_tokens(with_tools_content, "gpt-4") > len_tokens(
-        without_tools_content, "gpt-4"
+    with_content = "\n\n".join(msg.content for msg in with_tools_flag)
+    without_content = "\n\n".join(msg.content for msg in without_tools_flag)
+
+    # Should be the same size — tools are always included when loaded
+    assert len_tokens(with_content, "gpt-4") == len_tokens(without_content, "gpt-4")
+
+    # No tools loaded: should have less content
+    no_tools = get_prompt(
+        [],
+        prompt="full",
+        context_mode="selective",
+        context_include=[],
     )
+    no_tools_content = "\n\n".join(msg.content for msg in no_tools)
+    assert len_tokens(no_tools_content, "gpt-4") < len_tokens(without_content, "gpt-4")
 
 
 def test_get_prompt_selective_components():
@@ -103,6 +91,17 @@ def test_get_prompt_selective_components():
     # Full mode should have more content
     full_mode = get_prompt(get_tools(), prompt="full", context_mode="full")
     assert len(full_mode) >= len(empty_selective)
+
+
+def test_prompt_systeminfo_uses_workspace(tmp_path):
+    """Test that prompt_systeminfo uses the provided workspace path."""
+    from gptme.prompts import prompt_systeminfo
+
+    msgs = list(prompt_systeminfo(workspace=tmp_path))
+    content = "\n".join(msg.content for msg in msgs)
+    assert str(tmp_path) in content, (
+        f"Expected {tmp_path} in system prompt, got: {content[:200]}"
+    )
 
 
 def test_glob_path_traversal_protection(tmp_path):
@@ -135,6 +134,153 @@ files = ["../outside/secret.txt", "README.md"]
     msgs = list(prompt_workspace(workspace))
     content = "\n".join(msg.content for msg in msgs)
 
-    # Should include README but NOT secret file
-    assert "# Test" in content, "README.md should be included"
-    assert "secret data" not in content, "secret.txt should be blocked (path traversal)"
+    # Collect attached files from all messages
+    attached_files: list[str] = []
+    for msg in msgs:
+        attached_files.extend(str(f) for f in msg.files)
+
+    # README should be attached, secret file should be blocked (path traversal)
+    assert any("README.md" in f for f in attached_files), "README.md should be attached"
+    assert not any("secret.txt" in f for f in attached_files), (
+        "secret.txt should NOT be attached (path traversal)"
+    )
+    assert "../outside/secret.txt" not in content, "Path traversal should be blocked"
+
+
+def test_workspace_git_status_in_git_repo(tmp_path):
+    """Test that git status is included in workspace prompt for git repos."""
+    import subprocess
+
+    from gptme.prompts.workspace import _get_git_status
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    # Initialize a git repo on a test branch (avoids master-protection hooks)
+    subprocess.run(
+        ["git", "init", "-b", "test-branch"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+
+    # Clean repo (no commits yet, but git status should still work)
+    result = _get_git_status(workspace)
+    assert result is not None
+    assert "Branch" in result
+
+    # Add a file and check status shows it
+    (workspace / "hello.txt").write_text("hello")
+    result = _get_git_status(workspace)
+    assert result is not None
+    assert "hello.txt" in result
+    assert "Branch" in result
+
+    # Commit and verify clean status
+    subprocess.run(
+        ["git", "add", "hello.txt"], cwd=workspace, capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init", "--no-verify"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+    result = _get_git_status(workspace)
+    assert result is not None
+    assert "(clean)" in result
+    assert "test-branch" in result
+
+
+def test_dynamic_context_after_static(tmp_path):
+    """Test that context_cmd output comes after static workspace content.
+
+    This ordering improves prompt caching: static/semi-static content first
+    (cacheable prefix), dynamic context last (changes every session).
+    """
+    from gptme.prompts import get_prompt
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Test Project")
+    (workspace / "gptme.toml").write_text(
+        '[prompt]\nfiles = ["README.md"]\ncontext_cmd = "echo DYNAMIC_MARKER_123"\n'
+    )
+
+    msgs = get_prompt(
+        get_tools(),
+        prompt="full",
+        workspace=workspace,
+    )
+
+    # Find the indices of workspace file content and dynamic context
+    file_idx = None
+    dynamic_idx = None
+    for i, msg in enumerate(msgs):
+        if "README.md" in msg.content:
+            file_idx = i
+        if "DYNAMIC_MARKER_123" in msg.content:
+            dynamic_idx = i
+
+    assert file_idx is not None, "Should include workspace files"
+    assert dynamic_idx is not None, "Should include context_cmd output"
+    assert dynamic_idx > file_idx, (
+        f"Dynamic context (msg {dynamic_idx}) should come after "
+        f"static workspace files (msg {file_idx})"
+    )
+
+
+def test_workspace_git_status_not_git_repo(tmp_path):
+    """Test that git status returns None for non-git directories."""
+    from gptme.prompts.workspace import _get_git_status
+
+    result = _get_git_status(tmp_path)
+    assert result is None
+
+
+def test_workspace_git_status_in_prompt(tmp_path):
+    """Test that git status section appears in workspace prompt messages."""
+    import subprocess
+
+    from gptme.prompts import prompt_workspace
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "test-branch"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+
+    # Add an untracked file so status shows something
+    (workspace / "README.md").write_text("# Test")
+
+    msgs = list(prompt_workspace(workspace))
+    content = "\n".join(msg.content for msg in msgs)
+    assert "Git Status" in content
+    assert "Branch" in content

@@ -1,6 +1,7 @@
 """Unified context configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from .selector.config import ContextSelectorConfig
 
@@ -24,18 +25,14 @@ class ContextConfig:
     enabled: bool = False  # Default: opt-in
 
     # Nested selector configuration
-    selector: ContextSelectorConfig = None  # type: ignore
-
-    def __post_init__(self):
-        # Default selector config if not provided
-        if self.selector is None:
-            self.selector = ContextSelectorConfig()
+    selector: ContextSelectorConfig = field(default_factory=ContextSelectorConfig)
 
     @classmethod
-    def from_dict(cls, config_dict: dict) -> "ContextConfig":
+    def from_dict(cls, config_dict: dict[str, Any]) -> "ContextConfig":
         """Create config from dictionary (typically from gptme.toml).
 
-        Example:
+        Example::
+
             config = ContextConfig.from_dict({
                 'enabled': True,
                 'selector': {

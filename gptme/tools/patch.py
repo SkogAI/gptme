@@ -17,7 +17,6 @@ from ..config import get_config
 from ..message import Message
 from ..util.ask_execute import execute_with_confirmation
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -28,11 +27,16 @@ instructions = """
 To patch/modify files, we use an adapted version of git conflict markers.
 
 This can be used to edit files, without having to rewrite the whole file.
-Only one patch block can be written per tool use. Extra ORIGINAL/UPDATED blocks will be ignored.
-Try to keep the patch as small as possible. Avoid placeholders, as they may make the patch fail.
+Multiple ORIGINAL/UPDATED blocks can be included in a single patch to make several changes at once.
+Try to keep each patch as small as possible. Avoid placeholders, as they may make the patch fail.
 
-To keep the patch small, try to scope the patch to imports/function/class.
-If the patch is large, consider using the save tool to rewrite the whole file.
+To keep patches small, try to scope each change to imports/function/class.
+If the total patch is large, consider using the save tool to rewrite the whole file.
+
+Note: When patching markdown files, avoid replacing partial codeblocks (e.g., just the opening
+or closing backticks). The patch content is parsed as nested markdown, which requires complete
+codeblocks. For simple codeblock boundary changes (like modifying a language tag), use shell
+commands like `sed` or `perl` instead.
 """.strip()
 
 instructions_format = {
@@ -41,13 +45,19 @@ The $PATH parameter MUST be on the same line as the code block start, not on the
 
 The patch block should be written in the following format:
 
-{ToolUse("patch", ["$PATH"], '''
+{
+        ToolUse(
+            "patch",
+            ["$PATH"],
+            '''
 <<<<<<< ORIGINAL
 $ORIGINAL_CONTENT
 =======
 $UPDATED_CONTENT
 >>>>>>> UPDATED
-'''.strip()).to_output("markdown")}
+'''.strip(),
+        ).to_output("markdown")
+    }
 """,
     "tool": "The `patch` parameter must be a string containing conflict markers without any code block.",
 }
@@ -225,7 +235,10 @@ class Patch:
                 modified, _ = re.split(re.escape(UPDATED), after_divider, maxsplit=1)
 
                 # Check for extra ======= markers in the updated content
-                if "\n=======" in modified:
+                # Use regex with negative lookahead to match exactly 7 equals signs
+                # This avoids matching longer sequences like RST heading underlines
+                # (e.g., ===================) while still catching actual extra dividers
+                if re.search(r"\n=======(?!=)", modified):
                     raise ValueError(
                         "invalid patch format: extra ======= marker found in updated content. "
                         "Use only one ======= between original and updated content."
@@ -256,10 +269,31 @@ class Patch:
 def apply(codeblock: str, content: str) -> str:
     """
     Applies multiple patches in ``codeblock`` to ``content``.
+    Provides detailed error messages when patches fail.
     """
+    patches = list(Patch.from_codeblock(codeblock))
+    total_hunks = len(patches)
     new_content = content
-    for patch in Patch.from_codeblock(codeblock):
-        new_content = patch.apply(new_content)
+
+    for i, patch in enumerate(patches, 1):
+        try:
+            new_content = patch.apply(new_content)
+        except ValueError as e:
+            error_msg = str(e.args[0]) if e.args else str(e)
+            # Create a preview of the failing hunk (first few lines)
+            original_preview = patch.original[:100].replace("\n", "\\n")
+            if len(patch.original) > 100:
+                original_preview += "..."
+
+            if total_hunks == 1:
+                raise ValueError(error_msg) from None
+            status = f"Hunk {i}/{total_hunks} failed"
+            if i > 1:
+                status += f" ({i - 1} hunk(s) applied successfully before failure)"
+            raise ValueError(
+                f"{status}: {error_msg}\nFailed hunk starts with: {original_preview!r}"
+            ) from None
+
     return new_content
 
 
@@ -273,10 +307,11 @@ def preview_patch(content: str, path: Path | None) -> str | None:
 
 
 def execute_patch_impl(
-    content: str, path: Path | None, confirm: ConfirmFunc
+    content: str, path: Path | None
 ) -> Generator[Message, None, None]:
     """Actual patch implementation."""
-    assert path is not None
+    if path is None:
+        raise ValueError("Path is required to apply a patch")
 
     # Print full path to give agent feedback about exactly which file is being patched
     path_display = path
@@ -295,7 +330,7 @@ def execute_patch_impl(
             ) from err
 
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             original_content = f.read()
 
         # Apply the patch
@@ -305,13 +340,13 @@ def execute_patch_impl(
         patch_len = len(content)
         full_file_len = len(patched_content)
         warnings = []
-        if 1000 < full_file_len < patch_len:
+        if patch_len > 1000 and patch_len > full_file_len:
             warnings.append(
                 "Note: The patch was big and larger than the file. In the future, try writing smaller patches or use the save tool instead."
             )
 
         # Write the patched content
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(patched_content)
 
         # Return success message with any warnings
@@ -333,7 +368,6 @@ def execute_patch(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc = lambda _: True,
 ) -> Generator[Message, None, None]:
     """Applies the patch."""
     if code is None and kwargs is not None:
@@ -347,7 +381,6 @@ def execute_patch(
         code,
         args,
         kwargs,
-        confirm,
         execute_fn=execute_patch_impl,
         get_path_fn=get_path,
         preview_fn=preview_patch,

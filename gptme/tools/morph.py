@@ -16,7 +16,6 @@ from ..llm import _chat_complete, list_available_providers
 from ..message import Message
 from ..util.ask_execute import execute_with_confirmation
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -32,9 +31,6 @@ This will be read by a less intelligent model, which will quickly apply the edit
 
 When writing the edit, you should specify each edit in sequence, with the special comment // ... existing code ... to represent unchanged code in between edited lines.
 
-This will be read by a less intelligent model, which will quickly apply the edit. You should make it clear what the edit is, while also minimizing the unchanged code you write.
-When writing the edit, you should specify each edit in sequence, with the special comment // ... existing code ... to represent unchanged code in between edited lines.
-
 You should bias towards repeating as few lines of the original file as possible to convey the change.
 NEVER show unmodified code in the edit, unless sufficient context of unchanged lines around the code you're editing is needed to resolve ambiguity.
 If you plan on deleting a section, you must provide surrounding context to indicate the deletion.
@@ -43,8 +39,11 @@ DO NOT omit spans of pre-existing code without using the // ... existing code ..
 
 
 def examples(tool_format) -> str:
-    return f"""{ToolUse("morph", ["example.py"],
-'''
+    return f"""{
+        ToolUse(
+            "morph",
+            ["example.py"],
+            '''
 // ... existing code ...
 FIRST_EDIT
 // ... existing code ...
@@ -52,7 +51,9 @@ SECOND_EDIT
 // ... existing code ...
 THIRD_EDIT
 // ... existing code ...
-'''.strip()).to_output(tool_format)}"""
+'''.strip(),
+        ).to_output(tool_format)
+    }"""
 
 
 def is_openrouter_available() -> bool:
@@ -68,7 +69,7 @@ def preview_morph(content: str, path: Path | None) -> str | None:
 
     try:
         # Read original content
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             original_content = f.read()
 
         # Generate a diff between original and edited content
@@ -88,14 +89,13 @@ def preview_morph(content: str, path: Path | None) -> str | None:
         return "\n".join(diff_lines)
 
     except Exception as e:
-        return f"Preview failed: {str(e)}"
+        return f"Preview failed: {e}"
 
 
 def execute_morph(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc = lambda _: True,
 ) -> Generator[Message, None, None]:
     """Applies the morph edit."""
     if code is None and kwargs is not None:
@@ -111,9 +111,23 @@ def execute_morph(
         yield Message("system", "Error: No file path provided")
         return
 
+    # Resolve path and check for path traversal
+    # (matches the same pattern used by save/patch/append tools)
+    path_display = file_path
+    file_path = file_path.expanduser().resolve()
+    if not path_display.is_absolute():
+        cwd = Path.cwd().resolve()
+        try:
+            file_path.relative_to(cwd)
+        except ValueError as err:
+            raise ValueError(
+                f"Path traversal detected: {path_display} resolves to {file_path} "
+                f"which is outside current directory {cwd}"
+            ) from err
+
     try:
         # Read the original file
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             original_content = f.read()
     except FileNotFoundError:
         yield Message("system", f"Error: File not found: {file_path}")
@@ -134,7 +148,7 @@ def execute_morph(
             messages, "openrouter/morph/morph-v3-fast", tools=None
         )
     except Exception as e:
-        yield Message("system", f"Error: failed Morph API call: {str(e)}")
+        yield Message("system", f"Error: failed Morph API call: {e}")
         return
 
     edited_content = response.strip()
@@ -146,16 +160,15 @@ def execute_morph(
 
     # Create a closure that captures the original content for verification
     def execute_morph_with_verification(
-        content: str, path: Path | None, confirm_fn: ConfirmFunc
+        content: str, path: Path | None
     ) -> Generator[Message, None, None]:
-        yield from execute_morph_impl(content, path, confirm_fn, original_content)
+        yield from execute_morph_impl(content, path, original_content)
 
     # Use execute_with_confirmation with the edited content
     yield from execute_with_confirmation(
         edited_content,
         args,
         kwargs,
-        confirm,
         execute_fn=execute_morph_with_verification,
         get_path_fn=lambda *_: file_path,
         preview_fn=preview_morph,
@@ -168,7 +181,6 @@ def execute_morph(
 def execute_morph_impl(
     content: str,
     path: Path | None,
-    confirm: ConfirmFunc,
     expected_original_content: str,
 ) -> Generator[Message, None, None]:
     """Actual morph implementation - writes the edited content to file."""
@@ -177,7 +189,7 @@ def execute_morph_impl(
 
     try:
         # Read current content to verify it hasn't changed
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             current_content = f.read()
 
         # Verify that the file hasn't changed since we generated the patch
@@ -209,7 +221,7 @@ def execute_morph_impl(
         )
 
         # Write the edited content back to file
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
 
         # Provide detailed success message with diff
@@ -234,7 +246,7 @@ def execute_morph_impl(
             f"Morph failed: Permission denied when writing to `{path}`"
         ) from None
     except Exception as e:
-        raise ValueError(f"Morph failed: {str(e)}") from e
+        raise ValueError(f"Morph failed: {e}") from e
 
 
 tool = ToolSpec(

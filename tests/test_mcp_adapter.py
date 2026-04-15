@@ -8,6 +8,8 @@ from gptme.config import Config, MCPConfig, MCPServerConfig
 from gptme.mcp.registry import MCPServerInfo
 from gptme.tools.mcp_adapter import (
     _dynamic_servers,
+    _mcp_clients,
+    _restart_mcp_client,
     create_mcp_execute_function,
     create_mcp_tools,
     get_mcp_server_info,
@@ -16,6 +18,16 @@ from gptme.tools.mcp_adapter import (
     search_mcp_servers,
     unload_mcp_server,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_mcp_state():
+    """Reset global MCP client state between tests."""
+    _dynamic_servers.clear()
+    _mcp_clients.clear()
+    yield
+    _dynamic_servers.clear()
+    _mcp_clients.clear()
 
 
 @pytest.fixture
@@ -124,10 +136,7 @@ def test_create_mcp_execute_function(mock_config):
     assert callable(execute_fn)
 
     # Test execution with valid JSON
-    def confirm(x: str) -> bool:
-        return True
-
-    result = execute_fn('{"param1": "value"}', None, None, confirm)
+    result = execute_fn('{"param1": "value"}', None, None)
     # Handle both generator and list returns
     messages = list(result) if hasattr(result, "__iter__") else [result]
     assert len(messages) > 0
@@ -257,6 +266,34 @@ def test_unload_mcp_server_success():
     assert "test-server" not in _dynamic_servers
 
 
+def test_restart_mcp_client_survives_cleanup_failure_and_reconnects(mock_config):
+    """Test restart tolerates cleanup failures from the old client."""
+
+    close_calls: list[str] = []
+
+    class BrokenLoop:
+        def close(self) -> None:
+            close_calls.append("close")
+            raise RuntimeError("cleanup boom")
+
+    class OldClient:
+        stack = None
+        loop = BrokenLoop()
+
+    new_client = MagicMock()
+    new_client.connect.return_value = (MagicMock(), MagicMock())
+
+    _mcp_clients["test-server"] = OldClient()  # type: ignore[assignment]
+
+    with patch("gptme.tools.mcp_adapter.MCPClient", return_value=new_client):
+        restarted = _restart_mcp_client("test-server", mock_config)
+
+    assert close_calls == ["close"]
+    assert restarted is new_client
+    assert _mcp_clients["test-server"] is new_client
+    new_client.connect.assert_called_once_with("test-server")
+
+
 def test_list_loaded_servers_empty():
     """Test list_loaded_servers when no servers are configured."""
     # Mock empty config
@@ -291,3 +328,146 @@ def test_list_loaded_servers_with_servers():
 
     # Cleanup
     _dynamic_servers.clear()
+
+
+# ============================================================================
+# MCP-to-gptme elicitation bridge tests
+# ============================================================================
+
+# ElicitRequestFormParams was added in mcp >= 1.22.0 (split from ElicitRequestParams)
+# In older versions, ElicitRequestParams is a Union TypeAlias, not instantiable directly.
+# These tests require mcp >= 1.22.0 with ElicitRequestFormParams as a concrete class.
+_has_mcp_elicitation = False
+_ElicitFormParams = None
+try:
+    import mcp.types as _mcp_types
+
+    if hasattr(_mcp_types, "ElicitRequestFormParams"):
+        _has_mcp_elicitation = True
+        _ElicitFormParams = _mcp_types.ElicitRequestFormParams  # type: ignore[attr-defined]
+except ImportError:
+    pass
+
+
+@pytest.mark.skipif(
+    not _has_mcp_elicitation,
+    reason="MCP elicitation (ElicitRequestFormParams) requires mcp >= 1.22.0",
+)
+class TestMCPElicitationBridge:
+    """Tests for MCP elicitation → gptme elicitation translation."""
+
+    def test_simple_text_request(self):
+        """MCP request without schema maps to text elicitation."""
+        from gptme.tools.mcp_adapter import _mcp_params_to_elicitation_request
+
+        assert _ElicitFormParams is not None
+        params = _ElicitFormParams(message="Enter your name", requestedSchema={})
+        request = _mcp_params_to_elicitation_request(params, "test-server")
+
+        assert request.type == "text"
+        assert "test-server" in request.prompt
+        assert "Enter your name" in request.prompt
+
+    def test_schema_request_maps_to_form(self):
+        """MCP request with schema maps to form elicitation with FormFields."""
+        from gptme.tools.mcp_adapter import _mcp_params_to_elicitation_request
+
+        assert _ElicitFormParams is not None
+        params = _ElicitFormParams(
+            message="Configure settings",
+            requestedSchema={
+                "properties": {
+                    "name": {"type": "string", "description": "Your name"},
+                    "age": {"type": "integer", "description": "Your age"},
+                    "active": {"type": "boolean", "description": "Is active?"},
+                },
+                "required": ["name"],
+            },
+        )
+        request = _mcp_params_to_elicitation_request(params, "test-server")
+
+        assert request.type == "form"
+        assert request.fields is not None
+        assert len(request.fields) == 3
+
+        # Check field mapping
+        name_field = next(f for f in request.fields if f.name == "name")
+        assert name_field.type == "text"
+        assert name_field.required is True
+
+        age_field = next(f for f in request.fields if f.name == "age")
+        assert age_field.type == "number"
+
+        active_field = next(f for f in request.fields if f.name == "active")
+        assert active_field.type == "boolean"
+
+    def test_cancelled_response_to_mcp(self):
+        """Cancelled ElicitationResponse maps to MCP cancel action."""
+        from gptme.hooks.elicitation import ElicitationResponse
+        from gptme.tools.mcp_adapter import _elicitation_response_to_mcp_result
+
+        response = ElicitationResponse.cancel()
+        result = _elicitation_response_to_mcp_result(response)
+
+        assert result.action == "cancel"
+        assert result.content is None
+
+    def test_none_value_response_to_mcp(self):
+        """None value in response maps to MCP decline action."""
+        from gptme.hooks.elicitation import ElicitationResponse
+        from gptme.tools.mcp_adapter import _elicitation_response_to_mcp_result
+
+        response = ElicitationResponse(value=None, cancelled=False)
+        result = _elicitation_response_to_mcp_result(response)
+
+        assert result.action == "decline"
+
+    def test_form_json_response_to_mcp(self):
+        """JSON form response maps to MCP accept with parsed content."""
+        import json
+
+        from gptme.hooks.elicitation import ElicitationResponse
+        from gptme.tools.mcp_adapter import _elicitation_response_to_mcp_result
+
+        form_data = {"name": "Bob", "age": 42}
+        response = ElicitationResponse.text(json.dumps(form_data))
+        result = _elicitation_response_to_mcp_result(response)
+
+        assert result.action == "accept"
+        assert result.content == form_data
+
+    def test_text_response_to_mcp(self):
+        """Plain text response wraps in value dict for MCP."""
+        from gptme.hooks.elicitation import ElicitationResponse
+        from gptme.tools.mcp_adapter import _elicitation_response_to_mcp_result
+
+        response = ElicitationResponse.text("hello")
+        result = _elicitation_response_to_mcp_result(response)
+
+        assert result.action == "accept"
+        assert result.content == {"value": "hello"}
+
+    def test_schema_with_defaults(self):
+        """Schema properties with defaults are passed through to FormFields."""
+        from gptme.tools.mcp_adapter import _mcp_params_to_elicitation_request
+
+        assert _ElicitFormParams is not None
+        params = _ElicitFormParams(
+            message="Settings",
+            requestedSchema={
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Port number",
+                        "default": 8080,
+                    },
+                },
+                "required": [],
+            },
+        )
+        request = _mcp_params_to_elicitation_request(params, "test-server")
+
+        assert request.fields is not None
+        port_field = request.fields[0]
+        assert port_field.default == "8080"
+        assert port_field.required is False

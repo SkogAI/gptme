@@ -37,10 +37,24 @@ def sample_match(sample_lesson):
 
 @pytest.fixture
 def mock_config():
-    """Mock configuration."""
+    """Mock configuration.
+
+    Configures get_env_bool to:
+    - Return True for GPTME_LESSONS_AUTO_INCLUDE
+    - Return False for GPTME_LESSONS_USE_HYBRID (avoid ACE dependencies)
+    - Return default for other keys
+    """
+
+    def get_env_bool_side_effect(key, default=False):
+        if key == "GPTME_LESSONS_AUTO_INCLUDE":
+            return True
+        if key == "GPTME_LESSONS_USE_HYBRID":
+            return False  # Disable hybrid to avoid embedder issues in tests
+        return default
+
     with patch("gptme.tools.lessons.get_config") as mock:
         config = MagicMock()
-        config.get_env_bool = MagicMock(return_value=True)
+        config.get_env_bool = MagicMock(side_effect=get_env_bool_side_effect)
         config.get_env = MagicMock(return_value="5")
         mock.return_value = config
         yield config
@@ -64,6 +78,15 @@ def conversation_log(user_message):
 class TestAutoIncludeLessonsHook:
     """Tests for auto_include_lessons_hook."""
 
+    @pytest.fixture(autouse=True)
+    def reset_session_stats(self):
+        """Reset lesson session stats before each test to ensure isolation."""
+        from gptme.tools.lessons import _reset_session_stats
+
+        _reset_session_stats()
+        yield
+        _reset_session_stats()
+
     @staticmethod
     def _create_manager(messages):
         """Helper to create a mock manager from a list of messages."""
@@ -77,16 +100,26 @@ class TestAutoIncludeLessonsHook:
 
     def test_hook_disabled_by_config(self, conversation_log, mock_config):
         """Test that hook respects GPTME_LESSONS_AUTO_INCLUDE config."""
-        mock_config.get_env_bool.return_value = False
+
+        # Override side_effect to return False for AUTO_INCLUDE
+        def get_env_bool_disabled(key, default=False):
+            if key == "GPTME_LESSONS_AUTO_INCLUDE":
+                return False  # Disabled
+            if key == "GPTME_LESSONS_USE_HYBRID":
+                return False
+            return default
+
+        mock_config.get_env_bool.side_effect = get_env_bool_disabled
 
         messages = list(
             auto_include_lessons_hook(self._create_manager(conversation_log)) or []
         )
         assert len(messages) == 0
 
-        mock_config.get_env_bool.assert_called_once_with(
-            "GPTME_LESSONS_AUTO_INCLUDE", True
-        )
+        # Verify AUTO_INCLUDE was checked (it's the first call)
+        assert mock_config.get_env_bool.call_count >= 1
+        first_call = mock_config.get_env_bool.call_args_list[0]
+        assert first_call[0] == ("GPTME_LESSONS_AUTO_INCLUDE", True)
 
     def test_hook_no_user_message(self, mock_config):
         """Test hook with no user messages."""
@@ -118,48 +151,50 @@ class TestAutoIncludeLessonsHook:
         self, conversation_log, mock_config, sample_lesson
     ):
         """Test hook when no lessons match."""
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class:
-                mock_index = MagicMock()
-                mock_index.lessons = [sample_lesson]
-                mock_get_index.return_value = mock_index
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class,
+        ):
+            mock_index = MagicMock()
+            mock_index.lessons = [sample_lesson]
+            mock_get_index.return_value = mock_index
 
-                mock_matcher = MagicMock()
-                mock_matcher.match.return_value = []
-                mock_matcher_class.return_value = mock_matcher
+            mock_matcher = MagicMock()
+            mock_matcher.match.return_value = []
+            mock_matcher_class.return_value = mock_matcher
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(conversation_log))
-                    or []
-                )
-                assert len(messages) == 0
+            messages = list(
+                auto_include_lessons_hook(self._create_manager(conversation_log)) or []
+            )
+            assert len(messages) == 0
 
     def test_hook_includes_matching_lessons(
         self, conversation_log, mock_config, sample_lesson, sample_match
     ):
         """Test hook includes matching lessons."""
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class:
-                mock_index = MagicMock()
-                mock_index.lessons = [sample_lesson]
-                mock_get_index.return_value = mock_index
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class,
+        ):
+            mock_index = MagicMock()
+            mock_index.lessons = [sample_lesson]
+            mock_get_index.return_value = mock_index
 
-                mock_matcher = MagicMock()
-                mock_matcher.match.return_value = [sample_match]
-                mock_matcher_class.return_value = mock_matcher
+            mock_matcher = MagicMock()
+            mock_matcher.match.return_value = [sample_match]
+            mock_matcher_class.return_value = mock_matcher
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(conversation_log))
-                    or []
-                )
+            messages = list(
+                auto_include_lessons_hook(self._create_manager(conversation_log)) or []
+            )
 
-                assert len(messages) == 1
-                message = messages[0]
-                assert isinstance(message, Message)
-                assert message.role == "system"
-                assert "# Relevant Lessons" in message.content
-                assert "Patch Best Practices" in message.content
-                assert message.hide is True
+            assert len(messages) == 1
+            message = messages[0]
+            assert isinstance(message, Message)
+            assert message.role == "system"
+            assert "# Relevant Lessons" in message.content
+            assert "Patch Best Practices" in message.content
+            assert message.hide is True
 
     def test_hook_limits_max_lessons(self, conversation_log, mock_config):
         """Test hook respects max lessons limit."""
@@ -187,51 +222,53 @@ class TestAutoIncludeLessonsHook:
 
         mock_config.get_env.return_value = "3"  # Limit to 3
 
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class:
-                mock_index = MagicMock()
-                mock_index.lessons = lessons
-                mock_get_index.return_value = mock_index
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class,
+        ):
+            mock_index = MagicMock()
+            mock_index.lessons = lessons
+            mock_get_index.return_value = mock_index
 
-                mock_matcher = MagicMock()
-                mock_matcher.match.return_value = matches
-                mock_matcher_class.return_value = mock_matcher
+            mock_matcher = MagicMock()
+            mock_matcher.match.return_value = matches
+            mock_matcher_class.return_value = mock_matcher
 
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(conversation_log))
-                    or []
-                )
+            messages = list(
+                auto_include_lessons_hook(self._create_manager(conversation_log)) or []
+            )
 
-                assert len(messages) == 1
-                assert isinstance(messages[0], Message)
-                content = messages[0].content
+            assert len(messages) == 1
+            assert isinstance(messages[0], Message)
+            content = messages[0].content
 
-                # Should only include first 3 lessons
-                assert "Lesson 0" in content
-                assert "Lesson 1" in content
-                assert "Lesson 2" in content
-                assert "Lesson 9" not in content
+            # Should only include first 3 lessons
+            assert "Lesson 0" in content
+            assert "Lesson 1" in content
+            assert "Lesson 2" in content
+            assert "Lesson 9" not in content
 
     def test_hook_handles_invalid_max_lessons(self, conversation_log, mock_config):
         """Test hook with invalid max lessons config."""
         mock_config.get_env.return_value = "invalid"
 
-        with patch("gptme.tools.lessons._get_lesson_index") as mock_get_index:
-            with patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class:
-                mock_index = MagicMock()
-                mock_index.lessons = []
-                mock_get_index.return_value = mock_index
+        with (
+            patch("gptme.tools.lessons._get_lesson_index") as mock_get_index,
+            patch("gptme.tools.lessons.LessonMatcher") as mock_matcher_class,
+        ):
+            mock_index = MagicMock()
+            mock_index.lessons = []
+            mock_get_index.return_value = mock_index
 
-                mock_matcher = MagicMock()
-                mock_matcher.match.return_value = []
-                mock_matcher_class.return_value = mock_matcher
+            mock_matcher = MagicMock()
+            mock_matcher.match.return_value = []
+            mock_matcher_class.return_value = mock_matcher
 
-                # Should not raise error, should use default of 5
-                messages = list(
-                    auto_include_lessons_hook(self._create_manager(conversation_log))
-                    or []
-                )
-                assert len(messages) == 0
+            # Should not raise error, should use default of 5
+            messages = list(
+                auto_include_lessons_hook(self._create_manager(conversation_log)) or []
+            )
+            assert len(messages) == 0
 
     def test_hook_handles_exception(self, conversation_log, mock_config):
         """Test hook handles exceptions gracefully."""

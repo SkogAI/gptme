@@ -1,7 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import json
-from collections.abc import Callable, Generator
 from logging import getLogger
+from typing import TYPE_CHECKING, Literal, cast
+
+import mcp.types as mcp_types
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+
+    from ..hooks.elicitation import ElicitationRequest, ElicitationResponse
 
 from gptme.config import Config, MCPServerConfig, get_config, set_config
 
@@ -12,12 +21,12 @@ from ..util.ask_execute import execute_with_confirmation
 from .base import (
     ExecuteFunc,
     Parameter,
+    ToolFormat,
     ToolSpec,
     ToolUse,
 )
 
-# Define ConfirmFunc type directly to avoid circular imports
-ConfirmFunc = Callable[[str], bool]
+# ConfirmFunc type removed - confirmation now uses hook system
 
 logger = getLogger(__name__)
 
@@ -39,33 +48,36 @@ def _get_mcp_client(server_name: str) -> MCPClient | None:
     return _mcp_clients.get(server_name) or _dynamic_servers.get(server_name)
 
 
-def _extract_content_text(item) -> str:
+def _extract_content_text(
+    item: mcp_types.TextContent
+    | mcp_types.ImageContent
+    | mcp_types.AudioContent
+    | mcp_types.ResourceLink
+    | mcp_types.EmbeddedResource
+    | str,
+) -> str:
     """Extract text from a content item (TextContent, ImageContent, etc.).
 
-    Per MCP spec, content items can be TextContent, ImageContent, or EmbeddedResource.
-    This function handles all types gracefully.
+    Per MCP spec, content items can be TextContent, ImageContent, AudioContent,
+    ResourceLink, or EmbeddedResource. This function handles all types gracefully.
     """
     if isinstance(item, str):
         return item
-    elif hasattr(item, "text"):
-        # TextContent has a 'text' attribute
+    if isinstance(item, mcp_types.TextContent):
         return item.text
-    elif hasattr(item, "type"):
-        if item.type == "text":
-            return getattr(item, "text", str(item))
-        elif item.type == "image":
-            # ImageContent - return placeholder with metadata
-            mime_type = getattr(item, "mimeType", "unknown")
-            return f"[Image: {mime_type}]"
-        elif item.type == "resource":
-            # EmbeddedResource - return URI or text content
-            resource = getattr(item, "resource", None)
-            if resource:
-                uri = getattr(resource, "uri", "")
-                text = getattr(resource, "text", None)
-                if text:
-                    return f"[Resource: {uri}]\n{text}"
-                return f"[Resource: {uri}]"
+    if isinstance(item, mcp_types.ImageContent):
+        return f"[Image: {item.mimeType}]"
+    if isinstance(item, mcp_types.AudioContent):
+        return f"[Audio: {item.mimeType}]"
+    if isinstance(item, mcp_types.ResourceLink):
+        return f"[Resource Link: {item.uri}]"
+    if isinstance(item, mcp_types.EmbeddedResource):
+        resource = item.resource
+        uri = str(resource.uri)
+        # TextResourceContents has text, BlobResourceContents has blob
+        if isinstance(resource, mcp_types.TextResourceContents):
+            return f"[Resource: {uri}]\n{resource.text}"
+        return f"[Resource: {uri}]"
     return str(item)
 
 
@@ -87,7 +99,7 @@ def _restart_mcp_client(server_name: str, config: Config) -> MCPClient:
             old_client.loop.close()
             logger.debug(f"Closed old MCP client for {server_name}")
         except Exception as e:
-            logger.debug(f"Error closing old MCP client: {e}")
+            logger.warning(f"Error closing old MCP client for {server_name}: {e}")
 
     # Create new client and reconnect
     new_client = MCPClient(config=config)
@@ -129,8 +141,7 @@ def _call_mcp_tool_with_retry(
                 logger.info(f"MCP connection failed for {server_name}, restarting...")
                 _restart_mcp_client(server_name, config)
                 continue
-            else:
-                break
+            break
 
     # last_error will never be None here since we only break after setting it
     assert last_error is not None
@@ -163,15 +174,10 @@ def create_mcp_tools(config: Config) -> list[ToolSpec]:
                 # Extract parameters
                 parameters = []
                 # Check if the tool has inputSchema with properties
-                if (
-                    hasattr(mcp_tool, "inputSchema")
-                    and isinstance(mcp_tool.inputSchema, dict)
-                    and "properties" in mcp_tool.inputSchema
-                ):
-                    required_params = mcp_tool.inputSchema.get("required", [])
-                    for param_name, param_schema in mcp_tool.inputSchema[
-                        "properties"
-                    ].items():
+                input_schema = mcp_tool.inputSchema
+                if isinstance(input_schema, dict) and "properties" in input_schema:
+                    required_params = input_schema.get("required", [])
+                    for param_name, param_schema in input_schema["properties"].items():
                         parameters.append(
                             Parameter(
                                 name=param_name,
@@ -196,7 +202,7 @@ def create_mcp_tools(config: Config) -> list[ToolSpec]:
                 ) -> Callable[[str], str]:
                     return lambda tool_format: ToolUse(
                         tool_name, [], example_content
-                    ).to_output(tool_format)  # type: ignore[arg-type]
+                    ).to_output(cast(ToolFormat, tool_format))
 
                 tool_spec = ToolSpec(
                     name=name,
@@ -242,17 +248,15 @@ def create_mcp_execute_function(
             return content  # Return as-is if not valid JSON
 
     def execute_mcp_impl(
-        content: str, tool_name: str, confirm: ConfirmFunc
+        content: str, tool_name: str
     ) -> Generator[Message, None, None]:
         """Actual MCP tool implementation."""
         try:
             # Get the client for getting tool definition
+            tool_def = None
             client = _mcp_clients.get(server_name)
             if client is None:
                 raise RuntimeError(f"No MCP client found for server: {server_name}")
-
-            # Get the tool definition from the client
-            tool_def = None
             if client.tools is not None:
                 tool_def = next(
                     (tool for tool in client.tools.tools if tool.name == tool_name),
@@ -311,7 +315,6 @@ def create_mcp_execute_function(
         code: str | None,
         args: list[str] | None,
         kwargs: dict[str, str] | None,
-        confirm: ConfirmFunc,
     ):
         """Execute an MCP tool with confirmation"""
         if not code:
@@ -323,10 +326,7 @@ def create_mcp_execute_function(
             code,
             args,
             kwargs,
-            confirm,
-            execute_fn=lambda content, *_: execute_mcp_impl(
-                content, tool_name, confirm
-            ),
+            execute_fn=lambda content, *_: execute_mcp_impl(content, tool_name),
             get_path_fn=lambda *_: None,  # MCP tools don't have paths
             preview_fn=lambda content, *_: preview_mcp(content),
             preview_lang="json",
@@ -522,7 +522,7 @@ def list_mcp_resources(server_name: str) -> str:
 
     try:
         result = client.list_resources()
-        resources = result.resources if hasattr(result, "resources") else []
+        resources = result.resources
 
         if not resources:
             return f"No resources available from server '{server_name}'."
@@ -531,9 +531,9 @@ def list_mcp_resources(server_name: str) -> str:
         for resource in resources:
             output.append(f"## {resource.name}")
             output.append(f"**URI:** `{resource.uri}`")
-            if hasattr(resource, "description") and resource.description:
+            if resource.description:
                 output.append(f"**Description:** {resource.description}")
-            if hasattr(resource, "mimeType") and resource.mimeType:
+            if resource.mimeType:
                 output.append(f"**MIME Type:** {resource.mimeType}")
             output.append("")
 
@@ -564,16 +564,16 @@ def read_mcp_resource(server_name: str, uri: str) -> str:
 
     try:
         result = client.read_resource(uri)
-        contents = result.contents if hasattr(result, "contents") else []
+        contents = result.contents
 
         if not contents:
             return f"No content returned for resource '{uri}'."
 
         output = []
         for content in contents:
-            if hasattr(content, "text"):
+            if isinstance(content, mcp_types.TextResourceContents):
                 output.append(content.text)
-            elif hasattr(content, "blob"):
+            elif isinstance(content, mcp_types.BlobResourceContents):
                 # For binary content, indicate it's binary
                 output.append(f"[Binary content: {len(content.blob)} bytes]")
             else:
@@ -607,9 +607,7 @@ def list_mcp_resource_templates(server_name: str) -> str:
 
     try:
         result = client.list_resource_templates()
-        templates = (
-            result.resourceTemplates if hasattr(result, "resourceTemplates") else []
-        )
+        templates = result.resourceTemplates
 
         if not templates:
             return f"No resource templates available from server '{server_name}'."
@@ -618,9 +616,9 @@ def list_mcp_resource_templates(server_name: str) -> str:
         for template in templates:
             output.append(f"## {template.name}")
             output.append(f"**URI Template:** `{template.uriTemplate}`")
-            if hasattr(template, "description") and template.description:
+            if template.description:
                 output.append(f"**Description:** {template.description}")
-            if hasattr(template, "mimeType") and template.mimeType:
+            if template.mimeType:
                 output.append(f"**MIME Type:** {template.mimeType}")
             output.append("")
 
@@ -650,7 +648,7 @@ def list_mcp_prompts(server_name: str) -> str:
 
     try:
         result = client.list_prompts()
-        prompts = result.prompts if hasattr(result, "prompts") else []
+        prompts = result.prompts
 
         if not prompts:
             return f"No prompts available from server '{server_name}'."
@@ -658,17 +656,13 @@ def list_mcp_prompts(server_name: str) -> str:
         output = [f"# Prompts from {server_name}\n"]
         for prompt in prompts:
             output.append(f"## {prompt.name}")
-            if hasattr(prompt, "description") and prompt.description:
+            if prompt.description:
                 output.append(f"**Description:** {prompt.description}")
-            if hasattr(prompt, "arguments") and prompt.arguments:
+            if prompt.arguments:
                 output.append("**Arguments:**")
                 for arg in prompt.arguments:
-                    required = " (required)" if getattr(arg, "required", False) else ""
-                    desc = (
-                        f" - {arg.description}"
-                        if getattr(arg, "description", None)
-                        else ""
-                    )
+                    required = " (required)" if arg.required else ""
+                    desc = f" - {arg.description}" if arg.description else ""
                     output.append(f"  - `{arg.name}`{required}{desc}")
             output.append("")
 
@@ -702,27 +696,23 @@ def get_mcp_prompt(
 
     try:
         result = client.get_prompt(name, arguments)
-        messages = result.messages if hasattr(result, "messages") else []
+        messages = result.messages
 
         if not messages:
             return f"Prompt '{name}' returned no messages."
 
         output = [f"# Prompt: {name}\n"]
-        if hasattr(result, "description") and result.description:
+        if result.description:
             output.append(f"**Description:** {result.description}\n")
 
         for i, msg in enumerate(messages):
-            role = getattr(msg, "role", "unknown")
-            output.append(f"## Message {i + 1} ({role})")
+            output.append(f"## Message {i + 1} ({msg.role})")
 
-            content = getattr(msg, "content", None)
-            if content:
-                # Handle content as list or single item per MCP spec
-                content_items = content if isinstance(content, list) else [content]
-                for item in content_items:
-                    text = _extract_content_text(item)
-                    if text:
-                        output.append(text)
+            content = msg.content
+            # Handle content as TextContent or ImageContent per MCP spec
+            text = _extract_content_text(content)
+            if text:
+                output.append(text)
             output.append("")
 
         return "\n".join(output)
@@ -731,3 +721,306 @@ def get_mcp_prompt(
     except Exception as e:
         logger.error(f"Failed to get prompt '{name}' from {server_name}: {e}")
         return f"Error getting prompt: {e}"
+
+
+# Roots functions - client-side configuration for MCP servers
+
+
+def list_mcp_roots(server_name: str | None = None) -> str:
+    """
+    List configured roots for MCP servers.
+
+    Roots define operational boundaries (directories, URIs) that servers can access.
+    They are advisory, helping servers understand the workspace context.
+
+    Args:
+        server_name: Optional server name. If provided, lists roots for that server only.
+                     If None, lists roots for all loaded servers.
+
+    Returns:
+        Formatted list of configured roots
+    """
+    if server_name:
+        client = _get_mcp_client(server_name)
+        if not client:
+            return f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+
+        roots = client.get_roots()
+        if not roots:
+            return f"No roots configured for server '{server_name}'."
+
+        output = [f"# Roots for {server_name}\n"]
+        output.extend(
+            f"- **{root.name or '(unnamed)'}**: `{root.uri}`" for root in roots
+        )
+        return "\n".join(output)
+    # List roots for all loaded servers
+    all_clients = {**_mcp_clients, **_dynamic_servers}
+    if not all_clients:
+        return "No MCP servers loaded."
+
+    output = ["# Configured Roots\n"]
+    for name, client in all_clients.items():
+        roots = client.get_roots()
+        output.append(f"## {name}")
+        if roots:
+            for root in roots:
+                output.append(f"- **{root.name or '(unnamed)'}**: `{root.uri}`")
+        else:
+            output.append("_No roots configured_")
+        output.append("")
+    return "\n".join(output)
+
+
+def add_mcp_root(server_name: str, uri: str, name: str | None = None) -> str:
+    """
+    Add a root to an MCP server.
+
+    Roots tell servers what directories or URIs they can operate on.
+    After adding, the server is notified of the change.
+
+    Args:
+        server_name: Name of the loaded MCP server
+        uri: URI of the root (e.g., 'file:///path/to/project')
+        name: Optional human-readable name for the root
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        added = client.add_root(uri, name)
+        if added:
+            return f"Added root '{name or uri}' to server '{server_name}'."
+        return f"Root '{uri}' already exists for server '{server_name}'."
+    except Exception as e:
+        logger.error(f"Failed to add root to {server_name}: {e}")
+        return f"Error adding root: {e}"
+
+
+def remove_mcp_root(server_name: str, uri: str) -> str:
+    """
+    Remove a root from an MCP server.
+
+    After removing, the server is notified of the change.
+
+    Args:
+        server_name: Name of the loaded MCP server
+        uri: URI of the root to remove
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        removed = client.remove_root(uri)
+        if removed:
+            return f"Removed root '{uri}' from server '{server_name}'."
+        return f"Root '{uri}' not found in server '{server_name}'."
+    except Exception as e:
+        logger.error(f"Failed to remove root from {server_name}: {e}")
+        return f"Error removing root: {e}"
+
+
+# Elicitation support functions
+
+
+def _mcp_params_to_elicitation_request(
+    params: mcp_types.ElicitRequestParams,
+    server_name: str,
+) -> ElicitationRequest:
+    """Convert MCP ElicitRequestParams to gptme's ElicitationRequest.
+
+    Maps MCP's JSON Schema-based requestedSchema to gptme's FormField-based
+    form elicitation, allowing MCP servers to use the shared elicitation UI.
+
+    Handles both MCP elicitation param types:
+    - ElicitRequestFormParams (has requestedSchema)
+    - ElicitRequestURLParams (has url, no schema)
+    """
+    from ..hooks.elicitation import ElicitationRequest, FormField
+
+    prompt = f"MCP Server '{server_name}': {params.message}"
+
+    # URL-mode params don't have a schema — treat as text
+    schema = getattr(params, "requestedSchema", None)
+
+    # If no schema, treat as simple text input
+    if not schema or "properties" not in schema:
+        return ElicitationRequest(type="text", prompt=prompt)
+
+    # Convert JSON Schema properties to FormFields
+    properties = schema.get("properties", {})
+    required_fields = schema.get("required", [])
+    fields: list[FormField] = []
+
+    for field_name, field_info in properties.items():
+        json_type = field_info.get("type", "string")
+        field_desc = field_info.get("description", field_name)
+        field_default = field_info.get("default")
+
+        # Map JSON Schema types to FormField types
+        form_type: Literal["text", "boolean", "number"]
+        if json_type == "boolean":
+            form_type = "boolean"
+        elif json_type in ("integer", "number"):
+            form_type = "number"
+        else:
+            form_type = "text"
+
+        fields.append(
+            FormField(
+                name=field_name,
+                prompt=field_desc,
+                type=form_type,
+                required=field_name in required_fields,
+                default=str(field_default) if field_default is not None else None,
+            )
+        )
+
+    return ElicitationRequest(type="form", prompt=prompt, fields=fields)
+
+
+def _elicitation_response_to_mcp_result(
+    response: ElicitationResponse,
+) -> mcp_types.ElicitResult:
+    """Convert gptme's ElicitationResponse to MCP's ElicitResult."""
+    if response.cancelled:
+        return mcp_types.ElicitResult(action="cancel", content=None)
+
+    if response.value is None:
+        return mcp_types.ElicitResult(action="decline", content=None)
+
+    # For form responses, the value is a JSON string of field values
+    try:
+        content = json.loads(response.value)
+        if isinstance(content, dict):
+            return mcp_types.ElicitResult(action="accept", content=content)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # For simple text responses, wrap in a content dict
+    return mcp_types.ElicitResult(action="accept", content={"value": response.value})
+
+
+def _create_elicitation_handler(server_name: str):
+    """Create an elicitation callback for a server using the shared hook system.
+
+    Uses gptme's unified elicitation system (hooks/elicitation.py) so MCP
+    servers get the same rich input UI as native gptme elicitation. When
+    WebUI support is added, MCP servers get it automatically.
+
+    Returns an async callable compatible with MCPClient's elicitation_callback.
+    """
+
+    async def elicitation_callback(
+        params: mcp_types.ElicitRequestParams,
+    ) -> mcp_types.ElicitResult | mcp_types.ErrorData:
+        """Handle elicitation request from MCP server via shared hook system."""
+        from ..hooks.elicitation import elicit
+
+        logger.info(f"Elicitation request from {server_name}: {params.message}")
+
+        try:
+            request = _mcp_params_to_elicitation_request(params, server_name)
+            response = elicit(request)
+            return _elicitation_response_to_mcp_result(response)
+        except Exception as e:
+            logger.error(f"Elicitation error for {server_name}: {e}")
+            return mcp_types.ErrorData(code=-32000, message=str(e))
+
+    return elicitation_callback
+
+
+def enable_mcp_elicitation(server_name: str) -> str:
+    """
+    Enable elicitation support for an MCP server.
+
+    When enabled, the server can request user input during operations.
+    A CLI-based handler prompts the user for input when requests come in.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        callback = _create_elicitation_handler(server_name)
+        client.set_elicitation_callback(callback)
+        return f"Elicitation enabled for server '{server_name}'. Server can now request user input."
+    except Exception as e:
+        logger.error(f"Failed to enable elicitation for {server_name}: {e}")
+        return f"Error enabling elicitation: {e}"
+
+
+def disable_mcp_elicitation(server_name: str) -> str:
+    """
+    Disable elicitation support for an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        client.set_elicitation_callback(None)
+        return f"Elicitation disabled for server '{server_name}'."
+    except Exception as e:
+        logger.error(f"Failed to disable elicitation for {server_name}: {e}")
+        return f"Error disabling elicitation: {e}"
+
+
+def get_mcp_elicitation_status(server_name: str | None = None) -> str:
+    """
+    Get elicitation status for MCP servers.
+
+    Args:
+        server_name: Optional server name. If provided, shows status for that server.
+                     If None, shows status for all loaded servers.
+
+    Returns:
+        Formatted elicitation status
+    """
+    if server_name:
+        client = _get_mcp_client(server_name)
+        if not client:
+            return f"Server '{server_name}' is not loaded."
+
+        enabled = client.has_elicitation_callback()
+        status = "✅ Enabled" if enabled else "❌ Disabled"
+        return f"Elicitation for '{server_name}': {status}"
+    # Show status for all loaded servers
+    all_clients = {**_mcp_clients, **_dynamic_servers}
+    if not all_clients:
+        return "No MCP servers loaded."
+
+    output = ["# Elicitation Status\n"]
+    for name, client in all_clients.items():
+        enabled = client.has_elicitation_callback()
+        status = "✅ Enabled" if enabled else "❌ Disabled"
+        output.append(f"- **{name}**: {status}")
+    return "\n".join(output)

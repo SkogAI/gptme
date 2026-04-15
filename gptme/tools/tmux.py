@@ -8,6 +8,7 @@ It allows for inspecting pane contents and sending input.
 
 import functools
 import logging
+import shlex
 import shutil
 import subprocess
 import threading
@@ -17,11 +18,11 @@ from pathlib import Path
 from time import sleep
 
 from ..constants import DECLINED_CONTENT
+from ..hooks import ConfirmAction, get_confirmation
 from ..message import Message
-from ..util.ask_execute import print_preview
+from ..util.context import md_codeblock
 from ..util.output_storage import save_large_output
 from .base import (
-    ConfirmFunc,
     Parameter,
     ToolSpec,
     ToolUse,
@@ -105,39 +106,61 @@ def _run_tmux_command(cmd: list[str]) -> subprocess.CompletedProcess:
         check=True,
         capture_output=True,
         text=True,
+        timeout=10,
     )
-    assert result.returncode == 0
     print(result.stdout, result.stderr)
     return result
 
 
 def get_sessions() -> list[str]:
-    output = subprocess.run(
-        ["tmux", "has"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        output = subprocess.run(
+            ["tmux", "has"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("tmux has timed out")
+        return []
     if output.returncode != 0:
         return []
-    output = subprocess.run(
-        ["tmux", "list-sessions"],
-        capture_output=True,
-        text=True,
-    )
-    assert output.returncode == 0
+    try:
+        output = subprocess.run(
+            ["tmux", "list-sessions"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("tmux list-sessions timed out")
+        return []
+    if output.returncode != 0:
+        logger.warning(
+            f"tmux list-sessions failed (rc={output.returncode}): {output.stderr.strip()}"
+        )
+        return []
     return [session.split(":")[0] for session in output.stdout.split("\n") if session]
 
 
 def _capture_pane(pane_id: str) -> str:
     """Capture the content of a tmux pane including scrollback history."""
-    result = subprocess.run(
-        # -p: print to stdout
-        # -S -: start from beginning of scrollback
-        # -E -: end at bottom of scrollback
-        ["tmux", "capture-pane", "-p", "-S", "-", "-E", "-", "-t", pane_id],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            # -p: print to stdout
+            # -S -: start from beginning of scrollback
+            # -E -: end at bottom of scrollback
+            ["tmux", "capture-pane", "-p", "-S", "-", "-E", "-", "-t", pane_id],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"tmux capture-pane timed out for pane {pane_id}")
+        return ""
     # Strip trailing whitespace but preserve content
     return result.stdout.rstrip()
 
@@ -180,6 +203,8 @@ def new_session(command: str) -> Message:
             cmd = ["tmux", "new-session", "-d", "-s", session_id, "bash"]
             _run_tmux_command(cmd)
             break  # Success, exit retry loop
+        except subprocess.TimeoutExpired:
+            raise  # Timeout is not a session name collision, propagate immediately
         except subprocess.CalledProcessError:
             if attempt == max_retries - 1:
                 raise  # Re-raise on last attempt
@@ -202,15 +227,14 @@ def new_session(command: str) -> Message:
         output,
         context=f"new-session {command[:50]}",
     )
+    stripped_command = command.strip("'")
     return Message(
         "system",
-        f"""Running `{command.strip("'")}` in session {session_id}.\n```output\n{truncated_output}\n```""",
+        f"Running `{stripped_command}` in session {session_id}.\n{md_codeblock('output', truncated_output)}",
     )
 
 
 def send_keys(pane_id: str, keys: str) -> Message:
-    import shlex
-
     if not pane_id.startswith("gptme_"):
         pane_id = f"gptme_{pane_id}"
     # Parse keys into separate arguments to avoid shell injection
@@ -220,11 +244,18 @@ def send_keys(pane_id: str, keys: str) -> Message:
     except ValueError:
         # Fall back to single argument if shlex can't parse (unmatched quotes, etc.)
         key_args = [keys]
-    result = subprocess.run(
-        ["tmux", "send-keys", "-t", pane_id, *key_args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, *key_args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return Message(
+            "system", f"Failed to send keys to tmux pane `{pane_id}`: timed out"
+        )
     if result.returncode != 0:
         return Message(
             "system", f"Failed to send keys to tmux pane `{pane_id}`: {result.stderr}"
@@ -238,7 +269,7 @@ def send_keys(pane_id: str, keys: str) -> Message:
     )
     return Message(
         "system",
-        f"Sent '{keys}' to pane `{pane_id}`\n```output\n{truncated_output}\n```",
+        f"Sent '{keys}' to pane `{pane_id}`\n{md_codeblock('output', truncated_output)}",
     )
 
 
@@ -271,12 +302,19 @@ def inspect_pane(pane_id: str, logdir: Path | None = None) -> Message:
 def kill_session(session_id: str) -> Message:
     if not session_id.startswith("gptme_"):
         session_id = f"gptme_{session_id}"
-    result = subprocess.run(
-        ["tmux", "kill-session", "-t", session_id],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", session_id],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return Message(
+            "system",
+            f"Failed to kill tmux session with ID {session_id}: timed out",
+        )
     if result.returncode != 0:
         return Message(
             "system",
@@ -340,7 +378,7 @@ def wait_for_output(
                 "system",
                 f"Session `{session_id}` output stabilized after {elapsed:.1f}s "
                 f"(stable for {stable_duration:.1f}s).\n"
-                f"```output\n{truncated_output}\n```",
+                f"{md_codeblock('output', truncated_output)}",
             )
 
         # Check timeout
@@ -355,7 +393,7 @@ def wait_for_output(
                 "system",
                 f"Session `{session_id}` timed out after {timeout}s "
                 f"(output still changing).\n"
-                f"```output\n{truncated_output}\n```\n"
+                f"{md_codeblock('output', truncated_output)}\n"
                 f"Session still active. Use `kill-session {session_id}` to terminate "
                 f"or `send-keys {session_id} C-c` to interrupt.",
             )
@@ -368,7 +406,6 @@ def execute_tmux(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
-    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Executes a command in tmux and returns the output."""
 
@@ -409,10 +446,9 @@ def execute_tmux(
     if current:
         commands.append("".join(current).strip())
 
-    # Preview all commands
-    preview = "\n".join(commands)
-    print_preview(preview, "bash", copy=True)
-    if not confirm("Execute commands?"):
+    # Get confirmation via hook system (hook will display preview)
+    confirm_result = get_confirmation()
+    if confirm_result.action != ConfirmAction.CONFIRM:
         # Use DECLINED_CONTENT so chat loop detects declined execution
         yield Message("system", DECLINED_CONTENT)
         return
@@ -436,7 +472,14 @@ def execute_tmux(
         if command == "new-session":
             yield new_session(_args)
         elif command == "send-keys":
-            pane_id, keys = _args.split(maxsplit=1)
+            send_parts = _args.split(maxsplit=1)
+            if len(send_parts) < 2:
+                yield Message(
+                    "system",
+                    "Error: send-keys requires both pane_id and keys arguments",
+                )
+                continue
+            pane_id, keys = send_parts
             yield send_keys(pane_id, keys)
         elif command == "inspect-pane":
             # Use default cache directory for saving full output when truncated
@@ -452,8 +495,15 @@ def execute_tmux(
             # Format: wait <session_id> [timeout] [stable_time]
             wait_parts = _args.split()
             wait_session_id = wait_parts[0]
-            wait_timeout = int(wait_parts[1]) if len(wait_parts) > 1 else 60
-            wait_stable = int(wait_parts[2]) if len(wait_parts) > 2 else 3
+            try:
+                wait_timeout = int(wait_parts[1]) if len(wait_parts) > 1 else 60
+                wait_stable = int(wait_parts[2]) if len(wait_parts) > 2 else 3
+            except ValueError:
+                yield Message(
+                    "system",
+                    "Error: wait timeout and stable time must be integers",
+                )
+                continue
             # Use default cache directory for saving full output when truncated
             from platformdirs import user_cache_dir
 
@@ -486,18 +536,43 @@ Available commands:
 def examples(tool_format):
     escaped_hello_world = "'print(\"Hello, world!\")'"
     all_examples = f"""
+#### Running subagents
+
+> User: start subagent to fix lints in parallel
+> Assistant: Let's start a subagent in a new tmux session:
+{
+        ToolUse(
+            "tmux",
+            [],
+            '''new-session gptme --non-interactive "fix lint 1"
+new-session gptme --non-interactive "fix lint 2"''',
+        ).to_output(tool_format)
+    }
+
+#### Running specific agent
+
+> User: Ask Bob about his latest work
+> Assistant: Sure! Let's start a tmux session running Bob (~/bob/):
+{
+        ToolUse(
+            "tmux",
+            [],
+            "new-session cd ~/bob && gptme --non-interactive 'What is your latest work?'",
+        ).to_output(tool_format)
+    }
+
 #### Managing a dev server
 
 > User: Start the dev server
 > Assistant: Certainly! To start the dev server we should use tmux:
-{ToolUse("tmux", [], "new-session 'npm run dev'").to_output(tool_format)}
+{ToolUse("tmux", [], "new-session npm run dev").to_output(tool_format)}
 > System: Running `npm run dev` in session gptme_1
 
 > User: Can you show me the current content of the pane?
 > Assistant: Of course! Let's inspect the pane content:
 {ToolUse("tmux", [], "inspect-pane gptme_1").to_output(tool_format)}
 > System:
-{ToolUse("output", [], "Server is running on localhost:5600").to_output()}
+{md_codeblock("output", "Server is running on localhost:5600")}
 
 > User: Stop the dev server
 > Assistant: I'll send 'Ctrl+C' to the pane to stop the server:
@@ -508,20 +583,20 @@ def examples(tool_format):
 
 > User: start top and give me a summary
 > Assistant: Sure! Let's start the top command in a tmux session:
-{ToolUse("tmux", [], "new-session 'top'").to_output(tool_format)}
+{ToolUse("tmux", [], "new-session top").to_output(tool_format)}
 > System: Running `top` in session gptme_1.
-{ToolUse("output", [], "(output from top shown here)").to_output()}
+{md_codeblock("output", "(output from top shown here)")}
 > Assistant: The load is...
 
 #### Send keys to a session
 
 > User: start ipython
 > Assistant: Let's start an ipython session:
-{ToolUse("tmux", [], "new-session 'ipython'").to_output(tool_format)}
+{ToolUse("tmux", [], "new-session ipython").to_output(tool_format)}
 > System: Running `ipython` in session 2.
-{ToolUse("output", [], "(output from ipython shown here)").to_output()}
+{md_codeblock("output", "(output from ipython shown here)")}
 > User: Run 'print("Hello, world!")' in the ipython session
-{ToolUse("tmux", [], f'send-keys 2 {escaped_hello_world} Enter').to_output(tool_format)}
+{ToolUse("tmux", [], f"send-keys 2 {escaped_hello_world} Enter").to_output(tool_format)}
 
 #### Listing active sessions
 
@@ -533,7 +608,7 @@ def examples(tool_format):
 
 > User: Run a build and wait for it to finish
 > Assistant: I'll start the build in tmux and wait for it to complete:
-{ToolUse("tmux", [], "new-session 'npm run build'").to_output(tool_format)}
+{ToolUse("tmux", [], "new-session npm run build").to_output(tool_format)}
 > System: Running `npm run build` in session gptme_1.
 > Assistant: Now let's wait for the build to finish:
 {ToolUse("tmux", [], "wait gptme_1 120").to_output(tool_format)}

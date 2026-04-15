@@ -1,27 +1,35 @@
-import concurrent.futures
+import importlib
 import io
 import logging
 import multiprocessing
 import os
 import signal
+import subprocess
 import sys
 import time
 from collections import defaultdict
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    CancelledError,
+    Future,
+    ProcessPoolExecutor,
+    TimeoutError,
+    as_completed,
+)
 from multiprocessing import Manager, Process
 from pathlib import Path
 from typing import TypedDict
 
 from tqdm import tqdm
 
-from ..tools import ToolFormat
 from .agents import Agent, GPTMe
+from .agents.claude_code import ClaudeCodeAgent, is_claude_code_model
 from .cost import get_eval_costs
 from .execenv import DockerExecutionEnv, SimpleExecutionEnv
 from .types import (
     CaseResult,
     EvalResult,
     EvalSpec,
+    ModelConfig,
     ResultContext,
     Status,
 )
@@ -77,17 +85,17 @@ class SyncedDict(TypedDict):
 
 def run_evals(
     evals: list[EvalSpec],
-    model_configs: list[tuple[str, ToolFormat]],  # (model, tool_format)
+    model_configs: list[ModelConfig],
     timeout: int,
     parallel: int,
     use_docker: bool = False,
-) -> dict[str, list[EvalResult]]:
+) -> dict[ModelConfig, list[EvalResult]]:
     """
     Run evals for a list of tests.
 
     Args:
         evals: List of evaluation specifications
-        model_configs: List of (model, tool_format) tuples
+        model_configs: List of ModelConfig objects
         timeout: Timeout in seconds for each eval
         parallel: Number of parallel evaluations to run
         use_docker: Run tests in Docker containers for isolation
@@ -95,31 +103,48 @@ def run_evals(
     # For coverage to work with multiprocessing
     # https://pytest-cov.readthedocs.io/en/latest/subprocess-support.html
     try:
-        # noreorder
-        from pytest_cov.embed import cleanup_on_sigterm  # fmt: skip  # type: ignore
+        _cov_embed = importlib.import_module("pytest_cov.embed")
+        _cleanup_on_sigterm = getattr(_cov_embed, "cleanup_on_sigterm", None)
     except ImportError:
-        pass
-    else:
-        cleanup_on_sigterm()
+        _cleanup_on_sigterm = None
+    if _cleanup_on_sigterm:
+        _cleanup_on_sigterm()
 
     n_runs = len(evals) * len(model_configs)
-    model_results: dict[str, dict[str, EvalResult]] = defaultdict(dict)
+    if n_runs == 0:
+        if not model_configs:
+            logger.warning(
+                "No models configured. Pass --model or set API keys "
+                "(OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)"
+            )
+        if not evals:
+            logger.warning("No evals to run")
+        return {}
+    model_results: dict[ModelConfig, dict[str, EvalResult]] = defaultdict(dict)
     parallel = min(n_runs, parallel)
     with ProcessPoolExecutor(parallel) as executor:
         futures = []
-        future_to_model_test = {}
-        for model, tool_format in model_configs:
-            model_id = f"{model}@{tool_format}"
+        future_to_model_test: dict[Future, tuple[ModelConfig, EvalSpec, Agent]] = {}
+        for config in model_configs:
             for test in evals:
                 tools = test.get(
                     "tools"
                 )  # Get tools from test spec, None if not specified
-                agent = GPTMe(
-                    model=model,
-                    tool_format=tool_format,
-                    tools=tools,
-                    use_docker=use_docker,
-                )
+                agent: Agent
+                if is_claude_code_model(config.model):
+                    agent = ClaudeCodeAgent(
+                        model=config.model,
+                        tools=tools,
+                        timeout=timeout,
+                        use_docker=use_docker,
+                    )
+                else:
+                    agent = GPTMe(
+                        model=config.model,
+                        tool_format=config.tool_format,
+                        tools=tools,
+                        use_docker=use_docker,
+                    )
                 future = executor.submit(
                     execute,
                     test,
@@ -129,25 +154,25 @@ def run_evals(
                     use_docker,
                 )
                 futures.append(future)
-                future_to_model_test[future] = (model_id, test, agent)
+                future_to_model_test[future] = (config, test, agent)
 
         def _handle_future(future: Future):
-            model, test, agent = future_to_model_test[future]
+            config, test, agent = future_to_model_test[future]
             test_name = test["name"]
             try:
                 result = future.result(timeout=0.1)
             except Exception as e:
-                # TODO: we still want to get stdout/stderr from the process
                 gen_time = 0
-                if isinstance(e, concurrent.futures.TimeoutError) or isinstance(
-                    e, concurrent.futures.CancelledError
-                ):
+                error_detail = ""
+                if isinstance(e, TimeoutError | CancelledError):
                     status: Status = "timeout"
                     gen_time = timeout
+                    error_detail = f"Process-level {type(e).__name__}"
                 else:
                     status = "error"
+                    error_detail = f"{type(e).__name__}: {e}"
                     logger.exception(
-                        f"Test {test_name} for model {model} generated an exception when trying to get result"
+                        f"Test {test_name} for model {config} generated an exception when trying to get result"
                     )
                 result = EvalResult(
                     name=test_name,
@@ -155,16 +180,17 @@ def run_evals(
                     results=[],
                     timings={"gen": gen_time, "run": 0, "eval": 0},
                     gen_stdout="",
-                    gen_stderr="",
+                    gen_stderr=error_detail,
                     run_stdout="",
                     run_stderr="",
                     log_dir=agent.log_dir,
                     workspace_dir=agent.workspace_dir,
                 )
-            model_results[model][test_name] = result
+            model_results[config][test_name] = result
 
         # worse-case run time, with some buffer to account for overhead
-        max_timeout = timeout * len(evals) / parallel + 10
+        # n_runs accounts for all model×eval combinations, not just evals
+        max_timeout = timeout * n_runs / parallel + 10
         completed = set()
         try:
             # TODO: can we do better than this? handle timeouts within futures instead?
@@ -178,7 +204,7 @@ def run_evals(
             ):
                 _handle_future(future)
                 completed.add(future)
-        except concurrent.futures.TimeoutError:
+        except TimeoutError:
             # NOTE: this should rarely happen, as `execute` should handle timeouts
             logger.warning(
                 "Timeout reached in top-level (shouldnt happen). Cancelling remaining futures..."
@@ -195,11 +221,11 @@ def run_evals(
         process.terminate()
         process.join()
 
-    model_results_final: dict[str, list[EvalResult]] = defaultdict(list)
-    for model in sorted(model_results):
+    model_results_final: dict[ModelConfig, list[EvalResult]] = defaultdict(list)
+    for config in sorted(model_results, key=str):
         # sort results by test order
-        model_results_final[model] = sorted(
-            model_results[model].values(),
+        model_results_final[config] = sorted(
+            model_results[config].values(),
             key=lambda result: [test["name"] for test in evals].index(result.name),
         )
 
@@ -208,7 +234,12 @@ def run_evals(
 
 # TODO: rewrite to run in Docker? Would help with capturing output + process management.
 def execute(
-    test: EvalSpec, agent: Agent, timeout: int, parallel: bool, use_docker: bool = False
+    test: EvalSpec,
+    agent: Agent,
+    timeout: int,
+    parallel: bool,
+    use_docker: bool = False,
+    suppress_output: bool = False,
 ) -> EvalResult:
     """
     Executes the code for a specific model with a timeout.
@@ -229,6 +260,7 @@ def execute(
                 test["files"],
                 sync_dict,
                 parallel,
+                suppress_output,
             ),
         )
 
@@ -269,14 +301,19 @@ def execute(
 
                 cost = CostSummary.from_dict(cost_dict)
         else:
-            logger.error("No result in shared dictionary")
+            exit_code = p.exitcode
+            error_msg = (
+                f"Subprocess exited with code {exit_code} "
+                f"without writing result to shared dict"
+            )
+            logger.error(error_msg)
             return EvalResult(
                 name=test["name"],
-                status="error",
+                status=status if status == "timeout" else "error",
                 results=[],
                 timings={"gen": time_gen, "run": time_run, "eval": time_eval},
                 gen_stdout="",
-                gen_stderr="",
+                gen_stderr=error_msg,
                 run_stdout="",
                 run_stderr="",
                 log_dir=agent.log_dir,
@@ -285,19 +322,45 @@ def execute(
 
         logger.debug("Got result")
 
-        if status != "timeout" and status != "error":
+        if status not in ("timeout", "error"):
             # check and collect results
             run_start = time.time()
-            env = DockerExecutionEnv() if use_docker else SimpleExecutionEnv()
+            # For local (non-Docker) runs, reuse the agent's workspace directory so
+            # the run script has access to the full git history and all side-effects
+            # (e.g. installed packages, git objects) without serialisation round-trips.
+            env: DockerExecutionEnv | SimpleExecutionEnv
+            if use_docker:
+                env = DockerExecutionEnv()
+            else:
+                env = SimpleExecutionEnv(working_dir=Path(workspace_dir))
             try:
-                env.upload(files)
+                # Restore specific input fixture files before running checks.
+                # Some tests provide input files (e.g. old.json/new.json for json-diff)
+                # that the model may accidentally overwrite as a side-effect of testing
+                # its own script. Use `restore_files` in the EvalSpec to list any such
+                # files. Do NOT list files the model is supposed to modify (e.g. hello.py
+                # in hello-patch), as those need to stay modified.
+                restore_files = test.get("restore_files", [])
+                all_fixtures = test["files"]
+                if use_docker:
+                    # Docker: upload all agent output files + restore fixture inputs.
+                    files_for_run = {
+                        **files,
+                        **{k: v for k, v in all_fixtures.items() if k in restore_files},
+                    }
+                    env.upload(files_for_run)
+                elif restore_files:
+                    # Local workspace reuse: files are already in place.
+                    # Only re-upload fixture inputs the agent may have clobbered.
+                    env.upload(
+                        {k: v for k, v in all_fixtures.items() if k in restore_files}
+                    )
                 logger.debug(f"Running check: {test['run']}")
                 stdout_run, stderr_run, exit_code = env.run(test["run"])
                 time_run = time.time() - run_start
                 files = env.download()
             finally:
-                if hasattr(env, "cleanup"):
-                    env.cleanup()
+                env.cleanup()
 
             ctx = ResultContext(files, stdout_run, stderr_run, exit_code)
             results: list[CaseResult] = []
@@ -362,6 +425,7 @@ def act_process(
     files: dict[str, str | bytes],
     sync_dict: SyncedDict,
     parallel: bool,
+    suppress_output: bool = False,
 ):
     # Configure logging for this subprocess
     subprocess_logger = logging.getLogger(f"gptme.eval:{agent.model}@{test_name}")
@@ -375,13 +439,9 @@ def act_process(
     # Fix #130: Suppress verbose gptme output during optimization
     # Only keep output if not in parallel mode (i.e., interactive testing)
     # During GEPA optimization, suppress full trajectories
-    suppress_output = (
-        os.environ.get("GPTME_EVAL_SUPPRESS_OUTPUT", "false").lower() == "true"
-    )
+    # Note: suppress_output is passed directly to avoid os.environ race conditions
     if suppress_output:
         # Redirect to null during optimization
-        import io
-
         stdout = StreamTee(io.StringIO(), keep=False)
         stderr = StreamTee(io.StringIO(), keep=False)
         subprocess_logger.info("Output suppression enabled for GEPA optimization")
@@ -390,7 +450,7 @@ def act_process(
         stdout = StreamTee(sys.stdout, keep=not parallel)
         stderr = StreamTee(sys.stderr, keep=not parallel)
 
-    sys.stdout, sys.stderr = stdout, stderr  # type: ignore
+    sys.stdout, sys.stderr = stdout, stderr
 
     start = time.time()
 
@@ -412,6 +472,10 @@ def act_process(
 
     # handle SIGTERM
     def sigterm_handler(*_):
+        # Reset to default handler first to prevent recursive SIGTERM loop:
+        # _graceful_killpg sends SIGTERM to our own process group, which would
+        # re-trigger this handler without this reset.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         error_handler(KeyboardInterrupt("SIGTERM received"))
 
     signal.signal(signal.SIGTERM, sigterm_handler)
@@ -419,6 +483,25 @@ def act_process(
     subprocess_logger.info("Started")
     try:
         files = agent.act(files, prompt)
+    except subprocess.TimeoutExpired as e:
+        # ClaudeCodeAgent re-raises TimeoutExpired when the claude CLI times out.
+        # Catch it before the generic handler so eval reports show "timeout" rather
+        # than "error", keeping ClaudeCodeAgent results comparable to GPTMe timeouts.
+        duration = time.time() - start
+        subprocess_logger.error(f"Agent subprocess timed out: {e}")
+        result_timeout: ProcessError = {
+            "status": "timeout",
+            "message": str(e),
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+            "duration": duration,
+        }
+        sync_dict["result"] = result_timeout
+        # Reset SIGTERM handler before cleanup to prevent self-SIGTERM
+        # from overwriting the timeout result (same guard as the success path).
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        _graceful_killpg(pgrp)
+        return
     except Exception as e:
         error_handler(e)
         return

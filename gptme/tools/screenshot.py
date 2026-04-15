@@ -6,7 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import ToolSpec, ToolUse
@@ -15,13 +15,24 @@ OUTPUT_DIR = Path("/tmp/outputs")
 IS_MACOS = platform.system() == "Darwin"
 IS_WAYLAND = os.environ.get("XDG_SESSION_TYPE") == "wayland"
 
-
-# TODO: check for this instead of prompting the llm
+# TODO: check for screen recording permissions instead of prompting the llm
 INSTRUCTIONS = (
     "If all you see is a wallpaper, the user may have to allow screen capture in `System Preferences -> Security & Privacy -> Screen Recording`."
     if IS_MACOS
     else ""
 )
+
+
+def _is_available() -> bool:
+    """Check if any screenshot tool is available on the system."""
+    if IS_MACOS:
+        return shutil.which("screencapture") is not None
+    if os.name == "posix":
+        return bool(
+            shutil.which("gnome-screenshot")
+            or (not IS_WAYLAND and shutil.which("scrot"))
+        )
+    return False
 
 
 def _validate_screenshot_path(path: Path) -> Path:
@@ -64,7 +75,7 @@ def screenshot(path: Path | None = None) -> Path:
     """
 
     if path is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         path = OUTPUT_DIR / f"screenshot_{timestamp}.png"
         # Ensure OUTPUT_DIR exists
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,35 +86,63 @@ def screenshot(path: Path | None = None) -> Path:
         # Ensure parent directory exists within OUTPUT_DIR
         path.parent.mkdir(parents=True, exist_ok=True)
 
-    if IS_MACOS:
-        subprocess.run(["screencapture", str(path)], check=True)
-        return path
-    elif os.name == "posix":
-        # TODO: add support for specifying window/fullscreen?
-        if shutil.which("gnome-screenshot"):
-            subprocess.run(["gnome-screenshot", "-f", str(path)], check=True)
+    try:
+        if IS_MACOS:
+            subprocess.run(
+                ["screencapture", str(path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             return path
-        elif not IS_WAYLAND and shutil.which("scrot"):
-            subprocess.run(["scrot", "--overwrite", str(path)], check=True)
-            return path
-        else:
+        if os.name == "posix":
+            # TODO: add support for specifying window/fullscreen?
+            if shutil.which("gnome-screenshot"):
+                subprocess.run(
+                    ["gnome-screenshot", "-f", str(path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return path
+            if not IS_WAYLAND and shutil.which("scrot"):
+                subprocess.run(
+                    ["scrot", "--overwrite", str(path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return path
             raise NotImplementedError("No supported screenshot method available")
-    else:
         raise NotImplementedError(
             "Screenshot functionality is only available on macOS and Linux."
         )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Screenshot timed out after 10 seconds") from None
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Screenshot command failed (exit code {e.returncode}): {e.stderr or e.stdout or 'no output'}"
+        ) from None
+
+
+def examples(tool_format) -> str:
+    return f"""
+To take a screenshot and view it immediately:
+
+{ToolUse("ipython", [], "view_image(screenshot())").to_output(tool_format)}
+
+This will take a screenshot, save it to a file, and include the image in the chat.
+    """.strip()
 
 
 tool = ToolSpec(
     name="screenshot",
     desc="Take a screenshot",
+    available=_is_available,
     instructions=INSTRUCTIONS,
     functions=[screenshot],
-    examples=f"""
-To take a screenshot and view it immediately:
-
-{ToolUse("ipython", [], "view_image(screenshot())")}
-
-This will take a screenshot, save it to a file, and include the image in the chat.
-    """,
+    examples=examples,
 )

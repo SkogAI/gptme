@@ -273,6 +273,121 @@ def test_message_conversion_with_tool_and_non_tool():
     ]
 
 
+def test_message_conversion_tool_response_with_image():
+    """Tool responses with image files should use follow-up user messages for images.
+
+    When a tool response (system + call_id) has image file attachments (e.g. from
+    view_image via ipython), the tool message itself must remain text-only (OpenAI
+    tool messages only support text content), but the images should be forwarded as
+    a follow-up user message so vision-capable models can still see them.
+    """
+    import tempfile
+    from pathlib import Path
+
+    init_tools(allowlist=["save"])
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        # Write minimal PNG header (just needs to exist and be readable)
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        image_path = Path(f.name)
+
+    try:
+        messages = [
+            Message(role="user", content="Can you view this image?"),
+            Message(
+                role="assistant",
+                content='@ipython(call1): {"code": "view_image(\'/path/image.png\')"}',
+            ),
+            # Tool response with image file (like view_image returns)
+            Message(
+                role="system",
+                content="Viewing image at `/path/image.png`\nImage size: 100x100, 0.1KB",
+                call_id="call1",
+                files=[image_path],
+            ),
+        ]
+
+        tool_save = get_tool("save")
+        assert tool_save
+
+        model = get_model("openai/gpt-4o")
+        messages_dicts, _ = _prepare_messages_for_api(messages, model.full, [tool_save])
+
+        # The tool response (index 2) should be a "tool" message with text-only content
+        tool_msg = messages_dicts[2]
+        assert tool_msg["role"] == "tool", "Tool response must have role='tool'"
+        assert tool_msg["tool_call_id"] == "call1"
+        # Content should be a list of text parts only, no image_url parts
+        content = tool_msg["content"]
+        assert isinstance(content, list), "Tool message content must be a list"
+        for part in content:
+            if isinstance(part, dict):
+                assert part.get("type") != "image_url", (
+                    "Tool messages must not have images"
+                )
+
+        # A follow-up user message (index 3) should carry the image for vision models
+        assert len(messages_dicts) == 4, (
+            "Expected follow-up user message for tool response image"
+        )
+        followup_msg = messages_dicts[3]
+        assert followup_msg["role"] == "user", (
+            "Follow-up image message must be user role"
+        )
+        followup_content = followup_msg["content"]
+        assert isinstance(followup_content, list)
+        image_parts = [
+            p
+            for p in followup_content
+            if isinstance(p, dict) and p.get("type") == "image_url"
+        ]
+        assert len(image_parts) == 1, "Follow-up message should have exactly one image"
+    finally:
+        image_path.unlink(missing_ok=True)
+
+
+def test_message_conversion_tool_response_with_image_no_vision():
+    """Tool responses with images on non-vision models should not generate follow-up messages."""
+    import tempfile
+    from pathlib import Path
+
+    init_tools(allowlist=["save"])
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        image_path = Path(f.name)
+
+    try:
+        messages = [
+            Message(role="user", content="Can you view this image?"),
+            Message(
+                role="assistant",
+                content='@ipython(call1): {"code": "view_image(\'/path/image.png\')"}',
+            ),
+            Message(
+                role="system",
+                content="Viewing image",
+                call_id="call1",
+                files=[image_path],
+            ),
+        ]
+
+        tool_save = get_tool("save")
+        assert tool_save
+
+        # Use a model without vision support
+        model = get_model("openai/gpt-3.5-turbo")
+        messages_dicts, _ = _prepare_messages_for_api(messages, model.full, [tool_save])
+
+        # No follow-up user message should be added for non-vision models
+        assert len(messages_dicts) == 3, (
+            "Non-vision model should not generate follow-up image message"
+        )
+        assert messages_dicts[2]["role"] == "tool"
+    finally:
+        image_path.unlink(missing_ok=True)
+
+
 def test_timeout_default(monkeypatch):
     """Test that timeout uses NOT_GIVEN (client default) when LLM_API_TIMEOUT is not set."""
     from unittest.mock import Mock, patch
@@ -375,9 +490,9 @@ def test_timeout_all_providers(monkeypatch):
             # Verify timeout was passed
             if mock_openai.called:
                 call_kwargs = mock_openai.call_args[1]
-                assert (
-                    call_kwargs["timeout"] == 900.0
-                ), f"Provider {provider} didn't receive correct timeout"
+                assert call_kwargs["timeout"] == 900.0, (
+                    f"Provider {provider} didn't receive correct timeout"
+                )
 
 
 def test_timeout_invalid_value(monkeypatch):
@@ -399,10 +514,12 @@ def test_timeout_invalid_value(monkeypatch):
     # Get config instance
     config = get_config()
 
-    with patch("openai.OpenAI"):
-        # Should raise ValueError on invalid config
-        with pytest.raises(ValueError, match="Invalid LLM_API_TIMEOUT"):
-            llm_openai.init("openai", config)
+    # Should raise ValueError on invalid config
+    with (
+        patch("openai.OpenAI"),
+        pytest.raises(ValueError, match="Invalid LLM_API_TIMEOUT"),
+    ):
+        llm_openai.init("openai", config)
 
 
 def test_message_conversion_gpt5_with_tool_results():
@@ -441,7 +558,11 @@ def test_message_conversion_gpt5_with_tool_results():
     # 1. Regular system message is converted to user message
     # 2. Tool result (system with call_id) is converted to tool message
     assert messages_list[0]["role"] == "user"  # System prompt -> user
-    assert "<system>" in messages_list[0]["content"][0]["text"]
+    content_0 = messages_list[0]["content"]
+    assert isinstance(content_0, list)
+    first_part = content_0[0]
+    assert isinstance(first_part, dict)
+    assert "<system>" in first_part["text"]
 
     assert messages_list[1]["role"] == "user"  # User message stays user
 
@@ -452,7 +573,11 @@ def test_message_conversion_gpt5_with_tool_results():
     # The critical assertion: tool result should be role="tool", not role="user"
     assert messages_list[3]["role"] == "tool"  # Tool result preserved!
     assert messages_list[3]["tool_call_id"] == "call_123"
-    assert messages_list[3]["content"][0]["text"] == "Saved to file.txt"
+    content_3 = messages_list[3]["content"]
+    assert isinstance(content_3, list)
+    first_part_3 = content_3[0]
+    assert isinstance(first_part_3, dict)
+    assert first_part_3["text"] == "Saved to file.txt"
 
 
 def test_transform_msgs_for_groq():
@@ -717,6 +842,55 @@ class TestOpenAIRetryLogic:
                 error, attempt=2, max_retries=3, base_delay=0.1
             )
 
+    def test_handle_openai_transient_error_openrouter_overloaded(self):
+        """Test that OpenRouter Anthropic 'Overloaded' errors trigger retry.
+
+        OpenRouter proxies Anthropic models and may return overloaded errors
+        with the message in the body rather than the message attribute.
+        See: https://github.com/ErikBjare/bob/issues/287
+        """
+        from unittest.mock import MagicMock, patch
+
+        from openai import APIStatusError
+
+        from gptme.llm.llm_openai import _handle_openai_transient_error
+
+        # Test with overload in body dict
+        mock_response = MagicMock()
+        mock_response.status_code = 400  # Not 5xx, to test body-based detection
+        error = APIStatusError(
+            "Error", response=mock_response, body={"error": "Overloaded"}
+        )
+
+        # Test retry path: on attempt 0, should sleep and return (retry)
+        with patch("time.sleep") as mock_sleep:
+            _handle_openai_transient_error(
+                error, attempt=0, max_retries=3, base_delay=0.1
+            )
+            # Assert retry path was taken (sleep called = will retry)
+            mock_sleep.assert_called_once()
+
+        # Test with overload in string representation
+        error_str = APIStatusError("Overloaded", response=mock_response, body=None)
+
+        with patch("time.sleep") as mock_sleep:
+            _handle_openai_transient_error(
+                error_str, attempt=0, max_retries=3, base_delay=0.1
+            )
+            # Assert retry path was taken
+            mock_sleep.assert_called_once()
+
+        # Test non-retry path: on last attempt, should raise the error
+        with patch("time.sleep") as mock_sleep:
+            import pytest
+
+            with pytest.raises(APIStatusError):
+                _handle_openai_transient_error(
+                    error, attempt=2, max_retries=3, base_delay=0.1
+                )
+            # On last attempt, should not sleep (no retry)
+            mock_sleep.assert_not_called()
+
     def test_retry_decorator_retries_on_transient_error(self, monkeypatch):
         """Test that the retry decorator properly retries on transient errors."""
         from unittest.mock import MagicMock, patch
@@ -849,10 +1023,9 @@ class TestOpenAIRetryLogic:
 
         # Should NOT retry when error occurs after yielding (would cause duplicates)
         collected = []
-        with pytest.raises(RateLimitError):
-            with patch("time.sleep"):
-                for chunk in gen_fails_after_yield():
-                    collected.append(chunk)
+        with pytest.raises(RateLimitError), patch("time.sleep"):
+            for chunk in gen_fails_after_yield():
+                collected.append(chunk)  # noqa: PERF402
 
         # Should have received chunks before error, and NOT duplicated
         assert collected == [
@@ -884,3 +1057,576 @@ class TestOpenAIRetryLogic:
 
         assert chunks == ["chunk1", "chunk2"]
         assert return_value == {"metadata": "value"}
+
+
+def test_transform_msgs_for_openrouter_reasoning_tool_calls():
+    """Test that OpenRouter reasoning models get empty reasoning_content for tool_calls.
+
+    This fixes the error: "thinking is enabled but reasoning_content is missing
+    in assistant tool call message" when using models like Moonshot AI Kimi K2.5
+    with --tool-format tool.
+    """
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    # Moonshot AI Kimi model accessed via OpenRouter with reasoning support
+    openrouter_reasoning_model = ModelMeta(
+        provider="openrouter",
+        model="moonshotai/kimi-k2.5",
+        context=262_144,
+        supports_reasoning=True,
+    )
+
+    # Assistant message with tool_calls but no content
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "arguments": '{"command": "ls"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(
+        _transform_msgs_for_special_provider(messages, openrouter_reasoning_model)
+    )
+
+    # OpenRouter reasoning models need reasoning_content for assistant messages with tool_calls
+    assert "reasoning_content" in result[0]
+    assert result[0]["reasoning_content"] == ""
+    assert result[0]["tool_calls"] == messages[0]["tool_calls"]
+
+
+def test_transform_msgs_for_openrouter_non_reasoning():
+    """Test that OpenRouter models without reasoning support are unchanged."""
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    # Regular OpenRouter model without reasoning
+    openrouter_model = ModelMeta(
+        provider="openrouter",
+        model="openai/gpt-4",
+        context=128_000,
+        supports_reasoning=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "arguments": '{"command": "ls"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(_transform_msgs_for_special_provider(messages, openrouter_model))
+
+    # Non-reasoning models should NOT get reasoning_content added
+    assert "reasoning_content" not in result[0]
+    assert result[0]["tool_calls"] == messages[0]["tool_calls"]
+
+
+def test_transform_msgs_extracts_reasoning_content():
+    """Test that OpenRouter reasoning models extract thinking content from <think> tags."""
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    openrouter_reasoning_model = ModelMeta(
+        provider="openrouter",
+        model="moonshotai/kimi-k2.5",
+        context=262_144,
+        supports_reasoning=True,
+    )
+
+    # Message with thinking content in <think> tags
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "<think>I need to run ls to list files</think>\n\nLet me check the files.",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "arguments": '{"command": "ls"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(
+        _transform_msgs_for_special_provider(messages, openrouter_reasoning_model)
+    )
+
+    # Should extract the actual reasoning content
+    assert "reasoning_content" in result[0]
+    assert result[0]["reasoning_content"] == "I need to run ls to list files"
+
+    # Should remove <think> tags from content to prevent context duplication
+    assert result[0]["content"] == "Let me check the files."
+    assert "<think>" not in result[0]["content"]
+
+
+def test_transform_msgs_handles_list_content():
+    """Test that OpenRouter reasoning models correctly handle list content (multi-modal messages).
+
+    This fixes the error: "expected string or bytes-like object, got 'list'"
+    when content is a list of content parts instead of a string.
+    """
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    openrouter_reasoning_model = ModelMeta(
+        provider="openrouter",
+        model="moonshotai/kimi-k2.5",
+        context=262_144,
+        supports_reasoning=True,
+    )
+
+    # Message with list content (multi-modal format)
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "<think>Reasoning here</think>"},
+                {"type": "text", "text": "Actual response content"},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "arguments": '{"command": "ls"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(
+        _transform_msgs_for_special_provider(messages, openrouter_reasoning_model)
+    )
+
+    # Should extract reasoning from list content
+    assert "reasoning_content" in result[0]
+    assert result[0]["reasoning_content"] == "Reasoning here"
+
+    # Content should be cleaned (reasoning extracted)
+    result_content = result[0]["content"]
+    assert isinstance(result_content, str)
+    assert "<think>" not in result_content
+    assert "Actual response content" in result_content
+
+
+def test_transform_msgs_handles_string_list_content():
+    """Test that list content with string items (not dicts) is handled correctly."""
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    openrouter_reasoning_model = ModelMeta(
+        provider="openrouter",
+        model="moonshotai/kimi-k2.5",
+        context=262_144,
+        supports_reasoning=True,
+    )
+
+    # Message with list of strings (edge case)
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": ["<think>Thinking</think>", "Response text"],
+            "tool_calls": [
+                {
+                    "id": "call_456",
+                    "type": "function",
+                    "function": {
+                        "name": "ipython",
+                        "arguments": '{"code": "1+1"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(
+        _transform_msgs_for_special_provider(messages, openrouter_reasoning_model)
+    )
+
+    # Should handle string list items
+    assert "reasoning_content" in result[0]
+    assert result[0]["reasoning_content"] == "Thinking"
+
+
+def test_transform_msgs_openrouter_removes_empty_content():
+    """Test that OpenRouter reasoning models remove content when it's empty after stripping
+    <think> tags, to avoid provider errors (e.g. Z.AI/GLM rejects empty text content).
+
+    Regression test for: 'messages[2].content[0].text:text cannot be empty'
+    """
+    from typing import Any
+
+    from gptme.llm.llm_openai import _transform_msgs_for_special_provider
+    from gptme.llm.models import ModelMeta
+
+    # Z.AI GLM model accessed via OpenRouter with reasoning support
+    openrouter_reasoning_model = ModelMeta(
+        provider="openrouter",
+        model="z-ai/glm-5",
+        context=131_072,
+        supports_reasoning=True,
+    )
+
+    # Assistant message where content is ONLY thinking (no actual text after stripping)
+    # This happens when GLM outputs <think>reasoning</think> with no text response
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "<think>I should use IPython to compute primes</think>\n",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "ipython",
+                        "arguments": '{"code": "print([p for p in range(2, 50)])"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    result = list(
+        _transform_msgs_for_special_provider(messages, openrouter_reasoning_model)
+    )
+
+    # Reasoning should be extracted
+    assert "reasoning_content" in result[0]
+    assert "IPython" in result[0]["reasoning_content"]
+
+    # Content should be REMOVED (not set to empty string) to avoid provider rejection
+    assert "content" not in result[0], (
+        "Empty content should be removed to avoid Z.AI/GLM rejection of empty text"
+    )
+
+
+def test_merge_consecutive_preserves_files():
+    """Test that _merge_consecutive preserves files when merging messages.
+
+    This is critical for OpenRouter models with supports_reasoning=True,
+    which use _prep_deepseek_reasoner which calls _merge_consecutive.
+    If files (like images) are not preserved, vision features break.
+    """
+    from pathlib import Path
+
+    from gptme.llm.llm_openai import _merge_consecutive
+    from gptme.message import Message
+
+    # Simulate what happens with _prep_o1 + _merge_consecutive:
+    # System messages become user messages, then get merged with the actual user message
+    system_as_user1 = Message(
+        "user",
+        "<system>You are a helpful assistant</system>",
+    )
+    system_as_user2 = Message(
+        "user",
+        "<system>Context files here</system>",
+    )
+    user_with_image = Message(
+        "user",
+        "/path/to/image.png",
+        files=[Path("/path/to/image.png")],
+        file_hashes={"/path/to/image.png": "abc123"},
+    )
+
+    # Merge all three consecutive user messages
+    msgs = [system_as_user1, system_as_user2, user_with_image]
+    merged = list(_merge_consecutive(msgs))
+
+    # Should result in a single merged message
+    assert len(merged) == 1
+    merged_msg = merged[0]
+
+    # The image file should be preserved
+    assert len(merged_msg.files) == 1
+    assert Path("/path/to/image.png") in merged_msg.files
+
+    # File hashes should be preserved
+    assert merged_msg.file_hashes.get("/path/to/image.png") == "abc123"
+
+    # All content should be merged
+    assert "<system>You are a helpful assistant</system>" in merged_msg.content
+    assert "<system>Context files here</system>" in merged_msg.content
+    assert "/path/to/image.png" in merged_msg.content
+
+
+def test_prep_deepseek_reasoner_preserves_image_files():
+    """Test that _prep_deepseek_reasoner preserves image files.
+
+    This is the actual flow for OpenRouter reasoning models like Claude Opus.
+    """
+    from pathlib import Path
+
+    from gptme.llm.llm_openai import _prep_deepseek_reasoner
+    from gptme.message import Message
+
+    # Simulate a typical conversation start:
+    # 1. Main system prompt
+    # 2. Context files system message
+    # 3. User message with pasted image
+    messages = [
+        Message("system", "You are a helpful assistant."),
+        Message("system", "## Context files\n- README.md"),
+        Message("system", "Token budget: 200000"),
+        Message(
+            "user",
+            "/path/to/screenshot.png",
+            files=[Path("/path/to/screenshot.png")],
+            file_hashes={"/path/to/screenshot.png": "hash123"},
+        ),
+    ]
+
+    # Apply the deepseek reasoner prep (used for supports_reasoning models)
+    result = list(_prep_deepseek_reasoner(messages))
+
+    # Should have: first system message unchanged, then merged user messages
+    assert len(result) == 2
+    assert result[0].role == "system"  # First message unchanged
+    assert result[1].role == "user"  # Merged user messages
+
+    # The image file must be preserved in the merged user message
+    assert len(result[1].files) == 1
+    assert Path("/path/to/screenshot.png") in result[1].files
+    assert result[1].file_hashes.get("/path/to/screenshot.png") == "hash123"
+
+
+# --- Tests for extra_body (OpenRouter provider routing) ---
+
+
+class TestExtraBody:
+    """Tests for OpenRouter extra_body provider routing preferences."""
+
+    @staticmethod
+    def _make_model(model: str, **kwargs):  # type: ignore[no-untyped-def]
+        from gptme.llm.models.types import ModelMeta
+
+        return ModelMeta(
+            provider=kwargs.pop("provider", "openrouter"),
+            model=model,
+            context=kwargs.pop("context", 128000),
+            **kwargs,
+        )
+
+    def test_non_openrouter_returns_empty(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("gpt-4o", provider="openai")
+        result = extra_body("openai", meta)
+        assert result == {}
+
+    def test_openrouter_has_require_parameters(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["require_parameters"] is True
+
+    def test_openrouter_has_data_collection_deny_by_default_for_non_reasoning(
+        self, monkeypatch
+    ):
+        """Non-reasoning models default to data_collection='deny' for privacy."""
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+        monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["data_collection"] == "deny"
+
+    def test_openrouter_provider_override_with_at_sign(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514@anthropic")
+        result = extra_body("openrouter", meta)
+        prov = result["provider"]
+        assert prov["order"] == ["anthropic"]
+        assert prov["allow_fallbacks"] is False
+        # Should still have require_parameters (non-reasoning model)
+        assert prov["require_parameters"] is True
+
+    def test_openrouter_no_provider_override(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        prov = result["provider"]
+        assert "order" not in prov
+        assert "allow_fallbacks" not in prov
+
+    def test_openrouter_usage_accounting(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("openai/gpt-4o")
+        result = extra_body("openrouter", meta)
+        assert result["usage"] == {"include": True}
+
+    def test_openrouter_reasoning_model(self):
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("openai/o3", supports_reasoning=True)
+        result = extra_body("openrouter", meta)
+        assert "reasoning" in result
+        assert result["reasoning"]["enabled"] is True
+
+    def test_openrouter_reasoning_model_no_require_parameters(self):
+        """Reasoning models must not set require_parameters=True.
+
+        The combination of require_parameters + reasoning extension can
+        eliminate all available providers — the reasoning body parameter
+        is not universally supported by all OpenRouter providers.
+        """
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model(
+            "anthropic/claude-sonnet-4-20250514", supports_reasoning=True
+        )
+        result = extra_body("openrouter", meta)
+        assert "reasoning" in result
+        assert "require_parameters" not in result["provider"]
+
+    def test_openrouter_non_reasoning_model_has_require_parameters(self):
+        """Non-reasoning models should still set require_parameters=True."""
+        from gptme.llm.llm_openai import extra_body
+
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert "reasoning" not in result
+        assert result["provider"]["require_parameters"] is True
+
+    def test_openrouter_data_collection_env_override_allow(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_DATA_COLLECTION", "allow")
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["data_collection"] == "allow"
+
+    def test_openrouter_data_collection_env_override_deny(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_DATA_COLLECTION", "deny")
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["data_collection"] == "deny"
+
+    def test_openrouter_reasoning_model_no_data_collection_by_default(
+        self, monkeypatch
+    ):
+        """Reasoning models don't set data_collection by default.
+
+        The triple constraint (require_parameters + reasoning + data_collection="deny")
+        eliminates all available OpenRouter providers, causing 400 errors.
+        """
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+        monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+        meta = self._make_model(
+            "anthropic/claude-sonnet-4-20250514", supports_reasoning=True
+        )
+        result = extra_body("openrouter", meta)
+        assert "reasoning" in result
+        assert "data_collection" not in result["provider"]
+
+    def test_openrouter_data_collection_gptme_prefixed_env(self, monkeypatch):
+        """GPTME_OPENROUTER_DATA_COLLECTION takes precedence over bare form."""
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("GPTME_OPENROUTER_DATA_COLLECTION", "allow")
+        monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["data_collection"] == "allow"
+
+    # --- Quantization routing tests ---
+
+    def test_openrouter_no_quantization_by_default(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.delenv("OPENROUTER_QUANTIZATION", raising=False)
+        monkeypatch.delenv("GPTME_OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert "quantizations" not in result["provider"]
+
+    def test_openrouter_quantization_single(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_QUANTIZATION", "fp16")
+        monkeypatch.delenv("GPTME_OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["quantizations"] == ["fp16"]
+
+    def test_openrouter_quantization_multiple(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_QUANTIZATION", "fp16,bf16,fp8")
+        monkeypatch.delenv("GPTME_OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["quantizations"] == ["fp16", "bf16", "fp8"]
+
+    def test_openrouter_quantization_whitespace_handling(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_QUANTIZATION", " fp16 , int8 , int4 ")
+        monkeypatch.delenv("GPTME_OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["quantizations"] == ["fp16", "int8", "int4"]
+
+    def test_openrouter_quantization_empty_string_ignored(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_QUANTIZATION", "")
+        monkeypatch.delenv("GPTME_OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert "quantizations" not in result["provider"]
+
+    def test_openrouter_quantization_gptme_prefixed_env(self, monkeypatch):
+        """GPTME_OPENROUTER_QUANTIZATION takes precedence over bare form."""
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("GPTME_OPENROUTER_QUANTIZATION", "int4")
+        monkeypatch.delenv("OPENROUTER_QUANTIZATION", raising=False)
+        meta = self._make_model("anthropic/claude-sonnet-4-20250514")
+        result = extra_body("openrouter", meta)
+        assert result["provider"]["quantizations"] == ["int4"]
