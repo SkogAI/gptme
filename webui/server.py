@@ -63,7 +63,7 @@ class SPAHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return http.server.SimpleHTTPRequestHandler.do_GET(self)
 
 
-def run_server(port=5701, bind="127.0.0.1"):
+def run_server(port=9996, bind="0.0.0.0"):
     """Run the HTTP server."""
     web_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
     if not os.path.isdir(web_root):
@@ -83,5 +83,5 @@ def run_server(port=5701, bind="127.0.0.1"):
 if __name__ == "__main__":
     import sys
 
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5701
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9996
     run_server(port=port)
