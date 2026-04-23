@@ -50,7 +50,7 @@ RUN git clone --branch v1.5.0 https://github.com/novnc/noVNC.git /opt/noVNC && \
     ln -s /opt/noVNC/vnc.html /opt/noVNC/index.html
 
 # Create user
-ENV USERNAME=computeruse
+ENV USERNAME=dot
 ENV HOME=/home/$USERNAME
 RUN useradd -m -s /bin/bash -d $HOME $USERNAME && \
     echo "${USERNAME} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
@@ -91,9 +91,9 @@ USER $USERNAME
 WORKDIR $HOME
 
 # Configure git
-RUN git config --global user.name "gptme" && \
-    git config --global user.email "gptme@superuserlabs.org" && \
-    git config --global init.defaultBranch main
+RUN git config --global user.name "dot" && \
+    git config --global user.email "dot@skogai.se" && \
+    git config --global init.defaultBranch master
 
 # Copy startup scripts
 COPY --chown=$USERNAME:$USERNAME scripts/computer_home/* $HOME/
