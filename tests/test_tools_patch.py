@@ -462,13 +462,13 @@ def test_execute_patch_size_warning(temp_file):
 short
 >>>>>>> UPDATED"""
 
-    assert len(patch) > 1000, (
-        f"patch must be >1000 chars for test validity, got {len(patch)}"
-    )
+    assert (
+        len(patch) > 1000
+    ), f"patch must be >1000 chars for test validity, got {len(patch)}"
     result_len = len("short\n")
-    assert result_len < 1000, (
-        "result must be <1000 chars to exercise the fixed condition"
-    )
+    assert (
+        result_len < 1000
+    ), "result must be <1000 chars to exercise the fixed condition"
 
     with temp_file(long_original) as f:
         result = next(execute_patch(patch, [f], None)).content

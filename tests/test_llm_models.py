@@ -178,9 +178,9 @@ def test_get_recommended_model(provider, expected_model):
     assert result == expected_model
     # Verify the recommended model actually exists in MODELS
     if MODELS.get(provider):
-        assert result in MODELS[provider], (
-            f"Recommended model '{result}' not found in MODELS['{provider}']"
-        )
+        assert (
+            result in MODELS[provider]
+        ), f"Recommended model '{result}' not found in MODELS['{provider}']"
 
 
 @pytest.mark.parametrize("provider", ["azure", "nvidia", "local"])

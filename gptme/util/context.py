@@ -575,9 +575,9 @@ def _find_potential_paths(content: str) -> list[str]:
     """
     # Remove code blocks to avoid matching paths inside them
     re_codeblock = r"````?[\s\S]*?\n````?"
-    assert re.match(re_codeblock, md_codeblock("test", "test")), (
-        "Code block regex should match the md_codeblock format with quadruple backticks"
-    )
+    assert re.match(
+        re_codeblock, md_codeblock("test", "test")
+    ), "Code block regex should match the md_codeblock format with quadruple backticks"
     assert re.match(
         re_codeblock, md_codeblock("test", "test").replace("````", "```")
     ), "Code block regex should match the md_codeblock format with triple backticks"

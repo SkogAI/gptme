@@ -972,9 +972,9 @@ def test_wilson_lower_bound_basic():
     # Perfect but low-N should rank below high-N with slightly lower rate
     perfect_4 = wilson_lower_bound(4, 4)  # 100% on 4 tests
     strong_59 = wilson_lower_bound(56, 59)  # ~95% on 59 tests
-    assert strong_59 > perfect_4, (
-        f"56/59 ({strong_59:.4f}) should rank above 4/4 ({perfect_4:.4f})"
-    )
+    assert (
+        strong_59 > perfect_4
+    ), f"56/59 ({strong_59:.4f}) should rank above 4/4 ({perfect_4:.4f})"
 
     # Zero tests should return 0
     assert wilson_lower_bound(0, 0) == 0.0
@@ -1083,9 +1083,9 @@ def test_test_sets_auto_derived():
     for suite_name, suite_tests in suites.items():
         if suite_name.startswith("practical"):
             for test in suite_tests:
-                assert test["name"] in PRACTICAL_TESTS, (
-                    f"practical test {test['name']} from {suite_name} missing"
-                )
+                assert (
+                    test["name"] in PRACTICAL_TESTS
+                ), f"practical test {test['name']} from {suite_name} missing"
 
     # Sets should be disjoint
     overlap = BASIC_TESTS & PRACTICAL_TESTS

@@ -695,15 +695,15 @@ workspace = "{workspace!s}"
         )
 
         assert config.chat is not None, "Chat config should be loaded"
-        assert config.chat.model == "openrouter/test-model", (
-            "Should use saved model when no CLI override"
-        )
-        assert config.chat.tool_format == "xml", (
-            "Should use saved tool_format when no CLI override"
-        )
-        assert config.chat.tools is not None and ("shell" in config.chat.tools), (
-            "Should use saved tools when no CLI override"
-        )
+        assert (
+            config.chat.model == "openrouter/test-model"
+        ), "Should use saved model when no CLI override"
+        assert (
+            config.chat.tool_format == "xml"
+        ), "Should use saved tool_format when no CLI override"
+        assert config.chat.tools is not None and (
+            "shell" in config.chat.tools
+        ), "Should use saved tools when no CLI override"
 
         # Test 2: Resume with CLI overrides - should use CLI values
         config = setup_config_from_cli(
@@ -718,12 +718,12 @@ workspace = "{workspace!s}"
         )
 
         assert config.chat is not None, "Chat config should be loaded"
-        assert config.chat.model == "anthropic/claude-3-sonnet", (
-            "Should use CLI model when provided"
-        )
-        assert config.chat.tool_format == "markdown", (
-            "Should use CLI tool_format when provided"
-        )
+        assert (
+            config.chat.model == "anthropic/claude-3-sonnet"
+        ), "Should use CLI model when provided"
+        assert (
+            config.chat.tool_format == "markdown"
+        ), "Should use CLI tool_format when provided"
         assert config.chat.tools == [
             "read",
             "save",
@@ -753,13 +753,13 @@ workspace = "{workspace!s}"
 
         # For new conversations, should use defaults/env (tool_format defaults to "markdown")
         assert config.chat is not None, "Chat config should be loaded"
-        assert config.chat.tool_format == "markdown", (
-            "Should use default tool_format for new conversation"
-        )
+        assert (
+            config.chat.tool_format == "markdown"
+        ), "Should use default tool_format for new conversation"
         # Model will depend on env vars, so we just check it's not the saved value
-        assert config.chat.model != "openrouter/test-model", (
-            "Should not use saved model for new conversation"
-        )
+        assert (
+            config.chat.model != "openrouter/test-model"
+        ), "Should not use saved model for new conversation"
 
 
 def test_reload_config_clears_tools(monkeypatch, tmp_path):
@@ -1011,9 +1011,9 @@ def test_tool_exclusion_config(tmp_path):
     from gptme.tools import get_toolchain
 
     default_tools = [tool.name for tool in get_toolchain(None)]
-    assert "browser" in default_tools or "shell" in default_tools, (
-        "Need at least one default tool to test exclusion"
-    )
+    assert (
+        "browser" in default_tools or "shell" in default_tools
+    ), "Need at least one default tool to test exclusion"
 
     # Pick a tool that exists in defaults to exclude
     tool_to_exclude = default_tools[0]
@@ -1031,15 +1031,15 @@ def test_tool_exclusion_config(tmp_path):
 
     assert config.chat is not None
     assert config.chat.tools is not None
-    assert tool_to_exclude not in config.chat.tools, (
-        f"Excluded tool '{tool_to_exclude}' should not be in tools list"
-    )
+    assert (
+        tool_to_exclude not in config.chat.tools
+    ), f"Excluded tool '{tool_to_exclude}' should not be in tools list"
     # Other default tools should still be present (minus the excluded one)
     remaining_defaults = [t for t in default_tools if t != tool_to_exclude]
     for tool in remaining_defaults:
-        assert tool in config.chat.tools, (
-            f"Non-excluded default tool '{tool}' should still be present"
-        )
+        assert (
+            tool in config.chat.tools
+        ), f"Non-excluded default tool '{tool}' should still be present"
 
 
 def test_tool_exclusion_multiple(tmp_path):
@@ -1070,15 +1070,15 @@ def test_tool_exclusion_multiple(tmp_path):
     assert config.chat is not None
     assert config.chat.tools is not None
     for excluded in tools_to_exclude:
-        assert excluded not in config.chat.tools, (
-            f"Excluded tool '{excluded}' should not be in tools list"
-        )
+        assert (
+            excluded not in config.chat.tools
+        ), f"Excluded tool '{excluded}' should not be in tools list"
     # Also verify the remaining default tools are still present
     remaining_defaults = [t for t in default_tools if t not in tools_to_exclude]
     for tool in remaining_defaults:
-        assert tool in config.chat.tools, (
-            f"Default tool '{tool}' should still be in tools list after exclusion"
-        )
+        assert (
+            tool in config.chat.tools
+        ), f"Default tool '{tool}' should still be in tools list after exclusion"
 
 
 def test_set_config_value_creates_intermediate_sections(tmp_path, monkeypatch):

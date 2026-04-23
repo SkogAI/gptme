@@ -508,9 +508,9 @@ class TestValidateBranchUnit:
         app = create_app()
         with app.app_context():
             for payload in BRANCH_TRAVERSAL_PAYLOADS:
-                assert _validate_branch(payload) is not None, (
-                    f"Should reject: {payload}"
-                )
+                assert (
+                    _validate_branch(payload) is not None
+                ), f"Should reject: {payload}"
 
     def test_accepts_valid_names(self):
         """Valid branch names should pass validation."""

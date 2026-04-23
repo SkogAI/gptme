@@ -195,9 +195,9 @@ class TestInitAuth:
                 gptme.server.auth._auth_enabled = True
                 with patch.dict(os.environ, {"GPTME_DISABLE_AUTH": val}):
                     gptme.server.auth.init_auth("0.0.0.0", display=False)
-                    assert gptme.server.auth._auth_enabled is False, (
-                        f"Failed for '{val}'"
-                    )
+                    assert (
+                        gptme.server.auth._auth_enabled is False
+                    ), f"Failed for '{val}'"
             finally:
                 gptme.server.auth._auth_enabled = original
                 os.environ.pop("GPTME_DISABLE_AUTH", None)

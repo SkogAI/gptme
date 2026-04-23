@@ -93,9 +93,9 @@ def test_env_file_used_instead():
 
     cmd = _get_docker_cmd_from_reexec({test_key: test_secret})
 
-    assert "--env-file" in cmd, (
-        f"Expected --env-file in docker command but not found. Command: {cmd}"
-    )
+    assert (
+        "--env-file" in cmd
+    ), f"Expected --env-file in docker command but not found. Command: {cmd}"
 
 
 def test_env_file_has_restrictive_permissions():
@@ -141,9 +141,9 @@ def test_env_file_has_restrictive_permissions():
     assert env_file_path is not None, "Expected --env-file to be used"
     # The production code calls os.chmod(path, 0o600) after writing,
     # so the mode is unconditionally 0o600 regardless of umask.
-    assert env_file_mode == 0o600, (
-        f"Expected env file permissions 0o600, got 0o{env_file_mode:o}"
-    )
+    assert (
+        env_file_mode == 0o600
+    ), f"Expected env file permissions 0o600, got 0o{env_file_mode:o}"
 
 
 def test_multiple_keys_not_leaked():
@@ -158,9 +158,9 @@ def test_multiple_keys_not_leaked():
     cmd_str = " ".join(cmd)
 
     for key, secret in secrets.items():
-        assert secret not in cmd_str, (
-            f"Secret for {key} found in docker command line. Command: {cmd}"
-        )
+        assert (
+            secret not in cmd_str
+        ), f"Secret for {key} found in docker command line. Command: {cmd}"
 
 
 def test_env_file_contains_expected_content():
@@ -206,6 +206,6 @@ def test_env_file_contains_expected_content():
     assert env_file_content is not None, "Expected env file to be written"
     for key, value in test_secrets.items():
         expected_line = f"{key}={value}"
-        assert expected_line in env_file_content, (
-            f'Expected "{expected_line}" in env file content, got: {env_file_content}'
-        )
+        assert (
+            expected_line in env_file_content
+        ), f'Expected "{expected_line}" in env file content, got: {env_file_content}'

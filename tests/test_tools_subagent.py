@@ -1218,9 +1218,9 @@ def test_profile_no_restriction_skips_set_tools():
         )
 
     # set_tools should NOT have been called (no restrictions to enforce)
-    assert len(set_tools_calls) == 0, (
-        f"set_tools should not be called for developer profile, but was called {len(set_tools_calls)} times"
-    )
+    assert (
+        len(set_tools_calls) == 0
+    ), f"set_tools should not be called for developer profile, but was called {len(set_tools_calls)} times"
 
 
 def test_subprocess_mode_with_profile():

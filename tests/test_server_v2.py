@@ -1122,9 +1122,9 @@ def test_v2_chat_config_update_missing_conversation_returns_404(client: FlaskCli
         "error": f"Conversation not found: {conversation_id}"
     }
     # Ensure no orphaned directory or config file was created on disk
-    assert not logdir.exists(), (
-        f"Orphaned logdir was created at {logdir} despite 404 response"
-    )
+    assert (
+        not logdir.exists()
+    ), f"Orphaned logdir was created at {logdir} despite 404 response"
 
 
 def test_v2_conversation_agent_avatar_missing_conversation_returns_404(
@@ -1147,9 +1147,9 @@ def test_v2_conversation_agent_avatar_missing_conversation_returns_404(
     assert response.get_json() == {
         "error": f"Conversation not found: {conversation_id}"
     }
-    assert not logdir.exists(), (
-        f"Orphaned logdir was created at {logdir} despite 404 response"
-    )
+    assert (
+        not logdir.exists()
+    ), f"Orphaned logdir was created at {logdir} despite 404 response"
 
 
 def test_v2_conversation_agent_avatar_orphaned_logdir_returns_404(
@@ -1352,14 +1352,14 @@ def test_v2_create_conversation_rejects_invalid_auto_confirm_type(
         f"/api/v2/conversations/{convname}",
         json={"auto_confirm": auto_confirm_value},
     )
-    assert response.status_code == 400, (
-        f"Expected 400 for auto_confirm={auto_confirm_value!r}, got {response.status_code}"
-    )
+    assert (
+        response.status_code == 400
+    ), f"Expected 400 for auto_confirm={auto_confirm_value!r}, got {response.status_code}"
     data = response.get_json()
     assert data is not None
-    assert "auto_confirm" in data.get("error", ""), (
-        f"Expected error mentioning 'auto_confirm', got: {data}"
-    )
+    assert "auto_confirm" in data.get(
+        "error", ""
+    ), f"Expected error mentioning 'auto_confirm', got: {data}"
 
 
 @pytest.mark.parametrize(
@@ -1382,9 +1382,9 @@ def test_v2_create_conversation_accepts_valid_auto_confirm(
         f"/api/v2/conversations/{convname}",
         json={"auto_confirm": auto_confirm_value},
     )
-    assert response.status_code == 200, (
-        f"Expected 200 for auto_confirm={auto_confirm_value!r}, got {response.status_code}: {response.get_json()}"
-    )
+    assert (
+        response.status_code == 200
+    ), f"Expected 200 for auto_confirm={auto_confirm_value!r}, got {response.status_code}: {response.get_json()}"
 
 
 @pytest.mark.timeout(15)
@@ -1423,9 +1423,9 @@ def test_v2_step_error_returned_in_response(v2_conv, client: FlaskClient):
         )
 
     # Should return 500 with error message, not 200 with "ok"
-    assert response.status_code == 500, (
-        f"Expected 500 for LLM error, got {response.status_code}: {response.get_json()}"
-    )
+    assert (
+        response.status_code == 500
+    ), f"Expected 500 for LLM error, got {response.status_code}: {response.get_json()}"
     data = response.get_json()
     assert data is not None
     assert data["status"] == "error"

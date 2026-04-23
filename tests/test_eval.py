@@ -61,9 +61,9 @@ def test_suite_autodiscovery():
     """Verify auto-discovery finds all practical suites and preserves ordering."""
     # All practical suites should be discovered
     practical_suites = [name for name in suites if name.startswith("practical")]
-    assert len(practical_suites) >= 19, (
-        f"Expected at least 19 practical suites, got {len(practical_suites)}: {practical_suites}"
-    )
+    assert (
+        len(practical_suites) >= 19
+    ), f"Expected at least 19 practical suites, got {len(practical_suites)}: {practical_suites}"
 
     # Verify numeric ordering across all discovered practical suites
     expected_practical = ["practical"] + [
@@ -85,9 +85,9 @@ def test_suite_autodiscovery():
 
     # Verify total test count matches flattened list
     total_from_suites = sum(len(t) for t in suites.values())
-    assert len(tests) == total_from_suites, (
-        f"Flattened tests ({len(tests)}) != sum of suites ({total_from_suites})"
-    )
+    assert (
+        len(tests) == total_from_suites
+    ), f"Flattened tests ({len(tests)}) != sum of suites ({total_from_suites})"
 
 
 def test_suite_aliases():
@@ -97,9 +97,9 @@ def test_suite_aliases():
 
     # 'all' should include every test exactly once
     assert len(all_resolved) == len(tests)
-    assert len(all_resolved) == len({t["name"] for t in all_resolved}), (
-        "duplicates in 'all'"
-    )
+    assert len(all_resolved) == len(
+        {t["name"] for t in all_resolved}
+    ), "duplicates in 'all'"
 
     # 'all-practical' should include only practical tests
     assert len(practical_resolved) > 0

@@ -727,9 +727,9 @@ class TestSendAvailableCommands:
 
         # Extract the AvailableCommand objects from the session_update call
         call_args = agent._conn.session_update.await_args
-        assert call_args is not None, (
-            "session_update was not called — _send_available_commands may have failed"
-        )
+        assert (
+            call_args is not None
+        ), "session_update was not called — _send_available_commands may have failed"
         update = call_args.kwargs.get("update") or call_args.args[0]
 
         # Walk the update to find commands

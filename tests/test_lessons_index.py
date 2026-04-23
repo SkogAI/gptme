@@ -499,9 +499,9 @@ class TestExtraLessonDirsEnv:
 
             # _default_dirs should include the extra dir
             default_dirs = LessonIndex._default_dirs()
-            assert any(d.resolve() == extra_dir.resolve() for d in default_dirs), (
-                f"Extra dir not found in default dirs: {default_dirs}"
-            )
+            assert any(
+                d.resolve() == extra_dir.resolve() for d in default_dirs
+            ), f"Extra dir not found in default dirs: {default_dirs}"
 
     def test_extra_dirs_multiple_colon_separated(
         self, sample_lesson_content, monkeypatch

@@ -79,9 +79,9 @@ def test_session_start_hook(client: FlaskClient, monkeypatch):
         for m in messages
         if "TEST_SESSION_START hook triggered" in m.get("content", "")
     ]
-    assert len(test_hook_messages) > 0, (
-        f"TEST_SESSION_START hook message should be in log. Found {len(messages)} messages total"
-    )
+    assert (
+        len(test_hook_messages) > 0
+    ), f"TEST_SESSION_START hook message should be in log. Found {len(messages)} messages total"
 
 
 def test_message_pre_process_hook(client: FlaskClient, monkeypatch):
@@ -126,9 +126,9 @@ def test_message_pre_process_hook(client: FlaskClient, monkeypatch):
     test_hook_messages = [
         m for m in messages if "TEST_STEP_PRE hook triggered" in m.get("content", "")
     ]
-    assert len(test_hook_messages) > 0, (
-        f"TEST_STEP_PRE hook message should be in log. Found {len(messages)} messages total"
-    )
+    assert (
+        len(test_hook_messages) > 0
+    ), f"TEST_STEP_PRE hook message should be in log. Found {len(messages)} messages total"
 
 
 def test_message_post_process_hook(client: FlaskClient, monkeypatch):
@@ -181,9 +181,9 @@ def test_message_post_process_hook(client: FlaskClient, monkeypatch):
     test_hook_messages = [
         m for m in messages if "TEST_TURN_POST hook triggered" in m.get("content", "")
     ]
-    assert len(test_hook_messages) > 0, (
-        f"TEST_TURN_POST hook message should be in log. Found {len(messages)} messages total"
-    )
+    assert (
+        len(test_hook_messages) > 0
+    ), f"TEST_TURN_POST hook message should be in log. Found {len(messages)} messages total"
 
 
 def test_session_end_hook(client: FlaskClient):

@@ -185,9 +185,9 @@ class TestDetectRuntimeEdgeCases:
     def test_agent_binary_keys_match_runtimes(self):
         """Every binary in AGENT_BINARIES should produce a valid runtime."""
         for binary, expected_runtime in AGENT_BINARIES.items():
-            assert detect_runtime([binary]) == expected_runtime, (
-                f"Binary '{binary}' should detect as '{expected_runtime}'"
-            )
+            assert (
+                detect_runtime([binary]) == expected_runtime
+            ), f"Binary '{binary}' should detect as '{expected_runtime}'"
 
 
 # ---------------------------------------------------------------------------

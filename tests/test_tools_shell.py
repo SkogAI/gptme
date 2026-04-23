@@ -569,9 +569,9 @@ def test_is_denylisted_safe_commands():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe command should be allowed: {cmd}"
         assert reason is None, f"Safe command should have no reason: {cmd}"
-        assert matched_cmd is None, (
-            f"Safe command should have no matched command: {cmd}"
-        )
+        assert (
+            matched_cmd is None
+        ), f"Safe command should have no matched command: {cmd}"
 
 
 def test_is_denylisted_edge_cases():
@@ -592,9 +592,9 @@ def test_is_denylisted_edge_cases():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe variation should be allowed: {cmd}"
         assert reason is None, f"Safe variation should have no reason: {cmd}"
-        assert matched_cmd is None, (
-            f"Safe variation should have no matched command: {cmd}"
-        )
+        assert (
+            matched_cmd is None
+        ), f"Safe variation should have no matched command: {cmd}"
 
 
 def test_is_denylisted_quoted_content():
@@ -616,9 +616,9 @@ def test_is_denylisted_quoted_content():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Quoted dangerous pattern should be allowed: {cmd}"
         assert reason is None, f"Should have no reason for quoted content: {cmd}"
-        assert matched_cmd is None, (
-            f"Should have no matched command for quoted content: {cmd}"
-        )
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for quoted content: {cmd}"
 
 
 def test_is_denylisted_mixed_quoted_and_actual():
@@ -650,12 +650,12 @@ def test_is_denylisted_escaped_quotes():
     for cmd in safe_escaped:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Escaped quoted content should be allowed: {cmd}"
-        assert reason is None, (
-            f"Should have no reason for escaped quoted content: {cmd}"
-        )
-        assert matched_cmd is None, (
-            f"Should have no matched command for escaped quoted content: {cmd}"
-        )
+        assert (
+            reason is None
+        ), f"Should have no reason for escaped quoted content: {cmd}"
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for escaped quoted content: {cmd}"
 
 
 def test_is_denylisted_single_quote_backslash_bypass():
@@ -674,9 +674,9 @@ def test_is_denylisted_single_quote_backslash_bypass():
     ]
     for cmd in dangerous_cmds:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
-        assert is_denied, (
-            f"Command after single-quote-backslash should be denied: {cmd}"
-        )
+        assert (
+            is_denied
+        ), f"Command after single-quote-backslash should be denied: {cmd}"
         assert matched_cmd is not None
 
 
@@ -733,12 +733,12 @@ EOF""",
     for cmd in safe_heredoc_commands:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Heredoc content should be allowed: {cmd[:50]}..."
-        assert reason is None, (
-            f"Should have no reason for heredoc content: {cmd[:50]}..."
-        )
-        assert matched_cmd is None, (
-            f"Should have no matched command for heredoc: {cmd[:50]}..."
-        )
+        assert (
+            reason is None
+        ), f"Should have no reason for heredoc content: {cmd[:50]}..."
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for heredoc: {cmd[:50]}..."
 
 
 def test_is_denylisted_heredoc_with_actual_command():
@@ -767,9 +767,9 @@ EOF2""",
     for cmd in dangerous_with_heredoc:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Actual dangerous command should be denied: {cmd[:50]}..."
-        assert reason is not None, (
-            f"Should have reason for dangerous command: {cmd[:50]}..."
-        )
+        assert (
+            reason is not None
+        ), f"Should have reason for dangerous command: {cmd[:50]}..."
         assert matched_cmd is not None, f"Should have matched command: {cmd[:50]}..."
 
 
@@ -1041,9 +1041,9 @@ def test_is_denylisted_pipe_to_shell_safe_variations():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe pipe command should be allowed: {cmd}"
         assert reason is None, f"Safe command should have no reason: {cmd}"
-        assert matched_cmd is None, (
-            f"Safe command should have no matched command: {cmd}"
-        )
+        assert (
+            matched_cmd is None
+        ), f"Safe command should have no matched command: {cmd}"
 
 
 def test_is_denylisted_pipe_to_shell_in_quotes():
@@ -1060,9 +1060,9 @@ def test_is_denylisted_pipe_to_shell_in_quotes():
         is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Quoted pipe-to-shell should be allowed: {cmd}"
         assert reason is None, f"Should have no reason for quoted content: {cmd}"
-        assert matched_cmd is None, (
-            f"Should have no matched command for quoted content: {cmd}"
-        )
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for quoted content: {cmd}"
 
 
 def test_is_denylisted_pipe_to_shell_in_heredoc():
@@ -1080,15 +1080,15 @@ EOF""",
 
     for cmd in safe_heredoc_commands:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
-        assert not is_denied, (
-            f"Heredoc with pipe-to-shell should be allowed: {cmd[:50]}..."
-        )
-        assert reason is None, (
-            f"Should have no reason for heredoc content: {cmd[:50]}..."
-        )
-        assert matched_cmd is None, (
-            f"Should have no matched command for heredoc: {cmd[:50]}..."
-        )
+        assert (
+            not is_denied
+        ), f"Heredoc with pipe-to-shell should be allowed: {cmd[:50]}..."
+        assert (
+            reason is None
+        ), f"Should have no reason for heredoc content: {cmd[:50]}..."
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for heredoc: {cmd[:50]}..."
 
 
 def test_is_denylisted_pipe_to_shell_with_actual_command():
@@ -1105,12 +1105,12 @@ EOF""",
 
     for cmd in dangerous_with_heredoc:
         is_denied, reason, matched_cmd = is_denylisted(cmd)
-        assert is_denied, (
-            f"Actual dangerous pipe command should be denied: {cmd[:50]}..."
-        )
-        assert reason is not None, (
-            f"Should have reason for dangerous command: {cmd[:50]}..."
-        )
+        assert (
+            is_denied
+        ), f"Actual dangerous pipe command should be denied: {cmd[:50]}..."
+        assert (
+            reason is not None
+        ), f"Should have reason for dangerous command: {cmd[:50]}..."
         assert matched_cmd is not None, f"Should have matched command: {cmd[:50]}..."
 
 

@@ -32,9 +32,9 @@ class TestVersionTimeouts:
 
             get_git_version("/tmp")
             for call in mock_co.call_args_list:
-                assert "timeout" in call.kwargs, (
-                    f"check_output call missing timeout: {call}"
-                )
+                assert (
+                    "timeout" in call.kwargs
+                ), f"check_output call missing timeout: {call}"
 
     def test_subprocess_call_passes_timeout(self):
         """subprocess.call for git repo check passes timeout."""
@@ -46,9 +46,9 @@ class TestVersionTimeouts:
             from gptme.__version__ import get_git_version
 
             get_git_version("/tmp")
-            assert "timeout" in mock_call.call_args.kwargs, (
-                "subprocess.call missing timeout"
-            )
+            assert (
+                "timeout" in mock_call.call_args.kwargs
+            ), "subprocess.call missing timeout"
 
     def test_timeout_returns_none(self):
         """TimeoutExpired from git commands returns None gracefully."""

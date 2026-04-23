@@ -43,6 +43,6 @@ class TestAutoConfirmHook:
         """auto_confirm should confirm ANY tool, regardless of content."""
         for tool_name in ["shell", "python", "save", "patch", "browser", "unknown"]:
             result = auto_confirm_hook(_make_tool_use(tool_name, "rm -rf /"))
-            assert result.action == ConfirmAction.CONFIRM, (
-                f"Failed for tool: {tool_name}"
-            )
+            assert (
+                result.action == ConfirmAction.CONFIRM
+            ), f"Failed for tool: {tool_name}"

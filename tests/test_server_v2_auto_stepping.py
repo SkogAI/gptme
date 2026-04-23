@@ -278,9 +278,9 @@ def test_multi_tool_per_message(
         for m in messages
         if m["role"] == "system" and "Ran command:" in m.get("content", "")
     ]
-    assert len(system_outputs) == 2, (
-        f"Expected 2 tool output messages, got {len(system_outputs)}"
-    )
+    assert (
+        len(system_outputs) == 2
+    ), f"Expected 2 tool output messages, got {len(system_outputs)}"
 
     # Final message should be the concluding assistant response
     assert messages[-1]["role"] == "assistant"

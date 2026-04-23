@@ -101,9 +101,9 @@ def test_prompt_systeminfo_uses_workspace(tmp_path):
 
     msgs = list(prompt_systeminfo(workspace=tmp_path))
     content = "\n".join(msg.content for msg in msgs)
-    assert str(tmp_path) in content, (
-        f"Expected {tmp_path} in system prompt, got: {content[:200]}"
-    )
+    assert (
+        str(tmp_path) in content
+    ), f"Expected {tmp_path} in system prompt, got: {content[:200]}"
 
 
 def test_glob_path_traversal_protection(tmp_path):
@@ -143,9 +143,9 @@ files = ["../outside/secret.txt", "README.md"]
 
     # README should be attached, secret file should be blocked (path traversal)
     assert any("README.md" in f for f in attached_files), "README.md should be attached"
-    assert not any("secret.txt" in f for f in attached_files), (
-        "secret.txt should NOT be attached (path traversal)"
-    )
+    assert not any(
+        "secret.txt" in f for f in attached_files
+    ), "secret.txt should NOT be attached (path traversal)"
     assert "../outside/secret.txt" not in content, "Path traversal should be blocked"
 
 
@@ -433,6 +433,6 @@ def test_prompt_workspace_skip_home_agents_md(tmp_path, monkeypatch):
     )
     files_without_user = [str(f) for msg in msgs_without_user for f in msg.files]
 
-    assert str(home_agents.resolve()) not in files_without_user, (
-        "~/AGENTS.md must not appear in eval runs (include_user_context=False)"
-    )
+    assert (
+        str(home_agents.resolve()) not in files_without_user
+    ), "~/AGENTS.md must not appear in eval runs (include_user_context=False)"

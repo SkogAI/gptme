@@ -195,9 +195,9 @@ class TestValidateTools:
         }
         for name, profile in BUILTIN_PROFILES.items():
             unknown = profile.validate_tools(known_tools)
-            assert unknown == [], (
-                f"Built-in profile '{name}' has unknown tools: {unknown}"
-            )
+            assert (
+                unknown == []
+            ), f"Built-in profile '{name}' has unknown tools: {unknown}"
 
 
 class TestInvalidToolsType:

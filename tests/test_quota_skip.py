@@ -14,9 +14,9 @@ def test_quota_patterns_detect_anthropic_usage_limits():
         "Your spending limit has been reached",
     ]
     for msg in error_messages:
-        assert any(p in msg.lower() for p in _QUOTA_ERROR_PATTERNS), (
-            f"Pattern not detected for: {msg}"
-        )
+        assert any(
+            p in msg.lower() for p in _QUOTA_ERROR_PATTERNS
+        ), f"Pattern not detected for: {msg}"
 
 
 def test_quota_patterns_no_false_positives():
@@ -29,6 +29,6 @@ def test_quota_patterns_no_false_positives():
         "Invalid request: messages must be non-empty",
     ]
     for msg in normal_errors:
-        assert not any(p in msg.lower() for p in _QUOTA_ERROR_PATTERNS), (
-            f"False positive for: {msg}"
-        )
+        assert not any(
+            p in msg.lower() for p in _QUOTA_ERROR_PATTERNS
+        ), f"False positive for: {msg}"

@@ -135,9 +135,9 @@ def test_rename_conversation_no_workspace_symlink(tmp_path: Path):
     ):
         rename_conversation("test-conv", "NicerName")
 
-    assert not (conv_dir / "workspace").exists(), (
-        "rename must not create a workspace symlink as a side effect"
-    )
+    assert not (
+        conv_dir / "workspace"
+    ).exists(), "rename must not create a workspace symlink as a side effect"
 
 
 # --- CLI tests ---

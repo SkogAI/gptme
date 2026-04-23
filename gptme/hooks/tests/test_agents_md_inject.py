@@ -344,8 +344,8 @@ class TestOnCwdChanged:
             )
             agent_msgs = [m for m in msgs if isinstance(m, Message)]
             # Should NOT re-inject — file is already in the log
-            assert len(agent_msgs) == 0, (
-                "AGENTS.md should not be re-injected when already present in log"
-            )
+            assert (
+                len(agent_msgs) == 0
+            ), "AGENTS.md should not be re-injected when already present in log"
         finally:
             os.chdir(original)

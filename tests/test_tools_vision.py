@@ -42,9 +42,9 @@ def large_bmp(tmp_path: Path) -> Path:
             )
     path = tmp_path / "large.bmp"
     img.save(str(path))
-    assert path.stat().st_size > 1024 * 1024, (
-        f"Expected >1MB, got {path.stat().st_size}"
-    )
+    assert (
+        path.stat().st_size > 1024 * 1024
+    ), f"Expected >1MB, got {path.stat().st_size}"
     return path
 
 
@@ -115,9 +115,9 @@ class TestViewImageLarge:
         out_file = msg.files[0]
         assert isinstance(out_file, Path)
         output_size = out_file.stat().st_size
-        assert output_size <= 1024 * 1024, (
-            f"Output {output_size} bytes exceeds 1MB limit"
-        )
+        assert (
+            output_size <= 1024 * 1024
+        ), f"Output {output_size} bytes exceeds 1MB limit"
 
     def test_huge_image_scaled(self, huge_bmp: Path):
         """Very large images should be both compressed and scaled."""
@@ -129,9 +129,9 @@ class TestViewImageLarge:
         out_file = msg.files[0]
         assert isinstance(out_file, Path)
         output_size = out_file.stat().st_size
-        assert output_size <= 1.5 * 1024 * 1024, (
-            f"Output {output_size} bytes still too large"
-        )
+        assert (
+            output_size <= 1.5 * 1024 * 1024
+        ), f"Output {output_size} bytes still too large"
 
 
 class TestViewImagePIL:

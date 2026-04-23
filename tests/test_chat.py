@@ -352,9 +352,9 @@ def test_image_auto_attach_end_to_end(tmp_path):
 
     # Step 2: embed_attached_file_content preserves images
     msg = embed_attached_file_content(msg, workspace=None)
-    assert len(msg.files) == 1, (
-        "embed should preserve image in files (not embed as text)"
-    )
+    assert (
+        len(msg.files) == 1
+    ), "embed should preserve image in files (not embed as text)"
 
     # Step 3: msgs2dicts preserves files for provider processing
     dicts = msgs2dicts([msg])

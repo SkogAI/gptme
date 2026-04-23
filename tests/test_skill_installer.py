@@ -631,9 +631,9 @@ metadata:
         )
 
         missing = check_dependencies()
-        assert any(m["skill"] == "test-skill" for m in missing), (
-            f"Manifest-only skill not checked: {missing}"
-        )
+        assert any(
+            m["skill"] == "test-skill" for m in missing
+        ), f"Manifest-only skill not checked: {missing}"
 
     def test_check_dependencies_raises_on_unknown_skill(
         self, monkeypatch: pytest.MonkeyPatch

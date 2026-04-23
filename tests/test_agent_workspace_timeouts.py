@@ -187,6 +187,6 @@ class TestCreateWorkspaceTimeoutIntegration:
         result = create_workspace_from_template(dest, "test-agent")
 
         assert result == dest
-        assert dest.exists(), (
-            "Workspace was unexpectedly deleted after successful creation"
-        )
+        assert (
+            dest.exists()
+        ), "Workspace was unexpectedly deleted after successful creation"

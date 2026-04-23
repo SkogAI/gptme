@@ -75,9 +75,9 @@ def chat(
     set_conversation_context(conversation_id=conv_name)
 
     # tool_format should already be resolved by this point
-    assert tool_format is not None, (
-        "tool_format should be resolved before calling chat()"
-    )
+    assert (
+        tool_format is not None
+    ), "tool_format should be resolved before calling chat()"
 
     # init
     # Mode detection for confirmation hooks is now handled inside init_hooks()

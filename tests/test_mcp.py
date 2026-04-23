@@ -353,9 +353,9 @@ def test_mcp_client_event_loop_isolation():
     try:
         current_loop = asyncio.get_event_loop_policy().get_event_loop()
         if original_loop is not None:
-            assert current_loop is original_loop, (
-                "MCPClient.__init__ should not change the thread-global event loop"
-            )
+            assert (
+                current_loop is original_loop
+            ), "MCPClient.__init__ should not change the thread-global event loop"
     except RuntimeError:
         # No event loop set — also acceptable if there wasn't one before
         assert original_loop is None

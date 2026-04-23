@@ -502,9 +502,9 @@ class TestSelectCompressionRatio:
                 c = TaskClassification(primary_type=task_type, confidence=conf)
                 f = TaskFeatures(total_workspace_size=10_000_000)
                 ratio = select_compression_ratio(c, f)
-                assert 0.10 <= ratio <= 0.50, (
-                    f"ratio {ratio} out of bounds for {task_type} conf={conf}"
-                )
+                assert (
+                    0.10 <= ratio <= 0.50
+                ), f"ratio {ratio} out of bounds for {task_type} conf={conf}"
 
 
 # ──────────────────── generate_rationale ────────────────────

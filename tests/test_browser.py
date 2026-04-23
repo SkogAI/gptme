@@ -47,9 +47,9 @@ def test_snapshot_url():
     # Should contain typical ARIA elements
     # example.com has a heading and a link
     assert "Example Domain" in snapshot, "Should contain the page title/heading"
-    assert "link" in snapshot.lower() or "heading" in snapshot.lower(), (
-        "Should contain ARIA role information"
-    )
+    assert (
+        "link" in snapshot.lower() or "heading" in snapshot.lower()
+    ), "Should contain ARIA role information"
 
 
 @pytest.mark.slow
@@ -212,9 +212,9 @@ def test_search_perplexity(monkeypatch):
     # Test the search works
     results = search("what is gptme", "perplexity")
     assert results, "Should get results from Perplexity"
-    assert "error" not in results.lower() or "Error" not in results, (
-        f"Got error: {results}"
-    )
+    assert (
+        "error" not in results.lower() or "Error" not in results
+    ), f"Got error: {results}"
 
     # If we have OpenRouter key, test that it works too
     if has_openrouter and not has_perplexity:
@@ -222,9 +222,9 @@ def test_search_perplexity(monkeypatch):
         monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
         results2 = search("what is gptme", "perplexity")
         assert results2, "Should get results from OpenRouter"
-        assert "error" not in results2.lower() or "Error" not in results2, (
-            f"Got error: {results2}"
-        )
+        assert (
+            "error" not in results2.lower() or "Error" not in results2
+        ), f"Got error: {results2}"
 
 
 @pytest.mark.slow
@@ -253,12 +253,12 @@ def test_pdf_max_pages_custom():
     assert "--- Page 1 ---" in content, "Page 1 should be present"
 
     # Should NOT have Page 3 or higher (the key test for max_pages)
-    assert "--- Page 3 ---" not in content, (
-        "Page 3 should NOT be present with max_pages=2"
-    )
-    assert "--- Page 4 ---" not in content, (
-        "Page 4 should NOT be present with max_pages=2"
-    )
+    assert (
+        "--- Page 3 ---" not in content
+    ), "Page 3 should NOT be present with max_pages=2"
+    assert (
+        "--- Page 4 ---" not in content
+    ), "Page 4 should NOT be present with max_pages=2"
 
     # Should have truncation note
     assert "pages. Showing first" in content, "Missing truncation note"
@@ -273,9 +273,9 @@ def test_pdf_vision_hint():
 
     # Should include vision fallback hint
     assert "vision" in content.lower(), "Missing vision-based reading hint"
-    assert "garbled" in content.lower() or "incomplete" in content.lower(), (
-        "Missing context for when to use vision"
-    )
+    assert (
+        "garbled" in content.lower() or "incomplete" in content.lower()
+    ), "Missing context for when to use vision"
 
 
 @pytest.mark.slow

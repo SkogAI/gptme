@@ -437,9 +437,9 @@ class TestExecuteJobsCommand:
         time.sleep(0.1)
         msgs = _collect(execute_jobs_command())
         content = msgs[0].content
-        assert re.search(r"\d+\.\d+s", content), (
-            f"Expected elapsed seconds format like '0.1s', got: {content!r}"
-        )
+        assert re.search(
+            r"\d+\.\d+s", content
+        ), f"Expected elapsed seconds format like '0.1s', got: {content!r}"
         job.kill()
 
 
@@ -576,9 +576,9 @@ class TestEdgeCases:
         # so os.getpgid(pid) == pid
         try:
             pgid = os.getpgid(pid)
-            assert pgid == pid, (
-                f"Expected process {pid} to be its own group leader, got pgid={pgid}"
-            )
+            assert (
+                pgid == pid
+            ), f"Expected process {pid} to be its own group leader, got pgid={pgid}"
         except ProcessLookupError:
             pytest.skip("Process exited before pgid could be checked")
         finally:
@@ -618,7 +618,7 @@ class TestEdgeCases:
         job.start_time = time.time() - 120
         msgs = _collect(execute_jobs_command())
         content = msgs[0].content
-        assert re.search(r"\d+\.\d+m", content), (
-            f"Expected elapsed minutes format like '2.0m', got: {content!r}"
-        )
+        assert re.search(
+            r"\d+\.\d+m", content
+        ), f"Expected elapsed minutes format like '2.0m', got: {content!r}"
         job.kill()
